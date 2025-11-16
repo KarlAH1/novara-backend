@@ -2,18 +2,56 @@ import pool from "../config/db.js";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 
+
+// ===============================
+// REGISTER
+// ===============================
+export const register = async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+
+    const [existing] = await pool.query(
+      "SELECT * FROM users WHERE email = ?",
+      [email]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({ error: "Email already exists" });
+    }
+
+    const hashedPassword = await bcryptjs.hash(password, 10);
+
+    await pool.query(
+      "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
+      [name, email, hashedPassword, role]
+    );
+
+    res.json({ message: "User registered successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+
+// ===============================
+// LOGIN
+// ===============================
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
+    const [rows] = await pool.query(
+      "SELECT * FROM users WHERE email = ?",
+      [email]
+    );
+
     const user = rows[0];
 
     if (!user) {
       return res.status(400).json({ error: "User not found" });
     }
 
-    // ✔️ KORREKT bcryptjs COMPARE
     const isMatch = await bcryptjs.compare(password, user.password);
 
     if (!isMatch) {
@@ -26,14 +64,13 @@ export const login = async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    return res.json({
+    res.json({
       message: "Login successful",
       token,
       user
     });
-
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Server error" });
   }
 };
