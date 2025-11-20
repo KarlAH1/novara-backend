@@ -143,3 +143,28 @@ export const stopRaising = async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 };
+
+export const getMyStartupProfile = async (req, res) => {
+    try {
+      const userId = req.user?.id;
+  
+      if (!userId) {
+        return res.status(401).json({ error: "Ingen bruker i token" });
+      }
+  
+      const [rows] = await pool.query(
+        "SELECT * FROM startup_profiles WHERE user_id = ? LIMIT 1",
+        [userId]
+      );
+  
+      if (!rows.length) {
+        return res.json(null);
+      }
+  
+      return res.json(rows[0]);
+    } catch (err) {
+      console.error("getMyStartupProfile error:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  };
+  
