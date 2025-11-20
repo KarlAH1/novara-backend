@@ -1,4 +1,3 @@
-// backend/controllers/startupController.js
 import pool from "../config/db.js";
 
 // POST /api/startup/slip-setup
@@ -45,11 +44,15 @@ export const saveSlipSetup = async (req, res) => {
 // POST /api/startup/profile
 export const saveStartupProfile = async (req, res) => {
   try {
-    const { sector, pitch, country, vision } = req.body;
+    const { companyName, sector, pitch, country, vision } = req.body;
     const userId = req.user?.id;
 
     if (!userId) {
       return res.status(401).json({ error: "Ingen bruker i token" });
+    }
+
+    if (!companyName) {
+      return res.status(400).json({ error: "Navn på startup (companyName) må fylles ut" });
     }
 
     if (!sector || !pitch) {
@@ -60,15 +63,16 @@ export const saveStartupProfile = async (req, res) => {
 
     await pool.query(
       `
-      INSERT INTO startup_profiles (user_id, sector, pitch, country, vision)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO startup_profiles (user_id, company_name, sector, pitch, country, vision)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        company_name = VALUES(company_name),
         sector = VALUES(sector),
         pitch = VALUES(pitch),
         country = VALUES(country),
         vision = VALUES(vision)
       `,
-      [userId, sector, pitch, country || null, vision || null]
+      [userId, companyName, sector, pitch, country || null, vision || null]
     );
 
     return res.json({ message: "Startup-profil lagret" });
@@ -86,6 +90,7 @@ export const listPublicStartups = async (_req, res) => {
       SELECT 
         u.id AS user_id,
         u.name AS founder_name,
+        sp.company_name,
         sp.sector,
         sp.pitch,
         sp.country,
@@ -102,6 +107,39 @@ export const listPublicStartups = async (_req, res) => {
     return res.json(rows);
   } catch (err) {
     console.error("listPublicStartups error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+};
+
+// POST /api/startup/stop-raising
+export const stopRaising = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Ingen bruker i token" });
+    }
+
+    const [result] = await pool.query(
+      `
+      UPDATE startup_profiles
+      SET is_raising = 0,
+          raising_amount = NULL,
+          slip_horizon_months = NULL
+      WHERE user_id = ?
+      `,
+      [userId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Fant ingen aktiv SLIP for denne brukeren" });
+    }
+
+    return res.json({
+      message: "Kapitalinnhentingen er stoppet. Startup vises ikke lenger som 'henter nå'."
+    });
+  } catch (err) {
+    console.error("stopRaising error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 };
