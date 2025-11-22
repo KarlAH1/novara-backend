@@ -15,8 +15,17 @@ const PORT = process.env.PORT || 8080;
 // ---------------------------
 // MIDDLEWARE
 // ---------------------------
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+    origin: [
+        "http://localhost:5500",//FJERN ved launch
+        "http://127.0.0.1:5500", //FJERN ved launch
+        "https://your-netlify-domain.netlify.app", //FJERN ved launch
+        "https://www.raisium.io",
+        "https://raisium.io"
+    ],
+    credentials: true
+}));
+app.use(express.json()); 
 
 // ---------------------------
 // ROUTES
