@@ -1,29 +1,25 @@
-router.get("/ping", (req, res) => {
-    res.json({ message: "Startup API is working" });
-  });
-  
 import express from "express";
 import { auth as authMiddleware } from "../middleware/authMiddleware.js";
-
 import {
-    createOrUpdateStartupProfile,
-    getStartupByUser,
-    getAllRaisingStartups,
-    deleteMyStartup
+  createStartupProfile,
+  getMyStartups,
+  getPublicStartups
 } from "../controllers/startupController.js";
 
-const router = express.Router();
+const router = express.Router();   // <-- MÅ KOMME FØRST
 
-// Lagre / oppdatere profil
-router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
+// Test endpoint
+router.get("/ping", (req, res) => {
+  res.json({ message: "Startup API is working" });
+});
 
-// Hente egen startup
-router.get("/my", authMiddleware, getStartupByUser);
+// Create startup profile
+router.post("/create", authMiddleware, createStartupProfile);
 
-// Vise alle som henter kapital
-router.get("/raising", getAllRaisingStartups);
+// Get startups owned by logged-in user
+router.get("/mine/:userId", getMyStartups);
 
-// Slette en startup
-router.delete("/delete", authMiddleware, deleteMyStartup);
+// Public list of startups raising money
+router.get("/public", getPublicStartups);
 
 export default router;

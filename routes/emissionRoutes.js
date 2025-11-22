@@ -1,33 +1,21 @@
-router.get("/ping", (req, res) => {
-    res.json({ message: "Emission API is working" });
-  });
-  
 import express from "express";
-import { auth as authMiddleware } from "../middleware/authMiddleware.js";
-
 import {
-    createEmissionRound,
     getRoundByStartup,
     investInRound,
     sendUpdate,
     closeRound
 } from "../controllers/emissionController.js";
 
-const router = express.Router();
+const router = express.Router();  // <-- MÅ VÆRE FØRST
 
-// Opprett emisjonsrunde
-router.post("/create", authMiddleware, createEmissionRound);
+router.get("/ping", (req, res) => {
+  res.json({ message: "Emission API is working" });
+});
 
-// Hent runde for startup
+// routes
 router.get("/round/:startupId", getRoundByStartup);
-
-// Invester i runden
-router.post("/invest/:roundId", authMiddleware, investInRound);
-
-// Startup sender oppdatering
-router.post("/update/:roundId", authMiddleware, sendUpdate);
-
-// Stenge runden
-router.post("/close/:roundId", authMiddleware, closeRound);
+router.post("/invest/:roundId", investInRound);
+router.post("/update/:roundId", sendUpdate);
+router.post("/close/:roundId", closeRound);
 
 export default router;
