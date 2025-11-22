@@ -1,25 +1,31 @@
+// backend/routes/startupRoutes.js
 import express from "express";
 import { auth as authMiddleware } from "../middleware/authMiddleware.js";
+
 import {
-  createStartupProfile,
-  getMyStartups,
-  getPublicStartups
+    createOrUpdateStartupProfile,
+    getStartupByUser,
+    getAllRaisingStartups,
+    deleteMyStartup
 } from "../controllers/startupController.js";
 
-const router = express.Router();   // <-- MÅ KOMME FØRST
+const router = express.Router();
 
-// Test endpoint
+// Test
 router.get("/ping", (req, res) => {
-  res.json({ message: "Startup API is working" });
+    res.json({ message: "Startup API is working" });
 });
 
-// Create startup profile
-router.post("/create", authMiddleware, createStartupProfile);
+// Create or update startup profile
+router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
 
-// Get startups owned by logged-in user
-router.get("/mine/:userId", getMyStartups);
+// Get logged-in user's startup profile
+router.get("/my", authMiddleware, getStartupByUser);
 
-// Public list of startups raising money
-router.get("/public", getPublicStartups);
+// Get all startups currently raising capital
+router.get("/raising", getAllRaisingStartups);
+
+// Delete logged-in user's startup
+router.delete("/my", authMiddleware, deleteMyStartup);
 
 export default router;
