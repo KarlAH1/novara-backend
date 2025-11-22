@@ -58,7 +58,7 @@ export const getStartupByUser = async (req, res) => {
         [req.user.id]
     );
 
-    res.json(rows[0] || null);
+    res.json(rows);
 };
 
 export const getAllRaisingStartups = async (req, res) => {
