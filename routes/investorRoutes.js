@@ -1,8 +1,8 @@
 import express from "express";
+import { investorPing } from "../controllers/investorController.js";
+
 const router = express.Router();
 
-router.get("/ping", (req, res) => {
-  res.json({ message: "Investor API is working" });
-});
+router.get("/ping", investorPing);
 
 export default router;
