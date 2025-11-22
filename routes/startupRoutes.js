@@ -31,3 +31,9 @@ router.get("/me", auth, getMyStartupProfile);
 router.get("/list", listPublicStartups);
 
 export default router;
+
+import { createStartupProfile, getMyStartups } from "../controllers/startupController.js";
+
+router.post("/create", createStartupProfile);
+router.get("/mine/:userId", getMyStartups);
+

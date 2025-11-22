@@ -1,26 +1,38 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import cors from 'cors';
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
 
-import authRoutes from './routes/authRoutes.js';
-import investorRoutes from './routes/investorRoutes.js';
-import startupRoutes from './routes/startupRoutes.js';
+import authRoutes from "./routes/authRoutes.js";
+import investorRoutes from "./routes/investorRoutes.js";
+import startupRoutes from "./routes/startupRoutes.js";
+import emissionRoutes from "./routes/emissionRoutes.js";
 
 dotenv.config();
-const app = express();
 
+const app = express();
+const PORT = process.env.PORT || 8080;
+
+// ---------------------------
+// MIDDLEWARE
+// ---------------------------
 app.use(cors());
 app.use(express.json());
 
-// API routes (PREFIXED WITH /api)
-app.use('/api/auth', authRoutes);
-app.use('/api/investor', investorRoutes);
-app.use('/api/startup', startupRoutes);
-
-app.get('/', (req, res) => {
-  res.send('Novara backend running');
+// ---------------------------
+// ROUTES
+// ---------------------------
+app.get("/", (req, res) => {
+    res.send("Novara Backend (Raisium) API is running");
 });
 
-app.listen(process.env.PORT || 4000, () =>
-  console.log("Server running on port " + (process.env.PORT || 4000))
-);
+app.use("/api/auth", authRoutes);
+app.use("/api/investor", investorRoutes);
+app.use("/api/startup", startupRoutes);
+app.use("/api/emission", emissionRoutes);
+
+// ---------------------------
+// START SERVER
+// ---------------------------
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+});
