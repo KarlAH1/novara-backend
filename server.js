@@ -17,9 +17,7 @@ const PORT = process.env.PORT || 8080;
 // ---------------------------
 app.use(cors({
     origin: [
-        "http://localhost:5500",//FJERN ved launch
-        "http://127.0.0.1:5500", //FJERN ved launch
-        "https://your-netlify-domain.netlify.app", //FJERN ved launch
+        "https://superb-rabanadas-81a879.netlify.app", 
         "https://www.raisium.io",
         "https://raisium.io"
     ],
