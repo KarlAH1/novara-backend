@@ -1,19 +1,11 @@
 import express from "express";
-import { register, login } from "../controllers/authController.js";
+import { register, login, getMe } from "../controllers/authController.js";
+import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// --------------------------------------------------
-// GET /ping – for testing
-// --------------------------------------------------
-router.get("/ping", (req, res) => {
-  res.json({ message: "Auth API is working!" });
-});
-
-// --------------------------------------------------
-// Auth endpoints
-// --------------------------------------------------
 router.post("/register", register);
 router.post("/login", login);
+router.get("/me", authMiddleware, getMe);
 
 export default router;

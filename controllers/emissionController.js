@@ -1,85 +1,74 @@
-import db from "../config/db.js";
+import pool from "../config/db.js";
 
-//
-// 1️⃣ Hent aktiv emisjonsrunde for en startup
-//
+export const createEmissionRound = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const {
+            company_name,
+            sector,
+            pitch,
+            country,
+            vision,
+            raising_amount,
+            slip_horizon_months
+        } = req.body;
+
+        await pool.query(
+            `INSERT INTO emission_rounds
+             (user_id, company_name, sector, pitch, country, vision, raising_amount, slip_horizon_months, status)
+             VALUES (?,?,?,?,?,?,?,?, 'open')`,
+            [
+                userId, company_name, sector, pitch, country, vision,
+                raising_amount, slip_horizon_months
+            ]
+        );
+
+        res.json({ message: "Emission round created" });
+
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
 export const getRoundByStartup = async (req, res) => {
-    const { startupId } = req.params;
+    const [rows] = await pool.query(
+        "SELECT * FROM emission_rounds WHERE user_id=? ORDER BY id DESC LIMIT 1",
+        [req.params.startupId]
+    );
 
-    try {
-        const [rows] = await db.query(
-            "SELECT * FROM emission_rounds WHERE startup_id = ? ORDER BY id DESC LIMIT 1",
-            [startupId]
-        );
-
-        if (rows.length === 0) {
-            return res.json({ round: null });
-        }
-
-        res.json({ round: rows[0] });
-    } catch (err) {
-        console.error("DB getRoundByStartup:", err);
-        res.status(500).json({ error: "Database error" });
-    }
+    res.json(rows[0] || null);
 };
 
-//
-// 2️⃣ Invester i runden (mock — utvides senere)
-//
 export const investInRound = async (req, res) => {
-    const { roundId } = req.params;
-    const { investor_name, amount } = req.body;
+    const investorId = req.user.id;
+    const { amount } = req.body;
 
-    try {
-        await db.query(
-            `INSERT INTO emission_investments (round_id, investor_name, amount)
-             VALUES (?, ?, ?)`,
-            [roundId, investor_name, amount]
-        );
+    await pool.query(
+        `INSERT INTO investments (round_id, investor_id, amount)
+         VALUES (?,?,?)`,
+        [req.params.roundId, investorId, amount]
+    );
 
-        res.json({ message: "Investment registered" });
-    } catch (err) {
-        console.error("DB investInRound:", err);
-        res.status(500).json({ error: "Database error" });
-    }
+    res.json({ message: "Investment registered" });
 };
 
-//
-// 3️⃣ Send oppdatering til investorer (mock)
-//
 export const sendUpdate = async (req, res) => {
-    const { roundId } = req.params;
-    const { message } = req.body;
+    await pool.query(
+        `INSERT INTO emission_updates (round_id, message)
+         VALUES (?,?)`,
+        [req.params.roundId, req.body.message]
+    );
 
-    try {
-        await db.query(
-            `INSERT INTO emission_updates (round_id, message)
-             VALUES (?, ?)`,
-            [roundId, message]
-        );
-
-        res.json({ message: "Update posted" });
-    } catch (err) {
-        console.error("DB sendUpdate:", err);
-        res.status(500).json({ error: "Database error" });
-    }
+    res.json({ message: "Update sent" });
 };
 
-//
-// 4️⃣ Steng emisjonsrunde
-//
 export const closeRound = async (req, res) => {
-    const { roundId } = req.params;
+    await pool.query(
+        "UPDATE emission_rounds SET status='closed' WHERE id=?",
+        [req.params.roundId]
+    );
 
-    try {
-        await db.query(
-            "UPDATE emission_rounds SET is_closed = 1 WHERE id = ?",
-            [roundId]
-        );
-
-        res.json({ message: "Round closed" });
-    } catch (err) {
-        console.error("DB closeRound:", err);
-        res.status(500).json({ error: "Database error" });
-    }
+    res.json({ message: "Round closed" });
 };

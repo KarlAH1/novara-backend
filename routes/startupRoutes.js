@@ -1,15 +1,25 @@
 import express from "express";
+import authMiddleware from "../middleware/authMiddleware.js";
+
 import {
-    createStartupProfile,
-    getMyStartups
+    createOrUpdateStartupProfile,
+    getStartupByUser,
+    getAllRaisingStartups,
+    deleteMyStartup
 } from "../controllers/startupController.js";
 
 const router = express.Router();
 
-// Opprett startup-profil + emisjon
-router.post("/create", createStartupProfile);
+// Lagre / oppdatere profil
+router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
 
-// Hent alle startups for en bruker
-router.get("/my/:userId", getMyStartups);
+// Hente egen startup
+router.get("/my", authMiddleware, getStartupByUser);
+
+// Vise alle som henter kapital
+router.get("/raising", getAllRaisingStartups);
+
+// Slette en startup
+router.delete("/delete", authMiddleware, deleteMyStartup);
 
 export default router;
