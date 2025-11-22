@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 8080;
 // ---------------------------
 app.use(cors({
     origin: [
-        "https://superb-rabanadas-81a879.netlify.app", 
+        "https://luxury-licorice-ed1851.netlify.app", 
         "https://www.raisium.io",
         "https://raisium.io"
     ],
