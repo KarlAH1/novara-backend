@@ -1,3 +1,7 @@
+router.get("/ping", (req, res) => {
+    res.json({ message: "Startup API is working" });
+  });
+  
 import express from "express";
 import { auth as authMiddleware } from "../middleware/authMiddleware.js";
 
