@@ -1,6 +1,6 @@
-import pool from "../config/db.js";
+import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
+import pool from "../config/db.js";
 
 export const register = async (req, res) => {
     const { name, email, password, role } = req.body;
