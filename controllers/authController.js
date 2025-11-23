@@ -1,11 +1,11 @@
 import pool from "../config/db.js";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 export const register = async (req, res) => {
     const { name, email, password, role } = req.body;
 
-    const hashed = await bcrypt.hash(password, 10);
+    const hashed = await bcryptjs.hash(password, 10);
 
     await pool.query(
         "INSERT INTO users (name, email, password, role) VALUES (?,?,?,?)",
@@ -23,7 +23,7 @@ export const login = async (req, res) => {
 
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const match = await bcrypt.compare(password, user.password);
+    const match = await bcryptjs.compare(password, user.password);
     if (!match) return res.status(401).json({ error: "Wrong password" });
 
     const token = jwt.sign(
