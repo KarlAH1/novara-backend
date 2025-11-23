@@ -1,18 +1,17 @@
 import express from "express";
-import { auth as authMiddleware } from "../middleware/authMiddleware.js";
-
+import { auth } from "../middleware/authMiddleware.js";
 import {
-    createEmissionRound,
-    getRoundByStartup,
-    investInRound,
-    closeRound
+    createEmission,
+    getEmissionByStartup,
+    invest,
+    closeEmission
 } from "../controllers/emissionController.js";
 
 const router = express.Router();
 
-router.post("/create", authMiddleware, createEmissionRound);
-router.get("/round/:startupId", getRoundByStartup);
-router.post("/invest/:roundId", authMiddleware, investInRound);
-router.post("/close/:roundId", authMiddleware, closeRound);
+router.post("/create", auth, createEmission);
+router.get("/round/:startupId", getEmissionByStartup);
+router.post("/invest/:roundId", auth, invest);
+router.post("/close/:roundId", auth, closeEmission);
 
 export default router;

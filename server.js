@@ -3,18 +3,14 @@ import cors from "cors";
 import dotenv from "dotenv";
 
 import authRoutes from "./routes/authRoutes.js";
-import investorRoutes from "./routes/investorRoutes.js";
 import startupRoutes from "./routes/startupRoutes.js";
 import emissionRoutes from "./routes/emissionRoutes.js";
+import investorRoutes from "./routes/investorRoutes.js";
 
 dotenv.config();
-
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ---------------------------
-// MIDDLEWARE
-// ---------------------------
 app.use(cors({
     origin: [
         "https://luxury-licorice-ed1851.netlify.app", 
@@ -23,23 +19,16 @@ app.use(cors({
     ],
     credentials: true
 }));
-app.use(express.json()); 
 
-// ---------------------------
-// ROUTES
-// ---------------------------
+app.use(express.json());
+
 app.get("/", (req, res) => {
-    res.send("Novara Backend (Raisium) API is running");
+    res.send("Raisium backend API running");
 });
 
 app.use("/api/auth", authRoutes);
-app.use("/api/investor", investorRoutes);
 app.use("/api/startup", startupRoutes);
 app.use("/api/emission", emissionRoutes);
+app.use("/api/investor", investorRoutes);
 
-// ---------------------------
-// START SERVER
-// ---------------------------
-app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

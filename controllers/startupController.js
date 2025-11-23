@@ -1,76 +1,55 @@
 import pool from "../config/db.js";
 
-export const createOrUpdateStartupProfile = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const {
+export async function createStartup(req, res) {
+    const userId = req.user.id;
+    const {
+        company_name,
+        sector,
+        pitch,
+        country,
+        vision,
+        raising_amount,
+        slip_horizon_months
+    } = req.body;
+
+    await pool.query(
+        `INSERT INTO startup_profiles 
+        (user_id, company_name, sector, pitch, country, vision, raising_amount, slip_horizon_months, is_raising)
+        VALUES (?,?,?,?,?,?,?,?,1)`,
+        [
+            userId,
             company_name,
             sector,
             pitch,
             country,
             vision,
             raising_amount,
-            slip_horizon_months,
-            is_raising
-        } = req.body;
+            slip_horizon_months
+        ]
+    );
 
-        const [exists] = await pool.query(
-            "SELECT id FROM startup_profiles WHERE user_id=?",
-            [userId]
-        );
+    res.json({ message: "Startup created" });
+}
 
-        if (exists.length > 0) {
-            await pool.query(
-                `UPDATE startup_profiles 
-                 SET company_name=?, sector=?, pitch=?, country=?, vision=?, 
-                     raising_amount=?, slip_horizon_months=?, is_raising=?
-                 WHERE user_id=?`,
-                [
-                    company_name, sector, pitch, country, vision,
-                    raising_amount, slip_horizon_months, is_raising, userId
-                ]
-            );
-            return res.json({ message: "Profile updated" });
-        }
+export async function getMyStartups(req, res) {
+    const userId = req.user.id;
 
-        await pool.query(
-            `INSERT INTO startup_profiles 
-             (user_id, company_name, sector, pitch, country, vision, raising_amount,
-              slip_horizon_months, is_raising)
-             VALUES (?,?,?,?,?,?,?,?,?)`,
-            [
-                userId, company_name, sector, pitch, country, vision,
-                raising_amount, slip_horizon_months, is_raising
-            ]
-        );
-
-        res.json({ message: "Profile created" });
-
-    } catch (err) {
-        console.log(err);
-        res.status(500).json({ message: "Server error" });
-    }
-};
-
-export const getStartupByUser = async (req, res) => {
     const [rows] = await pool.query(
         "SELECT * FROM startup_profiles WHERE user_id=?",
-        [req.user.id]
+        [userId]
     );
 
     res.json(rows);
-};
+}
 
-export const getAllRaisingStartups = async (req, res) => {
-    const [rows] = await pool.query(
-        "SELECT * FROM startup_profiles WHERE is_raising=1"
+export async function deleteStartup(req, res) {
+    const userId = req.user.id;
+    const startupId = req.params.id;
+
+    await pool.query(
+        "DELETE FROM startup_profiles WHERE id=? AND user_id=?",
+        [startupId, userId]
     );
-    res.json(rows);
-};
 
-export const deleteMyStartup = async (req, res) => {
-    await pool.query("DELETE FROM startup_profiles WHERE user_id=?", [
-        req.user.id
-    ]);
     res.json({ message: "Startup deleted" });
-};
+}

@@ -4,12 +4,12 @@ import { register, login, getMe } from "../controllers/authController.js";
 
 const router = express.Router();
 
-// Test
+// Ping-test (brukes av frontend for å sjekke backend-live)
 router.get("/ping", (req, res) => {
   res.json({ message: "Auth API is working" });
 });
 
-// Protected route
+// Protected "get my info"
 router.get("/me", authMiddleware, getMe);
 
 // Auth routes
