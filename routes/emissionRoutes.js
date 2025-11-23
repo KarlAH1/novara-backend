@@ -5,22 +5,14 @@ import {
     createEmissionRound,
     getRoundByStartup,
     investInRound,
-    sendUpdate,
     closeRound
 } from "../controllers/emissionController.js";
 
 const router = express.Router();
 
-router.get("/ping", (req, res) => res.json({ message: "Emission API OK" }));
-
 router.post("/create", authMiddleware, createEmissionRound);
-
 router.get("/round/:startupId", getRoundByStartup);
-
-router.post("/invest/:roundId", investInRound);
-
-router.post("/update/:roundId", sendUpdate);
-
+router.post("/invest/:roundId", authMiddleware, investInRound);
 router.post("/close/:roundId", authMiddleware, closeRound);
 
 export default router;

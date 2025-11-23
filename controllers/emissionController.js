@@ -1,70 +1,106 @@
 import pool from "../config/db.js";
 
+// ==========================
+// START EMISSION
+// ==========================
 export const createEmissionRound = async (req, res) => {
     try {
         const { startup_id, target_amount, slip_horizon_months } = req.body;
 
-        const deadline = new Date();
-        deadline.setDate(deadline.getDate() + parseInt(slip_horizon_months));
+        if (!startup_id || !target_amount || !slip_horizon_months) {
+            return res.status(400).json({ message: "Missing fields" });
+        }
 
-        await pool.query(
-            `INSERT INTO emission_rounds
-             (startup_id, target_amount, deadline, amount_raised, open)
-             VALUES (?,?,?,?,1)`,
-            [startup_id, target_amount, deadline, 0]
+        // deadline = now + X days
+        const [deadlineRow] = await pool.query(
+            `SELECT DATE_ADD(NOW(), INTERVAL ? DAY) AS deadline`,
+            [slip_horizon_months]
         );
 
-        res.json({ message: "Emission round created" });
+        const deadline = deadlineRow[0].deadline;
+
+        await pool.query(
+            `INSERT INTO emission_rounds (startup_id, target_amount, deadline, open)
+             VALUES (?,?,?,1)`,
+            [startup_id, target_amount, deadline]
+        );
+
+        // Mark startup as raising
+        await pool.query(
+            `UPDATE startup_profiles SET is_raising=1 WHERE id=?`,
+            [startup_id]
+        );
+
+        res.json({ message: "Emisjon startet", deadline });
 
     } catch (err) {
         console.log(err);
-        res.status(500).json({ error: "Server error" });
+        res.status(500).json({ message: "Server error" });
     }
 };
 
+
+// ==========================
+// GET ROUND
+// ==========================
 export const getRoundByStartup = async (req, res) => {
+    const startupId = req.params.startupId;
+
     const [rows] = await pool.query(
-        "SELECT * FROM emission_rounds WHERE startup_id=? ORDER BY id DESC LIMIT 1",
-        [req.params.startupId]
+        `SELECT * FROM emission_rounds 
+         WHERE startup_id=? AND open=1 
+         ORDER BY id DESC LIMIT 1`,
+        [startupId]
     );
+
     res.json(rows[0] || null);
 };
 
+
+// ==========================
+// INVEST
+// ==========================
 export const investInRound = async (req, res) => {
-    const { amount } = req.body;
+    try {
+        const investorId = req.user.id;
+        const roundId = req.params.roundId;
+        const { amount } = req.body;
 
-    await pool.query(
-        `INSERT INTO investments (round_id, amount)
-         VALUES (?,?)`,
-        [req.params.roundId, amount]
-    );
+        if (!amount) return res.status(400).json({ message: "Amount missing" });
 
-    await pool.query(
-        `UPDATE emission_rounds
-         SET amount_raised = amount_raised + ?
-         WHERE id=?`,
-        [amount, req.params.roundId]
-    );
+        await pool.query(
+            `INSERT INTO investments (round_id, investor_id, amount)
+             VALUES (?,?,?)`,
+            [roundId, investorId, amount]
+        );
 
-    res.json({ message: "Investment added" });
+        // Update round total
+        await pool.query(
+            `UPDATE emission_rounds
+             SET amount_raised = amount_raised + ?
+             WHERE id=?`,
+            [amount, roundId]
+        );
+
+        res.json({ message: "Investering registrert" });
+
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ message: "Server error" });
+    }
 };
 
-export const sendUpdate = async (req, res) => {
-    const { message } = req.body;
 
-    await pool.query(
-        `INSERT INTO emission_updates (round_id, message)
-         VALUES (?,?)`,
-        [req.params.roundId, message]
-    );
-
-    res.json({ message: "Update sent" });
-};
-
+// ==========================
+// CLOSE ROUND
+// ==========================
 export const closeRound = async (req, res) => {
+    const roundId = req.params.roundId;
+
     await pool.query(
-        "UPDATE emission_rounds SET open=0 WHERE id=?",
-        [req.params.roundId]
+        `UPDATE emission_rounds SET open=0 WHERE id=?`,
+        [roundId]
     );
-    res.json({ message: "Round closed" });
+
+    res.json({ message: "Emisjon stengt" });
 };

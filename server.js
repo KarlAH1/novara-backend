@@ -6,6 +6,7 @@ import authRoutes from "./routes/authRoutes.js";
 import startupRoutes from "./routes/startupRoutes.js";
 import emissionRoutes from "./routes/emissionRoutes.js";
 import investorRoutes from "./routes/investorRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
 
 dotenv.config();
 const app = express();
@@ -35,6 +36,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/startup", startupRoutes);
 app.use("/api/emission", emissionRoutes);
 app.use("/api/investor", investorRoutes);
+app.use("/api/admin", adminRoutes);
 
 // START
 app.listen(PORT, () => {
