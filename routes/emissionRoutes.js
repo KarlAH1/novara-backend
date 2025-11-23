@@ -1,17 +1,26 @@
 import express from "express";
-import { auth } from "../middleware/authMiddleware.js";
+import { auth as authMiddleware } from "../middleware/authMiddleware.js";
+
 import {
-    createEmission,
-    getEmissionByStartup,
-    invest,
-    closeEmission
+    createEmissionRound,
+    getRoundByStartup,
+    investInRound,
+    sendUpdate,
+    closeRound
 } from "../controllers/emissionController.js";
 
 const router = express.Router();
 
-router.post("/create", auth, createEmission);
-router.get("/round/:startupId", getEmissionByStartup);
-router.post("/invest/:roundId", auth, invest);
-router.post("/close/:roundId", auth, closeEmission);
+router.get("/ping", (req, res) => res.json({ message: "Emission API OK" }));
+
+router.post("/create", authMiddleware, createEmissionRound);
+
+router.get("/round/:startupId", getRoundByStartup);
+
+router.post("/invest/:roundId", investInRound);
+
+router.post("/update/:roundId", sendUpdate);
+
+router.post("/close/:roundId", authMiddleware, closeRound);
 
 export default router;

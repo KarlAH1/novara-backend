@@ -1,15 +1,23 @@
 import express from "express";
-import { auth } from "../middleware/authMiddleware.js";
+import { auth as authMiddleware } from "../middleware/authMiddleware.js";
+
 import {
-    createStartup,
-    getMyStartups,
-    deleteStartup
+    createOrUpdateStartupProfile,
+    getStartupByUser,
+    getAllRaisingStartups,
+    deleteMyStartup
 } from "../controllers/startupController.js";
 
 const router = express.Router();
 
-router.post("/create", auth, createStartup);
-router.get("/my", auth, getMyStartups);
-router.delete("/:id", auth, deleteStartup);
+router.get("/ping", (req, res) => res.json({ message: "Startup API OK" }));
+
+router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
+
+router.get("/my", authMiddleware, getStartupByUser);
+
+router.get("/raising", getAllRaisingStartups);
+
+router.delete("/:id", authMiddleware, deleteMyStartup);
 
 export default router;

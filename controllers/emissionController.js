@@ -1,48 +1,70 @@
 import pool from "../config/db.js";
 
-export async function createEmission(req, res) {
-    const { startup_id, target_amount, slip_horizon_months } = req.body;
+export const createEmissionRound = async (req, res) => {
+    try {
+        const { startup_id, target_amount, slip_horizon_months } = req.body;
 
-    const deadline = new Date();
-    deadline.setDate(deadline.getDate() + Number(slip_horizon_months));
+        const deadline = new Date();
+        deadline.setDate(deadline.getDate() + parseInt(slip_horizon_months));
 
-    await pool.query(
-        `INSERT INTO emission_rounds (startup_id, target_amount, deadline, open)
-         VALUES (?,?,?,1)`,
-        [startup_id, target_amount, deadline]
-    );
+        await pool.query(
+            `INSERT INTO emission_rounds
+             (startup_id, target_amount, deadline, amount_raised, open)
+             VALUES (?,?,?,?,1)`,
+            [startup_id, target_amount, deadline, 0]
+        );
 
-    res.json({ message: "Emission created" });
-}
+        res.json({ message: "Emission round created" });
 
-export async function getEmissionByStartup(req, res) {
-    const startupId = req.params.startupId;
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: "Server error" });
+    }
+};
 
+export const getRoundByStartup = async (req, res) => {
     const [rows] = await pool.query(
         "SELECT * FROM emission_rounds WHERE startup_id=? ORDER BY id DESC LIMIT 1",
-        [startupId]
+        [req.params.startupId]
     );
-
     res.json(rows[0] || null);
-}
+};
 
-export async function invest(req, res) {
-    const roundId = req.params.roundId;
-    const investorId = req.user.id;
+export const investInRound = async (req, res) => {
     const { amount } = req.body;
 
     await pool.query(
-        "INSERT INTO investments (round_id, investor_id, amount) VALUES (?,?,?)",
-        [roundId, investorId, amount]
+        `INSERT INTO investments (round_id, amount)
+         VALUES (?,?)`,
+        [req.params.roundId, amount]
     );
 
-    res.json({ message: "Investment registered" });
-}
+    await pool.query(
+        `UPDATE emission_rounds
+         SET amount_raised = amount_raised + ?
+         WHERE id=?`,
+        [amount, req.params.roundId]
+    );
 
-export async function closeEmission(req, res) {
-    const id = req.params.roundId;
+    res.json({ message: "Investment added" });
+};
 
-    await pool.query("UPDATE emission_rounds SET open=0 WHERE id=?", [id]);
+export const sendUpdate = async (req, res) => {
+    const { message } = req.body;
 
-    res.json({ message: "Emission closed" });
-}
+    await pool.query(
+        `INSERT INTO emission_updates (round_id, message)
+         VALUES (?,?)`,
+        [req.params.roundId, message]
+    );
+
+    res.json({ message: "Update sent" });
+};
+
+export const closeRound = async (req, res) => {
+    await pool.query(
+        "UPDATE emission_rounds SET open=0 WHERE id=?",
+        [req.params.roundId]
+    );
+    res.json({ message: "Round closed" });
+};

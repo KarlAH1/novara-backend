@@ -11,9 +11,12 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// CORS – trygg, enkel, jobber både lokalt og på prod
 app.use(cors({
     origin: [
-        "https://luxury-licorice-ed1851.netlify.app", 
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "https://raisium.netlify.app",
         "https://www.raisium.io",
         "https://raisium.io"
     ],
@@ -22,13 +25,18 @@ app.use(cors({
 
 app.use(express.json());
 
+// ROOT
 app.get("/", (req, res) => {
-    res.send("Raisium backend API running");
+    res.send("Raisium Backend is running");
 });
 
+// ROUTES
 app.use("/api/auth", authRoutes);
 app.use("/api/startup", startupRoutes);
 app.use("/api/emission", emissionRoutes);
 app.use("/api/investor", investorRoutes);
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// START
+app.listen(PORT, () => {
+    console.log(`🚀 Backend running on port ${PORT}`);
+});
