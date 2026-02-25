@@ -6,7 +6,26 @@ const pool = mysql.createPool({
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    ssl: { rejectUnauthorized: false }
+    waitForConnections: true,
+    connectionLimit: 10,
+    ssl: {
+        rejectUnauthorized: false
+    }
 });
+
+/* =========================================
+   TEST CONNECTION ON STARTUP
+========================================= */
+export const testConnection = async () => {
+    try {
+        const connection = await pool.getConnection();
+        await connection.ping();
+        connection.release();
+        console.log("✅ MySQL connected successfully");
+    } catch (error) {
+        console.error("❌ MySQL connection failed:", error.message);
+        process.exit(1);
+    }
+};
 
 export default pool;
