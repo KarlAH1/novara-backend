@@ -117,3 +117,27 @@ exports.login = async (req, res) => {
     });
   }
 };
+
+export const getMe = async (req, res) => {
+    try {
+      // req.user kommer fra auth middleware
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: "Not authenticated"
+        });
+      }
+  
+      return res.json({
+        success: true,
+        user: req.user
+      });
+  
+    } catch (error) {
+      console.error("getMe error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Server error"
+      });
+    }
+  };
