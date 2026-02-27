@@ -7,13 +7,19 @@ export const auth = (req, res, next) => {
     const header = req.headers["authorization"];
 
     if (!header) {
-        return res.status(401).json({ error: "Authorization header missing" });
+        return res.status(401).json({ 
+            success: false,
+            error: "Authorization header missing" 
+        });
     }
 
     const parts = header.split(" ");
 
     if (parts.length !== 2 || parts[0] !== "Bearer") {
-        return res.status(401).json({ error: "Invalid token format" });
+        return res.status(401).json({ 
+            success: false,
+            error: "Invalid token format" 
+        });
     }
 
     const token = parts[1];
@@ -21,10 +27,10 @@ export const auth = (req, res, next) => {
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        // Attach safe user object to request
+        // 🔒 FORCE LOWERCASE ROLE
         req.user = {
             id: decoded.id,
-            role: decoded.role,
+            role: decoded.role ? decoded.role.toLowerCase() : null,
             email: decoded.email
         };
 
@@ -32,18 +38,24 @@ export const auth = (req, res, next) => {
 
     } catch (err) {
         return res.status(401).json({
+            success: false,
             error: "Invalid or expired token"
         });
     }
 };
 
+
 /* =========================================
-   ROLE GUARD (Optional but Recommended)
+   ROLE GUARD
 ========================================= */
 export const requireRole = (roles) => {
+    // 🔒 Normalize allowed roles to lowercase once
+    const normalizedRoles = roles.map(r => r.toLowerCase());
+
     return (req, res, next) => {
-        if (!req.user || !roles.includes(req.user.role)) {
+        if (!req.user || !normalizedRoles.includes(req.user.role)) {
             return res.status(403).json({
+                success: false,
                 error: "Access denied"
             });
         }
