@@ -29,13 +29,69 @@ router.post(
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      /* =========================================
+         HENT NYESTE GF-RAMME
+      ========================================= */
+
+      const [gfRows] = await pool.query(
+        `
+        SELECT *
+        FROM startup_gf_approvals
+        WHERE startup_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [req.user.id]
+      );
+
+      if (gfRows.length === 0) {
+        return res.status(400).json({
+          error: "No GF approval found. Register GF approval before starting a round."
+        });
+      }
+
+      const gfApproval = gfRows[0];
+
+      if (Number(rcPoolAmount) > Number(gfApproval.approved_amount)) {
+        return res.status(400).json({
+          error: "Amount exceeds approved GF framework"
+        });
+      }
+
+              /* =========================================
+          LEGAL VALIDATION
+        ========================================= */
+
+      const [legalRows] = await pool.query(
+        `
+        SELECT
+          SUM(CASE WHEN type='BOARD' AND status='SIGNED' THEN 1 ELSE 0 END) AS board_signed,
+          SUM(CASE WHEN type='GF' AND status='SIGNED' THEN 1 ELSE 0 END) AS gf_signed
+        FROM documents
+        WHERE startup_id = ?
+        `,
+        [req.user.id]
+      );
+
+      const legalStatus = legalRows[0];
+
+      if (!legalStatus.board_signed || !legalStatus.gf_signed) {
+        return res.status(400).json({
+          error: "Styrets forslag og Generalforsamling må være signert før emisjon kan startes."
+        });
+      }
+
+      /* =========================================
+         CREATE ROUND
+      ========================================= */
+
       const [result] = await pool.query(
         `
         INSERT INTO rc_rounds
         (startup_id, name, rc_pool_percent, rc_pool_amount, trigger_amount,
-        optional_conversion, maturation_date, discount_percent, valuation_cap, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
-    
+        optional_conversion, maturation_date, discount_percent,
+        valuation_cap, status, gf_approval_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
         `,
         [
           req.user.id,
@@ -46,7 +102,8 @@ router.post(
           optionalConversion || false,
           maturationDate,
           discountPercent || null,
-          valuationCap || null
+          valuationCap || null,
+          gfApproval.id
         ]
       );
 

@@ -89,6 +89,14 @@ export const login = async (req, res) => {
         error: "Invalid credentials"
       });
     }
+    
+    // 🔹 Koble bruker til eventuelle dokumentinvitasjoner
+await db.execute(
+    `UPDATE document_signers
+     SET user_id = ?, status = 'ACCEPTED'
+     WHERE email = ? AND user_id IS NULL`,
+    [user.id, user.email]
+  );
 
     const token = jwt.sign(
       {

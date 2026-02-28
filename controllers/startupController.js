@@ -42,12 +42,19 @@ export const getStartupByUser = async (req, res) => {
 };
 
 export const deleteMyStartup = async (req, res) => {
-    await pool.query("DELETE FROM startup_profiles WHERE id=? AND user_id=?", [
-        req.params.id,
-        req.user.id
-    ]);
-    res.json({ message: "Startup deleted" });
-};
+    try {
+      await pool.query(
+        "DELETE FROM startup_profiles WHERE user_id=?",
+        [req.user.id]
+      );
+  
+      res.json({ message: "Startup deleted" });
+  
+    } catch (err) {
+      console.error("Delete startup error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
 
 export const getAllRaisingStartups = async (req, res) => {
     const [rows] = await pool.query(

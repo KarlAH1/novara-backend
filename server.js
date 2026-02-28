@@ -32,7 +32,7 @@ await testConnection();
 ========================================= */
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL,
+    origin: true,   // tillat alle origins i dev
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"]
   })
@@ -57,6 +57,10 @@ import rcAgreementRoutes from "./routes/rcAgreementRoutes.js";
 import rcPaymentRoutes from "./routes/rcPaymentRoutes.js";
 import rcDashboardRoutes from "./routes/rcDashboardRoutes.js";
 import rcInviteRoutes from "./routes/rcInviteRoutes.js";
+import gfRoutes from "./routes/gfRoutes.js";
+import documentRoutes from "./routes/documentRoutes.js";
+import documentSignerRoutes from "./routes/documentSignerRoutes.js";
+import boardRoutes from "./routes/boardRoutes.js";
 
 /* =========================================
    HEALTH CHECK
@@ -83,6 +87,11 @@ app.use("/api/rc/agreements", rcAgreementRoutes);
 app.use("/api/rc/payments", rcPaymentRoutes);
 app.use("/api/rc/dashboard", rcDashboardRoutes);
 app.use("/api/rc/invites", rcInviteRoutes);
+app.use("/api/startup/gf", gfRoutes);
+app.use("/api/documents", documentRoutes);
+app.use("/api/document-signers", documentSignerRoutes);
+app.use("/api/gf", gfRoutes);
+app.use("/api/board", boardRoutes);
 
 /* =========================================
    404 HANDLER
