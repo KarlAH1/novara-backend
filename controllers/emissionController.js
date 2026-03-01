@@ -73,7 +73,7 @@ export const startEmission = async (req, res) => {
       const [result] = await pool.query(`
         INSERT INTO emission_rounds
         (startup_id, target_amount, deadline, open)
-        VALUES (?, ?, ?, 1)
+        VALUES (?, ?, ?, 0)
       `, [startup_id, approvedAmount, deadline]);
   
       res.json({
