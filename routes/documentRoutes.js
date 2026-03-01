@@ -10,66 +10,72 @@ const router = express.Router();
 
 router.get("/legal-status", auth, async (req, res) => {
     try {
-
-        const startupId = req.user.id;
-
-        /* =========================
-           BOARD
-        ========================= */
-
-        const [boardRows] = await pool.query(
-            `SELECT id, status
-             FROM documents
-             WHERE startup_id = ?
-             AND type = 'BOARD'
-             ORDER BY created_at DESC
-             LIMIT 1`,
-            [startupId]
-        );
-
-        const boardSigned =
-            boardRows.length > 0 &&
-            boardRows[0].status === "LOCKED";
-
-        /* =========================
-           GF
-        ========================= */
-
-        const [gfRows] = await pool.query(
-            `SELECT id, status
-             FROM documents
-             WHERE startup_id = ?
-             AND type = 'GF'
-             ORDER BY created_at DESC
-             LIMIT 1`,
-            [startupId]
-        );
-
-        let gfSigned = false;
-        let gfExists = false;
-        let gfId = null;
-
-        if (gfRows.length > 0) {
-            gfExists = true;
-            gfId = gfRows[0].id;
-
-            if (gfRows[0].status === "LOCKED") {
-                gfSigned = true;
-            }
-        }
-
-        res.json({
-            boardSigned,
-            gfSigned,
-            gfExists,
-            gfId
-        });
-
+  
+      const startupId = req.user.id;
+  
+      /* =========================
+         BOARD
+      ========================= */
+  
+      const [boardRows] = await pool.query(
+        `SELECT id, status
+         FROM documents
+         WHERE startup_id = ?
+         AND type = 'BOARD'
+         ORDER BY id DESC
+         LIMIT 1`,
+        [startupId]
+      );
+  
+      let board = {
+        exists: false,
+        signed: false,
+        documentId: null
+      };
+  
+      if (boardRows.length > 0) {
+        board.exists = true;
+        board.documentId = boardRows[0].id;
+        board.signed =
+        boardRows[0].status === "SIGNED" ||
+        boardRows[0].status === "LOCKED";
+      }
+  
+      /* =========================
+         GF
+      ========================= */
+  
+      const [gfRows] = await pool.query(
+        `SELECT id, status
+         FROM documents
+         WHERE startup_id = ?
+         AND type = 'GF'
+         ORDER BY id DESC
+         LIMIT 1`,
+        [startupId]
+      );
+  
+      let gf = {
+        exists: false,
+        signed: false,
+        documentId: null
+      };
+  
+      if (gfRows.length > 0) {
+        gf.exists = true;
+        gf.documentId = gfRows[0].id;
+        gf.signed =
+        gfRows[0].status === "SIGNED" ||
+        gfRows[0].status === "LOCKED";
+      }
+  
+      res.json({ board, gf });
+  
     } catch (err) {
-        console.error("Legal status error:", err);
-        res.status(500).json({ error: "Server error" });
+      console.error("Legal status error:", err);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  });
 
 
 /* =========================================
@@ -165,25 +171,26 @@ router.post("/:id/sign", auth, async (req, res) => {
 });
 
 router.get("/latest-gf", auth, async (req, res) => {
+    try {
+        // Hent siste dokument av type 'GF' for brukerens startup
+        const [rows] = await pool.query(
+            `SELECT id
+             FROM documents
+             WHERE type = 'GF' AND startup_id = ?
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [req.user.id]
+        );
 
-    const [rows] = await pool.query(
-        `SELECT id, status
-         FROM documents
-         WHERE startup_id = ?
-         AND type = 'GF'
-         ORDER BY created_at DESC
-         LIMIT 1`,
-        [req.user.id]
-    );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "No GF document found" });
+        }
 
-    if (rows.length === 0) {
-        return res.status(404).json({ error: "No GF found" });
+        res.json({ documentId: rows[0].id });
+    } catch (err) {
+        console.error("Error fetching latest GF:", err);
+        res.status(500).json({ error: "Server error" });
     }
-
-    res.json({
-        documentId: rows[0].id,
-        status: rows[0].status
-    });
 });
 
 export default router;

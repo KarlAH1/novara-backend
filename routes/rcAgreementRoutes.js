@@ -2,6 +2,7 @@ import express from "express";
 import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { generateHash } from "../utils/hash.js";
+import { investViaInvite } from "../controllers/rcAgreementController.js";
 
 const router = express.Router();
 
@@ -9,6 +10,7 @@ const router = express.Router();
    CREATE RC AGREEMENT (Investor invests in round)
    Transaction-safe
 ===================================================== */
+router.post("/invest/:token", auth, investViaInvite);
 
 router.post(
   "/",
@@ -187,100 +189,177 @@ router.get("/:id", auth, async (req, res) => {
 ===================================================== */
 
 router.post(
-    "/:id/sign",
-    auth,
-    async (req, res) => {
-  
-      const connection = await pool.getConnection();
-  
-      try {
-        const agreementId = req.params.id;
-        const userId = req.user.id;
-        const role = req.user.role;
-  
-        await connection.beginTransaction();
-  
-        // Lock agreement
-        const [rows] = await connection.query(
+  "/:id/sign",
+  auth,
+  async (req, res) => {
+
+    const connection = await pool.getConnection();
+
+    try {
+      const agreementId = req.params.id;
+      const userId = req.user.id;
+      const role = req.user.role;
+
+      await connection.beginTransaction();
+
+      // Lock agreement
+      const [rows] = await connection.query(
+        `
+        SELECT a.*, r.startup_id
+        FROM rc_agreements a
+        JOIN rc_rounds r ON a.round_id = r.id
+        WHERE a.id = ?
+        FOR UPDATE
+        `,
+        [agreementId]
+      );
+
+      if (rows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Agreement not found" });
+      }
+
+      const agreement = rows[0];
+
+      // Access control
+      if (
+        (role === "investor" && agreement.investor_id !== userId) ||
+        (role === "startup" && agreement.startup_id !== userId)
+      ) {
+        await connection.rollback();
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      if (agreement.status === "Active RC") {
+        await connection.rollback();
+        return res.status(400).json({ error: "Agreement already active" });
+      }
+
+      // Record signature
+      if (role === "investor") {
+        await connection.query(
+          "UPDATE rc_agreements SET investor_signed_at = NOW() WHERE id=?",
+          [agreementId]
+        );
+      }
+
+      if (role === "startup") {
+        await connection.query(
+          "UPDATE rc_agreements SET startup_signed_at = NOW() WHERE id=?",
+          [agreementId]
+        );
+      }
+
+      // Reload signature state
+      const [updatedRows] = await connection.query(
+        `
+        SELECT investor_signed_at, startup_signed_at
+        FROM rc_agreements
+        WHERE id=?
+        `,
+        [agreementId]
+      );
+
+      const updated = updatedRows[0];
+
+      // If both signed → move to Awaiting Payment
+      if (updated.investor_signed_at && updated.startup_signed_at) {
+        await connection.query(
           `
-          SELECT a.*, r.startup_id
-          FROM rc_agreements a
-          JOIN rc_rounds r ON a.round_id = r.id
-          WHERE a.id = ?
-          FOR UPDATE
+          UPDATE rc_agreements
+          SET status='Awaiting Payment'
+          WHERE id=?
           `,
           [agreementId]
         );
-  
-        if (rows.length === 0) {
-          await connection.rollback();
-          return res.status(404).json({ error: "Agreement not found" });
-        }
-  
-        const agreement = rows[0];
-  
-        // Access control
-        if (
-          (role === "investor" && agreement.investor_id !== userId) ||
-          (role === "startup" && agreement.startup_id !== userId)
-        ) {
-          await connection.rollback();
-          return res.status(403).json({ error: "Access denied" });
-        }
-  
-        if (agreement.status === "Active RC") {
-          await connection.rollback();
-          return res.status(400).json({ error: "Agreement already active" });
-        }
-  
-        // Record signature
-        if (role === "investor") {
-          await connection.query(
-            "UPDATE rc_agreements SET investor_signed_at = NOW() WHERE id=?",
-            [agreementId]
-          );
-        }
-  
-        if (role === "startup") {
-          await connection.query(
-            "UPDATE rc_agreements SET startup_signed_at = NOW() WHERE id=?",
-            [agreementId]
-          );
-        }
-  
-        // Reload signature state
-        const [updatedRows] = await connection.query(
-          "SELECT investor_signed_at, startup_signed_at FROM rc_agreements WHERE id=?",
+      } else {
+        // If only one signed → Pending Signatures
+        await connection.query(
+          `
+          UPDATE rc_agreements
+          SET status='Pending Signatures'
+          WHERE id=?
+          `,
           [agreementId]
         );
-  
-        const updated = updatedRows[0];
-  
-        // If both signed → set Signed
-        if (updated.investor_signed_at && updated.startup_signed_at) {
-          await connection.query(
-            "UPDATE rc_agreements SET status='Signed' WHERE id=?",
-            [agreementId]
-          );
-        }
-  
-        await connection.commit();
-  
-        res.json({
-          message: "Signature recorded",
-          investorSigned: !!updated.investor_signed_at,
-          startupSigned: !!updated.startup_signed_at
-        });
-  
-      } catch (err) {
-        await connection.rollback();
-        console.error("Signing failed:", err);
-        res.status(500).json({ error: "Internal server error" });
-      } finally {
-        connection.release();
       }
+
+      await connection.commit();
+
+      res.json({
+        message: "Signature recorded",
+        investorSigned: !!updated.investor_signed_at,
+        startupSigned: !!updated.startup_signed_at,
+        newStatus:
+          updated.investor_signed_at && updated.startup_signed_at
+            ? "Awaiting Payment"
+            : "Pending Signatures"
+      });
+
+    } catch (err) {
+      await connection.rollback();
+      console.error("Signing failed:", err);
+      res.status(500).json({ error: "Internal server error" });
+    } finally {
+      connection.release();
     }
-  );
+  }
+);
+
+/* CONFIRM PAYMENT */
+router.post("/:id/confirm", auth, async (req, res) => {
+  try {
+
+    const agreementId = req.params.id;
+    const userId = req.user.id;
+
+    const [rows] = await pool.query(
+      `
+      SELECT *
+      FROM rc_agreements
+      WHERE id=? AND startup_id=?
+      `,
+      [agreementId, userId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({
+        error: "Agreement not found"
+      });
+    }
+
+    const agreement = rows[0];
+
+    if (agreement.status !== "Awaiting Payment") {
+      return res.status(400).json({
+        error: "Agreement not ready for activation"
+      });
+    }
+
+    await pool.query(
+      `
+      UPDATE rc_agreements
+      SET
+        status='Active RC',
+        activated_at=NOW(),
+        payment_confirmed_by_startup_at=NOW()
+      WHERE id=?
+      `,
+      [agreementId]
+    );
+
+    res.json({
+      success: true,
+      newStatus: "Active RC"
+    });
+
+  } catch (err) {
+    console.error("Confirm payment failed:", err);
+    res.status(500).json({
+      error: "Internal server error"
+    });
+  }
+});
 
   /* =====================================================
    GET MY AGREEMENTS (Investor)
@@ -319,5 +398,6 @@ router.get(
       }
     }
   );
+
 
 export default router;

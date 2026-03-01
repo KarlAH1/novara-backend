@@ -1,106 +1,338 @@
 import pool from "../config/db.js";
-
-// ==========================
-// START EMISSION
-// ==========================
-export const createEmissionRound = async (req, res) => {
+export const startEmission = async (req, res) => {
     try {
-        const { startup_id, target_amount, slip_horizon_months } = req.body;
+  
+      const startup_id = req.user.id;
+  
+      /* =========================
+         VERIFY LEGAL SIGNED
+      ========================= */
+  
+      const [board] = await pool.query(`
+        SELECT id
+        FROM documents
+        WHERE startup_id=? AND type='BOARD' AND status='LOCKED'
+        ORDER BY id DESC LIMIT 1
+      `, [startup_id]);
+  
+      const [gf] = await pool.query(`
+        SELECT id
+        FROM documents
+        WHERE startup_id=? AND type='GF' AND status='LOCKED'
+        ORDER BY id DESC LIMIT 1
+      `, [startup_id]);
+  
+      if (!board.length || !gf.length) {
+        return res.status(403).json({
+          message: "Board and GF must be signed"
+        });
+      }
+  
+      /* =========================
+         GET APPROVED AMOUNT
+      ========================= */
+  
+      const [capitalRows] = await pool.query(`
+        SELECT approved_amount
+        FROM capital_decisions
+        WHERE startup_id=?
+        ORDER BY id DESC
+        LIMIT 1
+      `, [startup_id]);
+  
+      if (!capitalRows.length) {
+        return res.status(400).json({
+          message: "No approved capital decision found"
+        });
+      }
+  
+      const approvedAmount = capitalRows[0].approved_amount;
+  
+      /* =========================
+         PREVENT DUPLICATE ROUND
+      ========================= */
+  
+      const [existing] = await pool.query(`
+        SELECT id FROM emission_rounds
+        WHERE startup_id=? AND open=1
+      `, [startup_id]);
+  
+      if (existing.length > 0) {
+        return res.status(400).json({
+          message: "Emission already active"
+        });
+      }
+  
+      /* =========================
+         CREATE EMISSION ROUND
+      ========================= */
+  
+      const deadline = new Date();
+      deadline.setFullYear(deadline.getFullYear() + 3);
+  
+      const [result] = await pool.query(`
+        INSERT INTO emission_rounds
+        (startup_id, target_amount, deadline, open)
+        VALUES (?, ?, ?, 1)
+      `, [startup_id, approvedAmount, deadline]);
+  
+      res.json({
+        emissionId: result.insertId
+      });
+  
+    } catch (err) {
+      console.error("START EMISSION ERROR:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  };
 
-        if (!startup_id || !target_amount || !slip_horizon_months) {
-            return res.status(400).json({ message: "Missing fields" });
+/* =====================================================
+   GET EMISSION BY ID
+===================================================== */
+export const getEmissionById = async (req, res) => {
+    try {
+
+        const { emissionId } = req.params;
+        const userId = req.user.id;
+
+        const [rows] = await pool.query(`
+            SELECT *
+            FROM emission_rounds
+            WHERE id=?
+        `, [emissionId]);
+
+        if (!rows.length) {
+            return res.status(404).json({
+                message: "Emission not found"
+            });
         }
 
-        // deadline = now + X days
-        const [deadlineRow] = await pool.query(
-            `SELECT DATE_ADD(NOW(), INTERVAL ? DAY) AS deadline`,
-            [slip_horizon_months]
-        );
+        const emission = rows[0];
 
-        const deadline = deadlineRow[0].deadline;
+        // Access control (startup owner OR investor)
+        if (
+            req.user.role === "startup" &&
+            emission.startup_id !== userId
+        ) {
+            return res.status(403).json({
+                message: "Access denied"
+            });
+        }
 
-        await pool.query(
-            `INSERT INTO emission_rounds (startup_id, target_amount, deadline, open)
-             VALUES (?,?,?,1)`,
-            [startup_id, target_amount, deadline]
-        );
-
-        // Mark startup as raising
-        await pool.query(
-            `UPDATE startup_profiles SET is_raising=1 WHERE id=?`,
-            [startup_id]
-        );
-
-        res.json({ message: "Emisjon startet", deadline });
+        res.json(emission);
 
     } catch (err) {
-        console.log(err);
-        res.status(500).json({ message: "Server error" });
+        console.error("GET EMISSION ERROR:", err);
+        res.status(500).json({
+            message: "Server error"
+        });
     }
 };
 
-
-// ==========================
-// GET ROUND
-// ==========================
-export const getRoundByStartup = async (req, res) => {
-    const startupId = req.params.startupId;
-
-    const [rows] = await pool.query(
-        `SELECT * FROM emission_rounds 
-         WHERE startup_id=? AND open=1 
-         ORDER BY id DESC LIMIT 1`,
-        [startupId]
-    );
-
-    res.json(rows[0] || null);
-};
-
-
-// ==========================
-// INVEST
-// ==========================
-export const investInRound = async (req, res) => {
+/* =====================================================
+   UPDATE EMISSION CONFIG (DRAFT ONLY)
+===================================================== */
+export const updateEmissionConfig = async (req, res) => {
     try {
-        const investorId = req.user.id;
-        const roundId = req.params.roundId;
-        const { amount } = req.body;
+  
+      const emissionId = req.params.id;
+      const startupId = req.user.id;
+  
+      const {
+        conversion_years,
+        discount_rate,
+        valuation_cap,
+        bank_account
+      } = req.body;
+  
+      // Sjekk at emission tilhører startup
+      const [rows] = await pool.query(`
+        SELECT id, startup_id
+        FROM emission_rounds
+        WHERE id = ?
+      `, [emissionId]);
+  
+      if (!rows.length) {
+        return res.status(404).json({
+          message: "Emission not found"
+        });
+      }
+  
+      if (rows[0].startup_id !== startupId) {
+        return res.status(403).json({
+          message: "Access denied"
+        });
+      }
+  
+      // Lås config hvis det finnes investeringer
+      const [investments] = await pool.query(`
+        SELECT id
+        FROM rc_agreements
+        WHERE round_id = ?
+        LIMIT 1
+      `, [emissionId]);
+  
+      if (investments.length > 0) {
+        return res.status(400).json({
+          message: "Configuration locked after first investment"
+        });
+      }
+  
+      // Oppdater vilkår
+      await pool.query(`
+        UPDATE emission_rounds
+        SET
+          conversion_years = ?,
+          discount_rate = ?,
+          valuation_cap = ?,
+          bank_account = ?
+        WHERE id = ?
+      `, [
+        conversion_years,
+        discount_rate,
+        valuation_cap,
+        bank_account,
+        emissionId
+      ]);
+  
+      res.json({ success: true });
+  
+    } catch (err) {
+      console.error("Update config error:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  };
 
-        if (!amount) return res.status(400).json({ message: "Amount missing" });
 
-        await pool.query(
-            `INSERT INTO investments (round_id, investor_id, amount)
-             VALUES (?,?,?)`,
-            [roundId, investorId, amount]
-        );
+/* =====================================================
+   ACTIVATE EMISSION
+===================================================== */
+export const activateEmission = async (req, res) => {
+    try {
 
-        // Update round total
-        await pool.query(
-            `UPDATE emission_rounds
-             SET amount_raised = amount_raised + ?
-             WHERE id=?`,
-            [amount, roundId]
-        );
+        const { emissionId } = req.params;
+        const startupId = req.user.id;
 
-        res.json({ message: "Investering registrert" });
+        const [rows] = await pool.query(`
+            SELECT * FROM emission_rounds
+            WHERE id=? AND startup_id=?
+        `, [emissionId, startupId]);
+
+        if (!rows.length) {
+            return res.status(404).json({ message: "Emission not found" });
+        }
+
+        await pool.query(`
+            UPDATE emission_rounds
+            SET open = 1
+            WHERE id = ? AND startup_id = ?
+        `, [emissionId, startupId]);
+
+        res.json({ success: true });
 
     } catch (err) {
-        console.log(err);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+export const getActiveEmission = async (req, res) => {
+    try {
+
+        const { startupId } = req.params;
+
+        const [rows] = await pool.query(`
+            SELECT *
+            FROM emission_rounds
+            WHERE startup_id=?
+            AND status='OPEN'
+            ORDER BY id DESC
+            LIMIT 1
+        `, [startupId]);
+
+        if (!rows.length) {
+            return res.json(null);
+        }
+
+        res.json(rows[0]);
+
+    } catch (err) {
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+/* =====================================================
+   GENERATE INVITE
+===================================================== */
+export const generateInvite = async (req, res) => {
+    try {
+
+        const { emissionId } = req.params;
+        const startupId = req.user.id;
+
+        const [rows] = await pool.query(`
+            SELECT id FROM emission_rounds
+            WHERE id=? AND startup_id=? AND status='OPEN'
+        `, [emissionId, startupId]);
+
+        if (!rows.length) {
+            return res.status(403).json({
+                message: "Emission not open"
+            });
+        }
+
+        const crypto = await import("crypto");
+        const token = crypto.randomUUID();
+
+        await pool.query(`
+            INSERT INTO emission_invites
+            (emission_id, token, created_by)
+            VALUES (?, ?, ?)
+        `, [emissionId, token, startupId]);
+
+        res.json({
+            inviteLink: `${process.env.FRONTEND_URL}/invite.html?token=${token}`
+        });
+
+    } catch (err) {
+        console.error(err);
         res.status(500).json({ message: "Server error" });
     }
 };
 
 
-// ==========================
-// CLOSE ROUND
-// ==========================
-export const closeRound = async (req, res) => {
-    const roundId = req.params.roundId;
+/* =====================================================
+   INVEST
+===================================================== */
+export const investInEmission = async (req, res) => {
+    try {
 
-    await pool.query(
-        `UPDATE emission_rounds SET open=0 WHERE id=?`,
-        [roundId]
-    );
+        const { emissionId } = req.params;
+        const { amount } = req.body;
+        const investorId = req.user.id;
 
-    res.json({ message: "Emisjon stengt" });
+        if (!amount) {
+            return res.status(400).json({
+                message: "Amount required"
+            });
+        }
+
+        await pool.query(`
+            INSERT INTO emission_investments
+            (emission_id, investor_id, amount)
+            VALUES (?, ?, ?)
+        `, [emissionId, investorId, amount]);
+
+        await pool.query(`
+            UPDATE emission_rounds
+            SET amount_raised = amount_raised + ?
+            WHERE id=?
+        `, [amount, emissionId]);
+
+        res.json({ success: true });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Server error" });
+    }
 };
+
