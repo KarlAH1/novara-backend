@@ -224,7 +224,7 @@ export const activateEmission = async (req, res) => {
 
         await pool.query(`
             UPDATE emission_rounds
-            SET open = 1
+            SET open = 0
             WHERE id = ? AND startup_id = ?
         `, [emissionId, startupId]);
 
