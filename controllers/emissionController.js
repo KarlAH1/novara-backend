@@ -92,7 +92,7 @@ export const startEmission = async (req, res) => {
 export const getEmissionById = async (req, res) => {
     try {
 
-        const { emissionId } = req.params;
+        const emissionId  = req.params.id;
         const userId = req.user.id;
 
         const [rows] = await pool.query(`
@@ -138,12 +138,17 @@ export const updateEmissionConfig = async (req, res) => {
       const emissionId = req.params.id;
       const startupId = req.user.id;
   
-      const {
+      let {
         conversion_years,
         discount_rate,
         valuation_cap,
         bank_account
       } = req.body;
+
+       //  tom streng → null
+       if (valuation_cap === "" || valuation_cap === undefined) {
+        valuation_cap = null;
+      }
   
       // Sjekk at emission tilhører startup
       const [rows] = await pool.query(`
@@ -208,56 +213,69 @@ export const updateEmissionConfig = async (req, res) => {
    ACTIVATE EMISSION
 ===================================================== */
 export const activateEmission = async (req, res) => {
-    try {
+  try {
 
-        const { emissionId } = req.params;
-        const startupId = req.user.id;
+      const emissionId = req.params.id;
+      const startupId = req.user.id;
 
-        const [rows] = await pool.query(`
-            SELECT * FROM emission_rounds
-            WHERE id=? AND startup_id=?
-        `, [emissionId, startupId]);
+      console.log("ACTIVATE PARAMS:", req.params);
+      console.log("ACTIVATE USER:", startupId);
+      console.log("Checking DB for:", emissionId, startupId);
 
-        if (!rows.length) {
-            return res.status(404).json({ message: "Emission not found" });
-        }
+      const [rows] = await pool.query(
+          `
+          SELECT * FROM emission_rounds
+          WHERE id = ? AND startup_id = ?
+          `,
+          [emissionId, startupId]
+      );
 
-        await pool.query(`
-            UPDATE emission_rounds
-            SET open = 0
-            WHERE id = ? AND startup_id = ?
-        `, [emissionId, startupId]);
+      console.log("Rows found:", rows.length);
 
-        res.json({ success: true });
+      if (!rows.length) {
+          return res.status(404).json({ message: "Emission not found" });
+      }
 
-    } catch (err) {
-        res.status(500).json({ message: "Server error" });
-    }
+      await pool.query(
+          `
+          UPDATE emission_rounds
+          SET open = 1
+          WHERE id = ? AND startup_id = ?
+          `,
+          [emissionId, startupId]
+      );
+
+      res.json({ success: true });
+
+  } catch (err) {
+      console.error("Activate error:", err);
+      res.status(500).json({ message: "Server error" });
+  }
 };
 
 export const getActiveEmission = async (req, res) => {
-    try {
+  try {
 
-        const { startupId } = req.params;
+      const startupId = req.user.id;
 
-        const [rows] = await pool.query(`
-            SELECT *
-            FROM emission_rounds
-            WHERE startup_id=?
-            AND status='OPEN'
-            ORDER BY id DESC
-            LIMIT 1
-        `, [startupId]);
+      const [rows] = await pool.query(`
+          SELECT *
+          FROM emission_rounds
+          WHERE startup_id = ?
+          ORDER BY id DESC
+          LIMIT 1
+      `, [startupId]);
 
-        if (!rows.length) {
-            return res.json(null);
-        }
+      if (!rows.length) {
+          return res.json(null);
+      }
 
-        res.json(rows[0]);
+      res.json(rows[0]);
 
-    } catch (err) {
-        res.status(500).json({ message: "Server error" });
-    }
+  } catch (err) {
+      console.error("GET ACTIVE EMISSION ERROR:", err);
+      res.status(500).json({ message: "Server error" });
+  }
 };
 
 /* =====================================================

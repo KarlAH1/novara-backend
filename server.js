@@ -1,3 +1,5 @@
+console.log("DB:", process.env.DB_NAME);
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";

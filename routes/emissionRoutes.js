@@ -1,10 +1,10 @@
 import express from "express";
 import { auth } from "../middleware/authMiddleware.js";
-
 import {
     startEmission,
     getEmissionById,
     updateEmissionConfig,
+    getActiveEmission,
     activateEmission,
     generateInvite,
     investInEmission
@@ -12,30 +12,24 @@ import {
 
 const router = express.Router();
 
+// Start emission
 router.post("/start", auth, startEmission);
-router.get("/:emissionId", auth, getEmissionById);
-router.post("/:emissionId/invite", auth, generateInvite);
-router.post("/:emissionId/invest", auth, investInEmission);
-router.put("/:emissionId/config", auth, updateEmissionConfig);
-router.post("/:emissionId/activate", auth, activateEmission);
+
+router.get("/active", auth, getActiveEmission);
+
+// Get emission
+router.get("/:id", auth, getEmissionById);
+
+// Update config
+router.put("/:id/config", auth, updateEmissionConfig);
+
+// Activate emission
 router.post("/:id/activate", auth, activateEmission);
 
-router.post("/:id/activate", auth, async (req, res) => {
-    try {
+// Invite investor
+router.post("/:id/invite", auth, generateInvite);
 
-        await pool.query(
-            `UPDATE emission_rounds
-             SET open = 1
-             WHERE id = ? AND startup_id = ?`,
-            [req.params.id, req.user.id]
-        );
-
-        res.json({ success: true });
-
-    } catch (err) {
-        console.error("Activate emission error:", err);
-        res.status(500).json({ error: "Server error" });
-    }
-});
+// Investor invests
+router.post("/:id/invest", auth, investInEmission);
 
 export default router;
