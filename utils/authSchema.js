@@ -1,0 +1,67 @@
+import db from "../config/db.js";
+
+async function columnExists(connection, tableName, columnName) {
+  const [rows] = await connection.query(
+    `
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+    LIMIT 1
+    `,
+    [tableName, columnName]
+  );
+
+  return rows.length > 0;
+}
+
+export async function ensureAuthSchema() {
+  const connection = await db.getConnection();
+
+  try {
+    const userColumns = [
+      {
+        name: "email_verified",
+        sql: "ALTER TABLE users ADD COLUMN email_verified TINYINT(1) NOT NULL DEFAULT 0"
+      },
+      {
+        name: "email_verification_token",
+        sql: "ALTER TABLE users ADD COLUMN email_verification_token VARCHAR(64) NULL"
+      },
+      {
+        name: "email_verification_expires",
+        sql: "ALTER TABLE users ADD COLUMN email_verification_expires DATETIME NULL"
+      },
+      {
+        name: "reset_password_token",
+        sql: "ALTER TABLE users ADD COLUMN reset_password_token VARCHAR(64) NULL"
+      },
+      {
+        name: "reset_password_expires",
+        sql: "ALTER TABLE users ADD COLUMN reset_password_expires DATETIME NULL"
+      },
+      {
+        name: "company_role_check_status",
+        sql: "ALTER TABLE users ADD COLUMN company_role_check_status VARCHAR(32) NULL"
+      },
+      {
+        name: "company_role_check_checked_at",
+        sql: "ALTER TABLE users ADD COLUMN company_role_check_checked_at DATETIME NULL"
+      },
+      {
+        name: "company_role_check_orgnr",
+        sql: "ALTER TABLE users ADD COLUMN company_role_check_orgnr VARCHAR(9) NULL"
+      }
+    ];
+
+    for (const column of userColumns) {
+      const exists = await columnExists(connection, "users", column.name);
+      if (!exists) {
+        await connection.query(column.sql);
+      }
+    }
+  } finally {
+    connection.release();
+  }
+}

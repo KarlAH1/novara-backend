@@ -2,9 +2,39 @@ import express from "express";
 import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
-import path from "path";
+import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
 
 const router = express.Router();
+const MAX_EMISSION_AMOUNT = 2147483647;
+
+async function canRestartLegalFlow(startupId) {
+  const [emissionRows] = await pool.query(
+    `
+    SELECT id
+    FROM emission_rounds
+    WHERE startup_id = ?
+    LIMIT 1
+    `,
+    [startupId]
+  );
+
+  if (emissionRows.length > 0) {
+    return false;
+  }
+
+  const [agreementRows] = await pool.query(
+    `
+    SELECT a.id
+    FROM rc_agreements a
+    JOIN emission_rounds e ON e.id = a.round_id
+    WHERE e.startup_id = ?
+    LIMIT 1
+    `,
+    [startupId]
+  );
+
+  return agreementRows.length === 0;
+}
 
 router.post(
   "/generate",
@@ -16,21 +46,97 @@ router.post(
 
     try {
 
+      if (!(await canStartupCreateRaise(req.user.id))) {
+        return res.status(403).json({
+          error: "Du må ha en aktiv startup-plan for å opprette dokumentgrunnlaget."
+        });
+      }
+
       const {
-        companyName,
-        orgnr,
         amount,
         chairName,
         secretaryName,
         secretaryEmail
       } = req.body;
       
-      if (!companyName || !orgnr || !amount || !chairName || !secretaryName || !secretaryEmail) {
+      if (!amount || !chairName || !secretaryName || !secretaryEmail) {
         return res.status(400).json({
           error: "Missing required fields"
         });
       }
+
+      const numericAmount = Number(amount);
+
+      if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+        return res.status(400).json({
+          error: "Amount must be a valid positive number"
+        });
+      }
+
+      if (numericAmount > MAX_EMISSION_AMOUNT) {
+        return res.status(400).json({
+          error: `Amount is too large. Max allowed is ${MAX_EMISSION_AMOUNT.toLocaleString("no-NO")} NOK`
+        });
+      }
+
+      const [existingLockedDocs] = await pool.query(
+        `
+        SELECT id
+        FROM documents
+        WHERE startup_id = ?
+          AND type IN ('BOARD', 'GF')
+          AND status IN ('SIGNED', 'LOCKED')
+        LIMIT 1
+        `,
+        [req.user.id]
+      );
+
+      if (existingLockedDocs.length > 0) {
+        const canRestart = await canRestartLegalFlow(req.user.id);
+        if (!canRestart) {
+          return res.status(400).json({
+            error: "Dokumentgrunnlaget kan ikke erstattes mens emisjon eller RC-prosess finnes."
+          });
+        }
+
+        await pool.query(
+          `
+          UPDATE documents
+          SET status = 'ARCHIVED'
+          WHERE startup_id = ?
+            AND type IN ('BOARD', 'GF')
+            AND status IN ('DRAFT', 'SIGNED', 'LOCKED')
+          `,
+          [req.user.id]
+        );
+      }
       
+      const [companyRows] = await pool.query(
+        `
+        SELECT c.company_name, c.orgnr
+        FROM company_memberships cm
+        JOIN companies c ON c.id = cm.company_id
+        WHERE cm.user_id = ?
+        LIMIT 1
+        `,
+        [req.user.id]
+      );
+
+      if (!companyRows.length) {
+        return res.status(400).json({
+          error: "Fant ikke selskapsinformasjon for brukeren. Registrer startup først."
+        });
+      }
+
+      const companyName = String(companyRows[0].company_name || "").trim();
+      const orgnr = String(companyRows[0].orgnr || "").trim();
+
+      if (!companyName || !orgnr) {
+        return res.status(400).json({
+          error: "Selskapsnavn eller organisasjonsnummer mangler."
+        });
+      }
+
       const chairEmail = req.user.email;
 
       // 1️⃣ Lagre legal data
@@ -38,11 +144,11 @@ router.post(
           `INSERT INTO startup_legal_data
           (startup_id, company_name, orgnr, amount, chair_name, secretary_name, secretary_email)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [req.user.id, companyName, orgnr, amount, chairName, secretaryName, secretaryEmail]
+          [req.user.id, companyName, orgnr, numericAmount, chairName, secretaryName, secretaryEmail]
         );
 
       // 2️⃣ Hent template
-      const templatePath = path.resolve("templates/bp-template.html");
+      const templatePath = new URL("../templates/bp-template.html", import.meta.url);
       let template = fs.readFileSync(templatePath, "utf8");
 
       const today = new Date().toLocaleDateString("no-NO", {
@@ -51,12 +157,17 @@ router.post(
         day: "numeric"
       });
 
+      const rcRoundName = `${companyName} RC-runde`;
+      const rcConversionPeriodYears = "3";
+
       const html = template
         .replace(/{{company_name}}/g, companyName)
         .replace(/{{orgnr}}/g, orgnr)
         .replace(/{{board_date}}/g, today)
-        .replace(/{{amount}}/g, Number(amount).toLocaleString("no-NO"))
-        .replace(/{{chair_name}}/g, chairName);
+        .replace(/{{amount}}/g, numericAmount.toLocaleString("no-NO"))
+        .replace(/{{chair_name}}/g, chairName)
+        .replace(/{{rc_round_name}}/g, rcRoundName)
+        .replace(/{{rc_conversion_period_years}}/g, rcConversionPeriodYears);
 
       // 3️⃣ Lag dokument
       const [docResult] = await pool.query(

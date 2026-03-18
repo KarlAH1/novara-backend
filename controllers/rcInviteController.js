@@ -10,10 +10,10 @@ export const getInvite = async (req, res) => {
         const { token } = req.params;
 
         const [rows] = await pool.query(`
-            SELECT r.*, s.name AS startup_name
+            SELECT r.*, u.name AS startup_name
             FROM rc_invites i
             JOIN emission_rounds r ON i.round_id = r.id
-            JOIN startups s ON r.startup_id = s.id
+            JOIN users u ON r.startup_id = u.id
             WHERE i.token = ?
             LIMIT 1
         `, [token]);

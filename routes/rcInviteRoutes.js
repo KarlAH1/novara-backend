@@ -1,8 +1,12 @@
 import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { generateInviteToken } from "../utils/inviteToken.js";
 import { getInvite } from "../controllers/rcInviteController.js";
+import { validatePasswordRequirements } from "../utils/authSecurity.js";
+import { isEmailVerificationRequired, sendVerificationEmail } from "../utils/authEmailFlow.js";
 
 const router = express.Router();
 
@@ -132,6 +136,118 @@ router.get("/validate/:token", async (req, res) => {
   }
 });
 
+router.post("/access/:token", async (req, res) => {
+  const connection = await pool.getConnection();
+  let transactionStarted = false;
+  const requireEmailVerification = isEmailVerificationRequired();
+
+  try {
+    const token = req.params.token;
+    const name = String(req.body.name || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+
+    if (!name || !email) {
+      return res.status(400).json({ error: "Navn og e-post er påkrevd" });
+    }
+
+    const [inviteRows] = await connection.query(
+      `
+      SELECT r.id, r.open
+      FROM rc_invites i
+      JOIN emission_rounds r ON i.round_id = r.id
+      WHERE i.token = ?
+      LIMIT 1
+      `,
+      [token]
+    );
+
+    if (!inviteRows.length || inviteRows[0].open !== 1) {
+      return res.status(404).json({ error: "Ugyldig eller lukket investorinvitasjon" });
+    }
+
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const [userRows] = await connection.query(
+      "SELECT * FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+
+    let user = userRows[0];
+
+    if (!user) {
+      const passwordError = validatePasswordRequirements(password);
+      if (passwordError) {
+        await connection.rollback();
+        return res.status(400).json({ error: passwordError });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const [result] = await connection.query(
+        "INSERT INTO users (name, email, password, role, email_verified) VALUES (?, ?, ?, 'investor', ?)",
+        [name, email, passwordHash, requireEmailVerification ? 0 : 1]
+      );
+
+      user = {
+        id: result.insertId,
+        name,
+        email,
+        role: "investor"
+      };
+
+      if (requireEmailVerification) {
+        await sendVerificationEmail(connection, {
+          userId: user.id,
+          email: user.email,
+          name: user.name
+        });
+      }
+    } else if (user.role.toLowerCase() !== "investor") {
+      await connection.rollback();
+      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes som investor" });
+    } else {
+      await connection.rollback();
+      return res.status(400).json({ error: "Investor finnes allerede. Logg inn med e-post og passord." });
+    }
+
+    await connection.commit();
+
+    const authToken = jwt.sign(
+      {
+        id: user.id,
+        role: "investor",
+        email: user.email
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      success: true,
+      message: requireEmailVerification
+        ? "Investor-tilgang opprettet. Bekreft e-posten din for fremtidige innlogginger."
+        : "Investor-tilgang opprettet. Du kan logge inn med en gang i dev.",
+      requiresEmailVerification: requireEmailVerification,
+      token: authToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: "investor"
+      }
+    });
+  } catch (err) {
+    if (transactionStarted) {
+      await connection.rollback();
+    }
+    console.error("Invite access failed:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
+
 /* =====================================================
    REVOKE INVITE
 ===================================================== */
@@ -149,7 +265,7 @@ router.post(
         `
         SELECT i.*, r.startup_id
         FROM rc_invites i
-        JOIN rc_rounds r ON i.round_id = r.id
+        JOIN emission_rounds r ON i.round_id = r.id
         WHERE i.id = ?
         `,
         [inviteId]
@@ -166,11 +282,11 @@ router.post(
       }
 
       await pool.query(
-        "UPDATE rc_invites SET status='REVOKED' WHERE id=?",
+        "DELETE FROM rc_invites WHERE id=?",
         [inviteId]
       );
 
-      res.json({ message: "Invite revoked" });
+      res.json({ message: "Invite removed" });
 
     } catch (err) {
       console.error("Revoke invite failed:", err);

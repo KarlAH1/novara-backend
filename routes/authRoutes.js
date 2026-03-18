@@ -1,6 +1,15 @@
 import express from "express";
 import { auth as authMiddleware } from "../middleware/authMiddleware.js";
-import { register, login, getMe } from "../controllers/authController.js";
+import {
+    register,
+    login,
+    companyRoleCheck,
+    getMe,
+    forgotPassword,
+    resetPassword,
+    verifyEmail,
+    resendVerification
+} from "../controllers/authController.js";
 
 const router = express.Router();
 
@@ -36,12 +45,52 @@ router.post("/register", async (req, res, next) => {
     }
 });
 
+router.post("/company-role-check", async (req, res, next) => {
+    try {
+        await companyRoleCheck(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
 /* =========================================
    LOGIN
 ========================================= */
 router.post("/login", async (req, res, next) => {
     try {
         await login(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post("/forgot-password", async (req, res, next) => {
+    try {
+        await forgotPassword(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post("/reset-password", async (req, res, next) => {
+    try {
+        await resetPassword(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post("/verify-email", async (req, res, next) => {
+    try {
+        await verifyEmail(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post("/resend-verification", async (req, res, next) => {
+    try {
+        await resendVerification(req, res);
     } catch (err) {
         next(err);
     }

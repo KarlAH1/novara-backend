@@ -10,7 +10,10 @@ import {
     adminDeleteStartup,
     adminGetEmissions,
     adminDeleteEmission,
-    adminGetInvestments
+    adminGetInvestments,
+    adminGetUsersByOrgnr,
+    adminLinkUserToOrgnr,
+    adminRemoveUserFromOrgnr
 } from "../controllers/adminController.js";
 
 const router = express.Router();
@@ -26,5 +29,8 @@ router.get("/emissions", authMiddleware, isAdmin, adminGetEmissions);
 router.delete("/emission/:id", authMiddleware, isAdmin, adminDeleteEmission);
 
 router.get("/investments", authMiddleware, isAdmin, adminGetInvestments);
+router.get("/org/:orgnr/users", authMiddleware, isAdmin, adminGetUsersByOrgnr);
+router.post("/org/:orgnr/users", authMiddleware, isAdmin, adminLinkUserToOrgnr);
+router.delete("/org/:orgnr/users/:userId", authMiddleware, isAdmin, adminRemoveUserFromOrgnr);
 
 export default router;

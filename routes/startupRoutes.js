@@ -5,7 +5,15 @@ import {
   createOrUpdateStartupProfile,
   getStartupByUser,
   getAllRaisingStartups,
-  deleteMyStartup
+  deleteMyStartup,
+  getMyOrganization,
+  uploadStartupPitchDeck,
+  getStartupPlanStatus,
+  selectStartupPlan,
+  startStartupPlanPayment,
+  confirmStartupPlanPayment,
+  applyStartupDiscountCode,
+  generateStartupDiscountCode
 } from "../controllers/startupController.js";
 
 const router = express.Router();
@@ -22,11 +30,19 @@ router.get("/ping", (req, res) =>
    (One startup per user)
 ========================================= */
 router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
+router.post("/pitch-deck", authMiddleware, uploadStartupPitchDeck);
+router.get("/plan", authMiddleware, getStartupPlanStatus);
+router.post("/plan/select", authMiddleware, selectStartupPlan);
+router.post("/plan/payment/start", authMiddleware, startStartupPlanPayment);
+router.post("/plan/payment/confirm", authMiddleware, confirmStartupPlanPayment);
+router.post("/plan/discount-code", authMiddleware, applyStartupDiscountCode);
+router.post("/plan/codes/generate", authMiddleware, generateStartupDiscountCode);
 
 /* =========================================
    GET MY STARTUP
 ========================================= */
 router.get("/my", authMiddleware, getStartupByUser);
+router.get("/organization", authMiddleware, getMyOrganization);
 
 /* =========================================
    DELETE MY STARTUP

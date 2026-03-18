@@ -7,7 +7,9 @@ import {
     getActiveEmission,
     activateEmission,
     generateInvite,
-    investInEmission
+    investInEmission,
+    deleteEmissionByStartup,
+    reportEmissionIssue
 } from "../controllers/emissionController.js";
 
 const router = express.Router();
@@ -25,6 +27,12 @@ router.put("/:id/config", auth, updateEmissionConfig);
 
 // Activate emission
 router.post("/:id/activate", auth, activateEmission);
+
+// Delete emission
+router.delete("/:id", auth, deleteEmissionByStartup);
+
+// Report issue
+router.post("/:id/issues", auth, reportEmissionIssue);
 
 // Invite investor
 router.post("/:id/invite", auth, generateInvite);

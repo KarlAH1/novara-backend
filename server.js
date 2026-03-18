@@ -3,7 +3,12 @@ console.log("DB:", process.env.DB_NAME);
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
 import { testConnection } from "./config/db.js";
+import { ensureAuthSchema } from "./utils/authSchema.js";
+import { ensureAdminIssueSchema } from "./utils/adminIssueSchema.js";
+import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
 
 /* =========================================
    ENVIRONMENT SAFETY CHECK
@@ -23,11 +28,17 @@ if (!process.env.FRONTEND_URL) {
 ========================================= */
 const app = express();
 const PORT = process.env.PORT || 8080;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const frontendDir = path.resolve(__dirname, "../frontend");
 
 /* =========================================
    DATABASE CONNECTION TEST
 ========================================= */
 await testConnection();
+await ensureAuthSchema();
+await ensureAdminIssueSchema();
+await ensureStartupPlanSchema();
 
 /* =========================================
    CORS – Environment Controlled
@@ -43,7 +54,8 @@ app.use(
 /* =========================================
    MIDDLEWARE
 ========================================= */
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.static(frontendDir));
 
 /* =========================================
    ROUTES IMPORT
@@ -63,11 +75,12 @@ import gfRoutes from "./routes/gfRoutes.js";
 import documentRoutes from "./routes/documentRoutes.js";
 import documentSignerRoutes from "./routes/documentSignerRoutes.js";
 import boardRoutes from "./routes/boardRoutes.js";
+import enheterRoutes from "./routes/enheterRoutes.js";
 
 /* =========================================
    HEALTH CHECK
 ========================================= */
-app.get("/", (req, res) => {
+app.get("/api", (req, res) => {
   res.status(200).json({
     message: "Raisium Backend is running",
     version: "2.1.0",
@@ -94,6 +107,36 @@ app.use("/api/documents", documentRoutes);
 app.use("/api/document-signers", documentSignerRoutes);
 app.use("/api/gf", gfRoutes);
 app.use("/api/board", boardRoutes);
+app.use("/api/enheter", enheterRoutes);
+
+/* =========================================
+   FRONTEND HTML FALLBACKS
+========================================= */
+const frontendPages = [
+  "index.html",
+  "login.html",
+  "register.html",
+  "forgot-password.html",
+  "reset-password.html",
+  "verify-email.html",
+  "profile.html",
+  "emisjon.html",
+  "emisjoner.html",
+  "dashboard.html",
+  "startup-payment.html",
+  "sign.html",
+  "payment.html",
+  "rc-detail.html",
+  "invest.html",
+  "invite.html",
+  "admin.html"
+];
+
+frontendPages.forEach((page) => {
+  app.get(`/${page}`, (req, res) => {
+    res.sendFile(path.join(frontendDir, page));
+  });
+});
 
 /* =========================================
    404 HANDLER

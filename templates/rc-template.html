@@ -1,0 +1,288 @@
+<!-- rc_agreement_id:{{agreement_id}} -->
+<section style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+  <header style="margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #d8d0c4;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="vertical-align: top;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Raisium Convert</p>
+          <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">RC-avtale</h1>
+          <p style="margin: 10px 0 0; color: #374151;">Plattformversjon - individuell investoravtale, norsk AS, pre-seed/seed</p>
+        </td>
+        <td style="vertical-align: top; text-align: right;">
+          <div style="display: inline-block; min-width: 230px; padding: 14px 16px; border-radius: 14px; background: #efe7db; border: 1px solid #d8d0c4; text-align: left;">
+            <p style="margin: 0 0 6px;"><strong>RC-ID:</strong> {{rc.id}}</p>
+            <p style="margin: 0 0 6px;"><strong>Runde-ID:</strong> {{round.id}}</p>
+            <p style="margin: 0;"><strong>Dokumentversjon:</strong> {{template.version}}</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </header>
+
+  <section style="margin-bottom: 28px;">
+    <h2 style="margin: 0 0 12px; font-size: 18px;">Parter</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Selskapet</p>
+          <p style="margin: 0;"><strong>{{company.legal_name}} AS</strong>, org.nr. {{company.org_no}}, {{company.address}}</p>
+        </td>
+        <td style="width: 16px;"></td>
+        <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Investor</p>
+          <p style="margin: 0;"><strong>{{investor.legal_name}}</strong>, {{investor.identifier_label}} {{investor.identifier}}, {{investor.address}}</p>
+        </td>
+      </tr>
+    </table>
+    <p style="margin: 14px 0 0;">Selskapet og Investor omtales samlet som «Partene» og hver for seg som «Part».</p>
+  </section>
+
+  <section style="margin-bottom: 32px; padding: 20px; background: #efe7db; border: 1px solid #d8d0c4; border-radius: 16px;">
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Kort oversikt over hovedvilkårene</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Investeringsbeløp</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{summary.investment_amount}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Betalingsfrist</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{summary.payment_deadline}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Instrumenttype</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">Rett til senere aksjetegning</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Discount</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{summary.discount_rate}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Valuation Cap</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{summary.valuation_cap}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Utøvelsesperiode</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{summary.conversion_years}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Aksjer nå</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">Ingen</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Tilleggsbetaling ved utøvelse</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">Paribeløp / pålydende per aksje</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0;"><strong>Selskapets konto</strong></td>
+        <td style="padding: 10px 0; text-align: right;">{{summary.bank_account}}</td>
+      </tr>
+    </table>
+    <p style="margin: 14px 0 0; color: #374151;">
+      Investor betaler Investeringsbeløpet nå for RC-instrumentet. Investor mottar ikke aksjer ved signering, men får en bindende rett til senere å tegne eller kreve utstedt aksjer ved et Trigger Event etter vilkårene i denne avtalen. Den fullstendige avtaleteksten nedenfor gjelder foran denne oversikten.
+    </p>
+  </section>
+
+  <section style="margin-bottom: 34px;">
+    <h2 style="margin: 0 0 16px; font-size: 18px;">Full avtaletekst</h2>
+
+    <p style="margin: 0 0 14px;"><strong>1. Avtalens formål og struktur</strong></p>
+    <p style="margin: 0 0 10px;">1.1 Denne avtalen regulerer Investors investering i Selskapet gjennom en Raisium Convert («RC»).</p>
+    <p style="margin: 0 0 10px;">1.2 RC gir Investor en bindende rett til senere å tegne og/eller kreve utstedt aksjer i Selskapet ved Trigger Event, og eventuelt rett til oppgjør der dette uttrykkelig følger av avtalen.</p>
+    <p style="margin: 0 0 10px;">1.3 Avtalen er individuell mellom Selskapet og den Investor som er angitt her. Andre investorers RC-avtaler utgjør separate avtaler.</p>
+    <p style="margin: 0 0 18px;">1.4 Rundevilkår, partsopplysninger og øvrige nøkkeldata fremgår av Vedlegg 1 og utgjør del av avtalen.</p>
+
+    <p style="margin: 0 0 14px;"><strong>2. Investeringsbeløp og betaling</strong></p>
+    <p style="margin: 0 0 10px;">2.1 Investor forplikter seg til å innbetale Investeringsbeløpet angitt i Vedlegg 1 til Selskapets konto innen betalingsfristen angitt der.</p>
+    <p style="margin: 0 0 10px;">2.2 Betaling anses mottatt når beløpet er kreditert Selskapets konto.</p>
+    <p style="margin: 0 0 10px;">2.3 Investeringsbeløpet utgjør vederlaget for RC-instrumentet og Investors rett til senere aksjetegning etter denne avtalen.</p>
+    <p style="margin: 0 0 18px;">2.4 Investeringen skjer som del av en privat rettet kapitalinnhenting overfor forhåndsidentifiserte investorer.</p>
+
+    <p style="margin: 0 0 14px;"><strong>3. Instrumentets natur</strong></p>
+    <p style="margin: 0 0 10px;">3.1 RC er ikke lån og etablerer ikke ordinær gjeld mellom Selskapet og Investor.</p>
+    <p style="margin: 0 0 10px;">3.2 Investeringsbeløpet er ikke rentebærende, har ingen forfallsdato og kan ikke kreves tilbakebetalt som ordinær gjeld, med mindre dette uttrykkelig følger av avtalen eller ufravikelig rett.</p>
+    <p style="margin: 0 0 10px;">3.3 Investor mottar ikke aksjer ved inngåelsen av denne avtalen. Innbetaling av Investeringsbeløpet medfører alene at Investor får en rett til senere aksjetegning eller utstedelse på vilkårene i denne avtalen.</p>
+    <p style="margin: 0 0 10px;">3.4 Eventuell Modningsdato regulerer bare tidspunktet for Optional Conversion og er ikke en innfrielses- eller tilbakebetalingsdato.</p>
+    <p style="margin: 0 0 10px;">3.5 Investor har ingen aksjonærrettigheter før Konverteringsaksjer er gyldig tegnet eller utstedt, paribeløp er betalt, og nødvendig kapitalforhøyelse er lovlig vedtatt og sendt til registrering eller registrert.</p>
+    <p style="margin: 0 0 18px;">3.6 Investor har ingen pant, sikkerhetsrett eller annen prioritert dekning i Selskapets eiendeler som følge av avtalen.</p>
+
+    <p style="margin: 0 0 14px;"><strong>4. Trigger Events</strong></p>
+    <p style="margin: 0 0 10px;">4.1 Et Trigger Event er en av følgende hendelser: a) Equity Financing, b) Change of Control, c) Optional Conversion, dersom aktivert i Vedlegg 1.</p>
+    <p style="margin: 0 0 10px;">4.2 Ved Equity Financing skal Investor ha rett til å tegne eller få utstedt aksjer etter avtalen, med mindre Investor skriftlig samtykker til annet.</p>
+    <p style="margin: 0 0 10px;">4.3 Ved Change of Control skal Selskapet varsle Investor uten ugrunnet opphold og gi nødvendig informasjon for Investors valg etter punkt 6.</p>
+    <p style="margin: 0 0 10px;">4.4 Investor kan kreve Optional Conversion i samsvar med vilkårene i Vedlegg 1 og denne avtalen.</p>
+    <p style="margin: 0 0 18px;">4.5 Med mindre annet følger av avtalen, skal avtalen gjennomføres ved det Trigger Event som inntreffer først.</p>
+
+    <p style="margin: 0 0 14px;"><strong>5. Utøvelse og aksjetegning</strong></p>
+    <p style="margin: 0 0 10px;">5.1 Gjeldende prismodell fremgår av Vedlegg 1.</p>
+    <p style="margin: 0 0 10px;">5.2 Dersom Pool-modell gjelder, beregnes Investorens rett til Konverteringsaksjer ut fra den avtalte RC-poolen, det samlede signerte og finansierte RC-volumet i runden, og Investorens forholdsmessige andel.</p>
+    <p style="margin: 0 0 10px;">5.3 Dersom Cap/Discount-modell gjelder, beregnes konverteringskursen ut fra avtalt Discount og/eller Valuation Cap, slik beskrevet i Vedlegg 1.</p>
+    <p style="margin: 0 0 10px;">5.4 Ved utøvelse av RC skal Investor innbetale nødvendig Paribeløp for tegning eller utstedelse av Konverteringsaksjene. Investeringsbeløpet er allerede ytt som vederlag for RC-instrumentet og den senere retten til aksjetegning.</p>
+    <p style="margin: 0 0 10px;">5.5 Med mindre annet følger av avtalen eller den relevante kapitalinnhentingen, skal Investor ved Equity Financing motta samme aksjeklasse som nye investorer i runden, og ved Optional Conversion ordinære aksjer.</p>
+    <p style="margin: 0 0 10px;">5.6 Selskapet skal gjennomføre nødvendige lovlige tekniske tilpasninger for å realisere avtalens økonomiske intensjon, herunder hensyn til pålydende, aksjestruktur og selskapsrettslige krav.</p>
+    <p style="margin: 0 0 18px;">5.7 Før utøvelse og aksjeutstedelse skal Selskapet oversende Investor relevant beregningsgrunnlag og nødvendige selskapsdokumenter.</p>
+
+    <p style="margin: 0 0 14px;"><strong>6. Change of Control</strong></p>
+    <p style="margin: 0 0 10px;">6.1 Ved Change of Control skal Selskapet gi Investor skriftlig informasjon om transaksjonen, closingdato, vederlagsstruktur og beregningsgrunnlag.</p>
+    <p style="margin: 0 0 10px;">6.2 Investor kan innen fristen angitt i Vedlegg 1 velge: a) utøvelse og aksjeutstedelse før closing, slik at Investor deltar i transaksjonsvederlaget som aksjeeier, eller b) kontantoppgjør uten aksjeutstedelse, lik det høyeste av: i. Investeringsbeløpet, og ii. det beløp Investor ville mottatt dersom Investor hadde utøvd RC og mottatt aksjer umiddelbart før closing, fratrukket Paribeløp.</p>
+    <p style="margin: 0 0 18px;">6.3 Dersom Investor ikke velger innen fristen etter å ha mottatt fullstendig informasjon, anses Investor å ha valgt kontantoppgjør.</p>
+
+    <p style="margin: 0 0 14px;"><strong>7. Selskapets forpliktelser</strong></p>
+    <p style="margin: 0 0 10px;">7.1 Selskapet skal lojalt medvirke til nødvendige styre- og generalforsamlingsbeslutninger for å gjennomføre avtalen, herunder aksjeutstedelse, kapitalforhøyelse, eventuelt fravikelse av fortrinnsrett og nødvendige vedtektsendringer.</p>
+    <p style="margin: 0 0 10px;">7.2 Selskapet skal ikke strukturere disposisjoner med hovedformål å omgå eller vesentlig svekke Investorens rettigheter etter avtalen.</p>
+    <p style="margin: 0 0 10px;">7.3 Selskapet skal holde rundeinformasjon som er nødvendig for korrekt beregning og gjennomføring oppdatert i plattformen.</p>
+    <p style="margin: 0 0 10px;">7.4 Selskapet skal ved gyldig Trigger Event uten ugrunnet opphold fremme og gjennomføre de selskapsrettslige skritt som er nødvendige for at Investor skal kunne utøve RC i samsvar med avtalen.</p>
+    <p style="margin: 0 0 18px;">7.5 Ved aksjesplitt, spleis, fondsemisjon, omklassifisering eller tilsvarende kapitalhendelser skal beregningsgrunnlaget justeres rimelig og økonomisk nøytralt.</p>
+
+    <p style="margin: 0 0 14px;"><strong>8. Erklæringer og garantier</strong></p>
+    <p style="margin: 0 0 10px;">8.1 Selskapet erklærer at: a) det er et gyldig stiftet og registrert norsk aksjeselskap, b) det har nødvendig kompetanse til å inngå avtalen, c) avtalen er bindende for Selskapet i samsvar med dens vilkår, d) inngåelse og oppfyllelse av avtalen ikke hindres av vedtekter eller andre bindende forpliktelser, med mindre dette er skriftlig opplyst før signering, og e) opplysningene låst ved signering i Vedlegg 1 er i det vesentlige korrekte.</p>
+    <p style="margin: 0 0 10px;">8.2 Investor erklærer at: a) Investor har nødvendig rettslig handleevne og kompetanse til å inngå avtalen, b) Investor forstår at investering i tidligfase-selskaper innebærer høy risiko, c) Investor forstår at RC ikke er gjeld, ikke gir rente og ikke har forfallsdato, og d) Investor har kontrollert egne opplysninger før signering.</p>
+    <p style="margin: 0 0 18px;">8.3 Ved brudd på erklæringer eller garantier gjelder alminnelige misligholdsbeføyelser etter norsk rett, innenfor avtalens rammer og ufravikelig lov.</p>
+
+    <p style="margin: 0 0 14px;"><strong>9. Overdragelse</strong></p>
+    <p style="margin: 0 0 10px;">9.1 Investor kan ikke overdra avtalen uten Selskapets skriftlige forhåndssamtykke, med mindre overdragelsen skjer til eget holdingselskap, konsernselskap eller etterfølger ved fusjon/omorganisering, og erververen skriftlig tiltrer avtalen.</p>
+    <p style="margin: 0 0 10px;">9.2 Selskapet kan ikke overdra avtalen uten Investors skriftlige samtykke, med mindre det skjer som ledd i fusjon eller omorganisering hvor avtalens rettigheter respekteres eller gjøres opp etter punkt 6.</p>
+    <p style="margin: 0 0 18px;">9.3 Gyldig overdragelse skal registreres i plattformen.</p>
+
+    <p style="margin: 0 0 14px;"><strong>10. Opphør</strong></p>
+    <p style="margin: 0 0 10px;">10.1 Avtalen opphører når det første av følgende inntreffer: a) Investorens Konverteringsaksjer er gyldig tegnet eller utstedt, Paribeløp er betalt, og relevant kapitalforhøyelse er lovlig vedtatt og sendt til registrering, b) Investor har mottatt fullt kontantoppgjør etter punkt 6, c) Partene skriftlig avtaler opphør, eller d) Investor skriftlig frafaller sine rettigheter.</p>
+    <p style="margin: 0 0 10px;">10.2 Opphør gir ikke i seg selv Investor rett til tilbakebetaling av Investeringsbeløpet, med mindre dette følger uttrykkelig av avtalen eller ufravikelig lov.</p>
+    <p style="margin: 0 0 18px;">10.3 Ved vesentlig mislighold kan ikke-misligholdende Part kreve retting, naturaloppfyllelse og øvrige misligholdsbeføyelser etter norsk rett.</p>
+
+    <p style="margin: 0 0 14px;"><strong>11. Lovvalg og verneting</strong></p>
+    <p style="margin: 0 0 10px;">11.1 Avtalen er underlagt norsk rett.</p>
+    <p style="margin: 0 0 18px;">11.2 Tvister som ikke løses i minnelighet bringes inn for Oslo tingrett.</p>
+
+    <p style="margin: 0 0 14px;"><strong>12. Risikoerkjennelse</strong></p>
+    <p style="margin: 0 0 10px;">12.1 Investor erkjenner at investering i tidligfase-selskaper innebærer høy risiko, herunder risiko for tap av hele investeringen.</p>
+    <p style="margin: 0 0 10px;">12.2 Investor erkjenner at RC kan være illikvid, at fremtidige emisjoner kan medføre utvanning, og at det ikke er garanti for Equity Financing, exit eller annen realisering.</p>
+    <p style="margin: 0 0 18px;">12.3 Hver Part er selv ansvarlig for egne skattemessige, regnskapsmessige og øvrige forhold knyttet til avtalen.</p>
+
+    <p style="margin: 0 0 14px;"><strong>13. Signering, godkjenning og dokumentintegritet</strong></p>
+    <p style="margin: 0 0 10px;">13.1 Avtalen er generert fra Plattformens standardmal og basert på opplysninger låst ved signering og endelig fullføring.</p>
+    <p style="margin: 0 0 10px;">13.2 Selskapet forhåndsgodkjenner RC-runden og bruk av denne standardmalen ved aktivering/publisering av runden i Plattformen.</p>
+    <p style="margin: 0 0 10px;">13.3 Investor signerer den individuelle avtalen elektronisk.</p>
+    <p style="margin: 0 0 10px;">13.4 Avtalen merkes ikke som endelig fullført og blir ikke nedlastbar før: a) Investor har signert, b) betaling er bekreftet registrert til Selskapet i Plattformen, og c) relevant avtaledata er låst som endelig snapshot.</p>
+    <p style="margin: 0 0 10px;">13.5 Plattformen kan lagre signaturbevis, tidsstempler, dokumenthash og revisjonsspor som del av bevisgrunnlaget for avtalen.</p>
+    <p style="margin: 0;">13.6 Vedlegg 1 og Vedlegg 2 utgjør del av avtalen.</p>
+  </section>
+
+  <section style="margin-bottom: 32px;">
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Gjennomføringsstatus</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Startup-godkjenning av runden</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.company_preapproval_status}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Startup-godkjent av</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.company_signer.name}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Rolle/tittel</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.company_signer.role}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>E-post</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.company_signer.email}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Godkjent dato/tid</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.company_signer.signed_at}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Godkjenningsmetode</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.company_signer.method}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Investor-signering</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.investor_signer.status}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Investor-navn</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.investor_signer.name}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>E-post</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.investor_signer.email}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Signert dato/tid</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.investor_signer.signed_at}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Signeringsmetode</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{signature.investor_signer.method}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Betalingsstatus</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{payment.status}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Betaling bekreftet dato/tid</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{payment.confirmed_at}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Bekreftet av</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{payment.confirmed_by}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px;"><strong>Dokumentstatus</strong></td>
+        <td style="padding: 10px 14px; text-align: right;">{{document.final_status}}</td>
+      </tr>
+    </table>
+  </section>
+
+  <section style="margin-bottom: 32px;">
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Vedlegg 1 - Snapshot Data / nøkkelvilkår</h2>
+    <div style="padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px;">
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Identifikasjon</h3>
+      <p style="margin: 0 0 6px;"><strong>RC-ID:</strong> {{rc.id}}</p>
+      <p style="margin: 0 0 6px;"><strong>Runde-ID:</strong> {{round.id}}</p>
+      <p style="margin: 0 0 18px;"><strong>Dokumentstatus:</strong> {{attachment.snapshot.document_status}}</p>
+
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Selskap</h3>
+      <p style="margin: 0 0 6px;"><strong>Navn:</strong> {{company.legal_name}} AS</p>
+      <p style="margin: 0 0 6px;"><strong>Org.nr.:</strong> {{company.org_no}}</p>
+      <p style="margin: 0 0 18px;"><strong>Adresse:</strong> {{company.address}}</p>
+
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Investor</h3>
+      <p style="margin: 0 0 6px;"><strong>Navn:</strong> {{investor.legal_name}}</p>
+      <p style="margin: 0 0 6px;"><strong>Identifikasjon:</strong> {{investor.identifier_label}} {{investor.identifier}}</p>
+      <p style="margin: 0 0 18px;"><strong>Adresse:</strong> {{investor.address}}</p>
+
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Investor-spesifikke vilkår</h3>
+      <p style="margin: 0 0 6px;"><strong>Investeringsbeløp:</strong> {{summary.investment_amount}}</p>
+      <p style="margin: 0 0 6px;"><strong>Instrument:</strong> RC med rett til senere aksjetegning</p>
+      <p style="margin: 0 0 18px;"><strong>Betalingsfrist:</strong> {{attachment.snapshot.deadline}}</p>
+
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Rundevilkår</h3>
+      <p style="margin: 0 0 6px;"><strong>Målbeløp:</strong> {{attachment.snapshot.round_target}}</p>
+      <p style="margin: 0 0 6px;"><strong>Registrert innhentet:</strong> {{attachment.snapshot.round_raised}}</p>
+      <p style="margin: 0 0 6px;"><strong>Discount:</strong> {{attachment.snapshot.discount_rate}}</p>
+      <p style="margin: 0 0 6px;"><strong>Valuation Cap:</strong> {{attachment.snapshot.valuation_cap}}</p>
+      <p style="margin: 0 0 6px;"><strong>Utøvelsesperiode:</strong> {{attachment.snapshot.conversion_years}}</p>
+      <p style="margin: 0 0 18px;"><strong>Selskapets konto:</strong> {{attachment.snapshot.bank_account}}</p>
+
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Standard juridiske innstillinger</h3>
+      <p style="margin: 0 0 6px;"><strong>Rundestatus ved snapshot:</strong> {{attachment.snapshot.round_status}}</p>
+      <p style="margin: 0 0 18px;"><strong>Prismodell:</strong> {{attachment.calc.model}}</p>
+
+      <h3 style="margin: 0 0 10px; font-size: 16px;">Signatur- og integritetsdata</h3>
+      <p style="margin: 0 0 6px;"><strong>Generert:</strong> {{attachment.snapshot.generated_at}}</p>
+      <p style="margin: 0 0 6px;"><strong>Låst:</strong> {{attachment.snapshot.locked_at}}</p>
+      <p style="margin: 0;"><strong>Dokumenthash:</strong> {{attachment.snapshot.document_hash}}</p>
+    </div>
+  </section>
+
+  <section>
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Vedlegg 2 - Beregningsgrunnlag ved utøvelse</h2>
+    <div style="padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px;">
+      <p style="margin: 0 0 10px;"><strong>Prismodell:</strong> {{attachment.calc.model}}</p>
+      <p style="margin: 0 0 10px;"><strong>Discount:</strong> {{attachment.calc.discount}}</p>
+      <p style="margin: 0 0 10px;"><strong>Valuation Cap:</strong> {{attachment.calc.cap}}</p>
+      <p style="margin: 0 0 10px;">{{attachment.calc.pool_note}}</p>
+      <p style="margin: 0 0 10px;">{{attachment.calc.par_value_note}}</p>
+      <p style="margin: 0;">{{attachment.calc.trigger_note}}</p>
+    </div>
+  </section>
+</section>

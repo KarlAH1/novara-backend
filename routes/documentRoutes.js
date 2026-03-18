@@ -4,6 +4,122 @@ import { auth } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
+const getRcAgreementColumns = async (connection) => {
+    const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
+    return new Set(columnRows.map((column) => column.Field));
+};
+
+const getRcPaymentColumns = async (connection) => {
+    const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
+    return new Set(columnRows.map((column) => column.Field));
+};
+
+const syncRcAgreementSignatures = async (connection, documentId, htmlContent, documentHash) => {
+    const agreementMatch = htmlContent.match(/rc_agreement_id:(\d+)/i);
+
+    if (!agreementMatch) {
+        return;
+    }
+
+    const agreementId = Number(agreementMatch[1]);
+
+    const [signerRows] = await connection.query(
+        `SELECT role, signed_at
+         FROM document_signers
+         WHERE document_id = ?`,
+        [documentId]
+    );
+
+    const investorSignedAt =
+        signerRows.find((signer) => signer.role === "Investor")?.signed_at || null;
+    const startupSignedAt =
+        signerRows.find((signer) => signer.role === "Startup")?.signed_at || null;
+
+    const rcAgreementColumns = await getRcAgreementColumns(connection);
+    const agreementStatus =
+        investorSignedAt
+            ? "Awaiting Payment"
+            : "Pending Signatures";
+
+    const updateClauses = [];
+    const updateParams = [];
+
+    if (rcAgreementColumns.has("investor_signed_at")) {
+        updateClauses.push("investor_signed_at = ?");
+        updateParams.push(investorSignedAt);
+    }
+
+    if (rcAgreementColumns.has("startup_signed_at")) {
+        updateClauses.push("startup_signed_at = ?");
+        updateParams.push(startupSignedAt);
+    } else if (rcAgreementColumns.has("signed_at")) {
+        updateClauses.push("signed_at = ?");
+        updateParams.push(investorSignedAt || startupSignedAt);
+    }
+
+    updateClauses.push("status = ?");
+    updateParams.push(agreementStatus);
+
+    if (rcAgreementColumns.has("document_hash")) {
+        updateClauses.push("document_hash = ?");
+        updateParams.push(documentHash);
+    }
+
+    updateParams.push(agreementId);
+
+    await connection.query(
+        `UPDATE rc_agreements
+         SET ${updateClauses.join(", ")}
+         WHERE id = ?`,
+        updateParams
+    );
+
+    if (investorSignedAt) {
+        const rcPaymentColumns = await getRcPaymentColumns(connection);
+        const [paymentRows] = await connection.query(
+            "SELECT id FROM rc_payments WHERE agreement_id = ?",
+            [agreementId]
+        );
+
+        if (paymentRows.length === 0) {
+            const insertColumns = ["agreement_id", "amount", "status"];
+            const selectValues = ["id", "investment_amount", "'Awaiting Payment'"];
+
+            if (rcPaymentColumns.has("reference")) {
+                insertColumns.push("reference");
+                selectValues.push("COALESCE(NULLIF(rc_id, ''), CONCAT('RC-', id))");
+            }
+
+            if (rcPaymentColumns.has("initiated_at")) {
+                insertColumns.push("initiated_at");
+                selectValues.push("NOW()");
+            }
+
+            await connection.query(
+                `INSERT INTO rc_payments
+                (${insertColumns.join(", ")})
+                SELECT ${selectValues.join(", ")}
+                FROM rc_agreements
+                WHERE id = ?`,
+                [agreementId]
+            );
+        } else {
+            const updateClauses = ["status = 'Awaiting Payment'"];
+
+            if (rcPaymentColumns.has("initiated_at")) {
+                updateClauses.push("initiated_at = NOW()");
+            }
+
+            await connection.query(
+                `UPDATE rc_payments
+                 SET ${updateClauses.join(", ")}
+                 WHERE agreement_id = ?`,
+                [agreementId]
+            );
+        }
+    }
+};
+
 /* =========================================
    LEGAL STATUS (BOARD + GF)
 ========================================= */
@@ -103,11 +219,14 @@ router.get("/:id", auth, async (req, res) => {
 
 router.post("/:id/sign", auth, async (req, res) => {
 
+    const connection = await pool.getConnection();
+
     try {
+        await connection.beginTransaction();
 
         const documentId = req.params.id;
 
-        const [result] = await pool.query(
+        const [result] = await connection.query(
             `UPDATE document_signers
              SET signed_at = NOW(),
                  ip_address = ?,
@@ -127,105 +246,142 @@ router.post("/:id/sign", auth, async (req, res) => {
         );
 
         if (result.affectedRows === 0) {
+            await connection.rollback();
             return res.status(400).json({
                 error: "You are not a signer for this document"
             });
         }
 
-        const [remaining] = await pool.query(
+        const [remaining] = await connection.query(
             "SELECT id FROM document_signers WHERE document_id=? AND signed_at IS NULL",
             [documentId]
         );
 
+        const [docRows] = await connection.query(
+            "SELECT type, startup_id, html_content FROM documents WHERE id=?",
+            [documentId]
+        );
+
+        if (docRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: "Document not found" });
+        }
+
+        const doc = docRows[0];
+        let documentHash = null;
+
         if (remaining.length === 0) {
-
-            const [docRows] = await pool.query(
-                "SELECT type, startup_id, html_content FROM documents WHERE id=?",
-                [documentId]
-            );
-
-            const doc = docRows[0];
-
             const crypto = await import("crypto");
 
-            const hash = crypto.default
+            documentHash = crypto.default
                 .createHash("sha256")
                 .update(doc.html_content)
                 .digest("hex");
 
-            await pool.query(
+            await connection.query(
                 `UPDATE documents
                  SET status='LOCKED',
                      document_hash=?,
                      locked_at=NOW()
                  WHERE id=?`,
-                [hash, documentId]
+                [documentHash, documentId]
+            );
+        }
+
+        if (doc.type === "RC") {
+            await syncRcAgreementSignatures(
+                connection,
+                documentId,
+                doc.html_content,
+                documentHash
+            );
+        }
+
+        /* =====================================================
+           AUTO CREATE CAPITAL DECISION WHEN GF LOCKED
+        ===================================================== */
+
+        if (remaining.length === 0 && doc.type === "GF") {
+            const [legalRows] = await connection.query(
+                `SELECT amount
+                 FROM startup_legal_data
+                 WHERE startup_id=?
+                 ORDER BY created_at DESC
+                 LIMIT 1`,
+                [doc.startup_id]
             );
 
-            /* =====================================================
-               AUTO CREATE CAPITAL DECISION WHEN GF LOCKED
-            ===================================================== */
+            const [boardRows] = await connection.query(
+                `SELECT id
+                 FROM documents
+                 WHERE startup_id=?
+                 AND type='BOARD'
+                 AND status='LOCKED'
+                 ORDER BY id DESC
+                 LIMIT 1`,
+                [doc.startup_id]
+            );
 
-            if (doc.type === "GF") {
+            if (!legalRows.length || !boardRows.length) {
+                console.error("Missing legal data or locked board for capital decision");
+            } else {
+                const approvedAmount = Number(legalRows[0].amount);
 
-                // Extract amount from GF HTML
-                const match = doc.html_content.match(/inntil\s*<strong>([\d\s]+)\s*NOK/i);
-
-                if (match) {
-
-                    const approvedAmount =
-                        parseInt(match[1].replace(/\s/g, ""));
-
-                    // Get latest LOCKED BOARD
-                    const [boardRows] = await pool.query(
+                if (!Number.isFinite(approvedAmount) || approvedAmount <= 0) {
+                    console.error("Invalid approved amount for capital decision:", legalRows[0].amount);
+                } else {
+                    const [existing] = await connection.query(
                         `SELECT id
-                         FROM documents
+                         FROM capital_decisions
                          WHERE startup_id=?
-                         AND type='BOARD'
-                         AND status='LOCKED'
                          ORDER BY id DESC
                          LIMIT 1`,
                         [doc.startup_id]
                     );
 
-                    if (boardRows.length > 0) {
-
-                        // Check if already exists
-                        const [existing] = await pool.query(
-                            `SELECT id
-                             FROM capital_decisions
-                             WHERE startup_id=?`,
-                            [doc.startup_id]
+                    if (existing.length === 0) {
+                        await connection.query(
+                            `INSERT INTO capital_decisions
+                            (startup_id, approved_amount, board_document_id, gf_document_id)
+                            VALUES (?, ?, ?, ?)`,
+                            [
+                                doc.startup_id,
+                                approvedAmount,
+                                boardRows[0].id,
+                                documentId
+                            ]
                         );
-
-                        if (existing.length === 0) {
-
-                            await pool.query(
-                                `INSERT INTO capital_decisions
-                                (startup_id, approved_amount, board_document_id, gf_document_id)
-                                VALUES (?, ?, ?, ?)`,
-                                [
-                                    doc.startup_id,
-                                    approvedAmount,
-                                    boardRows[0].id,
-                                    documentId
-                                ]
-                            );
-
-                            console.log("Capital decision created automatically.");
-                        }
+                    } else {
+                        await connection.query(
+                            `UPDATE capital_decisions
+                             SET approved_amount=?,
+                                 board_document_id=?,
+                                 gf_document_id=?
+                             WHERE id=?`,
+                            [
+                                approvedAmount,
+                                boardRows[0].id,
+                                documentId,
+                                existing[0].id
+                            ]
+                        );
                     }
-                } else {
-                    console.error("Could not extract approved amount from GF");
+
+                    console.log("Capital decision created automatically.");
                 }
             }
         }
 
+        await connection.commit();
+
         res.json({ success: true });
 
     } catch (err) {
+        await connection.rollback();
         console.error("Sign document error:", err);
         res.status(500).json({ error: "Server error" });
+    } finally {
+        connection.release();
     }
 });
 

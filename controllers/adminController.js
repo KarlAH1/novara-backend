@@ -79,3 +79,103 @@ export const adminGetInvestments = async (req, res) => {
     );
     res.json(rows);
 };
+
+export const adminGetUsersByOrgnr = async (req, res) => {
+    const [rows] = await pool.query(
+        `
+        SELECT u.id, u.name, u.email, u.role, c.orgnr, c.company_name
+        FROM company_memberships cm
+        JOIN companies c ON cm.company_id = c.id
+        JOIN users u ON cm.user_id = u.id
+        WHERE c.orgnr = ?
+        ORDER BY u.created_at ASC
+        `,
+        [req.params.orgnr]
+    );
+
+    res.json(rows);
+};
+
+export const adminLinkUserToOrgnr = async (req, res) => {
+    const connection = await pool.getConnection();
+    let transactionStarted = false;
+
+    try {
+    const { userId, email } = req.body;
+
+    const [companyRows] = await connection.query(
+        "SELECT id FROM companies WHERE orgnr = ? LIMIT 1",
+        [req.params.orgnr]
+    );
+
+    if (!companyRows.length) {
+        return res.status(404).json({ error: "Company not found" });
+    }
+
+    let targetUserId = userId;
+
+    if (!targetUserId && email) {
+        const [userRows] = await connection.query(
+            "SELECT id FROM users WHERE email = ? LIMIT 1",
+            [String(email).trim().toLowerCase()]
+        );
+        targetUserId = userRows[0]?.id;
+    }
+
+    if (!targetUserId) {
+        return res.status(400).json({ error: "userId or email is required" });
+    }
+
+    const [userRows] = await connection.query(
+        "SELECT id FROM users WHERE id = ? LIMIT 1",
+        [targetUserId]
+    );
+
+    if (!userRows.length) {
+        return res.status(404).json({ error: "User not found" });
+    }
+
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    await connection.query(
+        "DELETE FROM company_memberships WHERE user_id = ? AND company_id <> ?",
+        [targetUserId, companyRows[0].id]
+    );
+
+    await connection.query(
+        `
+        INSERT INTO company_memberships (company_id, user_id)
+        VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE company_id = VALUES(company_id)
+        `,
+        [companyRows[0].id, targetUserId]
+    );
+
+    await connection.commit();
+
+    res.json({ message: "User linked to organization" });
+    } catch (err) {
+        if (transactionStarted) {
+            await connection.rollback();
+        }
+        console.error("Link user to orgnr error:", err);
+        res.status(500).json({ error: "Server error" });
+    } finally {
+        connection.release();
+    }
+};
+
+export const adminRemoveUserFromOrgnr = async (req, res) => {
+    await pool.query(
+        `
+        DELETE cm
+        FROM company_memberships cm
+        JOIN companies c ON cm.company_id = c.id
+        WHERE c.orgnr = ? AND cm.user_id = ?
+        `,
+        [req.params.orgnr, req.params.userId]
+    );
+
+    res.json({ message: "User removed from organization" });
+};
