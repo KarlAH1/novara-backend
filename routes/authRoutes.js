@@ -5,6 +5,8 @@ import {
     login,
     companyRoleCheck,
     getMe,
+    updateMe,
+    changePassword,
     forgotPassword,
     resetPassword,
     verifyEmail,
@@ -29,6 +31,22 @@ router.get("/ping", (req, res) => {
 router.get("/me", authMiddleware, async (req, res, next) => {
     try {
         await getMe(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.put("/me", authMiddleware, async (req, res, next) => {
+    try {
+        await updateMe(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.put("/change-password", authMiddleware, async (req, res, next) => {
+    try {
+        await changePassword(req, res);
     } catch (err) {
         next(err);
     }

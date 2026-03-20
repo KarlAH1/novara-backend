@@ -13,6 +13,21 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendUploadsDir = path.resolve(__dirname, "../../frontend/uploads/pitch-decks");
+const STARTUP_TEXT_MAX_LENGTH = 200;
+
+function validateStartupText(value, fieldLabel, { required = false } = {}) {
+    const normalized = String(value || "").trim();
+
+    if (required && !normalized) {
+        return `${fieldLabel} må fylles ut.`;
+    }
+
+    if (normalized.length > STARTUP_TEXT_MAX_LENGTH) {
+        return `${fieldLabel} kan være maks ${STARTUP_TEXT_MAX_LENGTH} tegn.`;
+    }
+
+    return null;
+}
 
 async function getCompanyIdentityForUser(userId) {
     return getCompanyForUser(userId);
@@ -56,6 +71,15 @@ export const createOrUpdateStartupProfile = async (req, res) => {
         const offeringValue = String(what_offers || sector || "").trim();
         const useOfFundsValue = String(use_of_funds || pitch || "").trim();
         const descriptionValue = String(description || vision || "").trim();
+        const offeringError = validateStartupText(offeringValue, "Hva selskapet tilbyr", { required: true });
+        const useOfFundsError = validateStartupText(useOfFundsValue, "Bruk av kapital", { required: true });
+        const descriptionError = validateStartupText(descriptionValue, "Kort selskapsbeskrivelse");
+
+        if (offeringError || useOfFundsError || descriptionError) {
+            return res.status(400).json({
+                error: offeringError || useOfFundsError || descriptionError
+            });
+        }
 
         const [existing] = await pool.query(
             "SELECT id FROM startup_profiles WHERE user_id=? LIMIT 1",
@@ -101,6 +125,11 @@ export const createOrUpdateStartupProfile = async (req, res) => {
 
     } catch (err) {
         console.log(err);
+        if (err?.code === "ER_DATA_TOO_LONG") {
+            return res.status(400).json({
+                error: `Tekstfeltene kan være maks ${STARTUP_TEXT_MAX_LENGTH} tegn.`
+            });
+        }
         res.status(500).json({ error: "Server error" });
     }
 };

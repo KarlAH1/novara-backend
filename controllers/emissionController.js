@@ -517,9 +517,11 @@ export const deleteEmissionByStartup = async (req, res) => {
 export const reportEmissionIssue = async (req, res) => {
   try {
     const emissionId = Number(req.params.id);
-    const startupId = req.user.id;
+    const userId = req.user.id;
+    const userRole = String(req.user.role || "");
     const message = String(req.body.message || "").trim();
     const issueType = String(req.body.issueType || "general").trim().slice(0, 64) || "general";
+    const source = String(req.body.source || "dashboard").trim().slice(0, 64) || "dashboard";
 
     if (!message) {
       return res.status(400).json({ message: "Beskrivelse av problemet mangler" });
@@ -539,16 +541,37 @@ export const reportEmissionIssue = async (req, res) => {
       return res.status(404).json({ message: "Emission not found" });
     }
 
-    if (Number(emissionRows[0].startup_id) !== Number(startupId)) {
+    const startupId = Number(emissionRows[0].startup_id);
+    let hasAccess = false;
+
+    if (userRole === "startup" && startupId === Number(userId)) {
+      hasAccess = true;
+    }
+
+    if (!hasAccess && userRole === "investor") {
+      const [agreementRows] = await pool.query(
+        `
+        SELECT id
+        FROM rc_agreements
+        WHERE round_id = ? AND investor_id = ?
+        LIMIT 1
+        `,
+        [emissionId, userId]
+      );
+
+      hasAccess = agreementRows.length > 0;
+    }
+
+    if (!hasAccess) {
       return res.status(403).json({ message: "Access denied" });
     }
 
     await pool.query(
       `
       INSERT INTO admin_issues (user_id, startup_id, emission_id, source, issue_type, message, status)
-      VALUES (?, ?, ?, 'dashboard', ?, ?, 'OPEN')
+      VALUES (?, ?, ?, ?, ?, ?, 'OPEN')
       `,
-      [req.user.id, startupId, emissionId, issueType, message]
+      [userId, startupId, emissionId, source, issueType, message]
     );
 
     res.status(201).json({

@@ -98,10 +98,14 @@ router.get("/validate/:token", async (req, res) => {
         r.valuation_cap,
         r.conversion_years,
         r.open,
-        u.name AS company_name
+        u.name AS company_name,
+        sp.sector AS what_offers,
+        sp.pitch AS use_of_funds,
+        sp.vision AS description
       FROM rc_invites i
       JOIN emission_rounds r ON i.round_id = r.id
       JOIN users u ON r.startup_id = u.id
+      LEFT JOIN startup_profiles sp ON sp.user_id = r.startup_id
       WHERE i.token = ?
       `,
       [token]
@@ -119,7 +123,10 @@ router.get("/validate/:token", async (req, res) => {
 
     res.json({
       startup: {
-        companyName: invite.company_name
+        companyName: invite.company_name,
+        whatOffers: invite.what_offers || "",
+        useOfFunds: invite.use_of_funds || "",
+        description: invite.description || ""
       },
       terms: {
         targetAmount: invite.target_amount,

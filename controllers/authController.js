@@ -438,6 +438,161 @@ export const resetPassword = async (req, res) => {
   }
 };
 
+export const updateMe = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    let name = String(req.body.name || "").trim();
+    let email = String(req.body.email || "").trim().toLowerCase();
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: "Not authenticated"
+      });
+    }
+
+    if (!name || !email) {
+      return res.status(400).json({
+        success: false,
+        error: "Navn og e-post er påkrevd"
+      });
+    }
+
+    const [existing] = await db.execute(
+      "SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1",
+      [email, userId]
+    );
+
+    if (existing.length) {
+      return res.status(400).json({
+        success: false,
+        error: "E-post er allerede registrert"
+      });
+    }
+
+    await db.execute(
+      "UPDATE users SET name = ?, email = ? WHERE id = ?",
+      [name, email, userId]
+    );
+
+    const [users] = await db.execute(
+      "SELECT id, name, email, role FROM users WHERE id = ? LIMIT 1",
+      [userId]
+    );
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        error: "Bruker ikke funnet"
+      });
+    }
+
+    const user = users[0];
+    const normalizedRole = String(user.role || "").toLowerCase();
+    const token = jwt.sign(
+      {
+        id: user.id,
+        role: normalizedRole,
+        email: user.email
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      success: true,
+      message: "Profilen er oppdatert.",
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: normalizedRole
+      }
+    });
+  } catch (error) {
+    console.error("updateMe error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Serverfeil"
+    });
+  }
+};
+
+export const changePassword = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const currentPassword = String(req.body.currentPassword || "");
+    const newPassword = String(req.body.newPassword || "");
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: "Not authenticated"
+      });
+    }
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: "Nåværende passord og nytt passord er påkrevd"
+      });
+    }
+
+    const passwordError = validatePasswordRequirements(newPassword);
+    if (passwordError) {
+      return res.status(400).json({
+        success: false,
+        error: passwordError
+      });
+    }
+
+    const [users] = await db.execute(
+      "SELECT id, password FROM users WHERE id = ? LIMIT 1",
+      [userId]
+    );
+
+    if (!users.length) {
+      return res.status(404).json({
+        success: false,
+        error: "Bruker ikke funnet"
+      });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, users[0].password);
+    if (!isMatch) {
+      return res.status(400).json({
+        success: false,
+        error: "Nåværende passord er feil"
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: "Nytt passord må være forskjellig fra det gamle"
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await db.execute(
+      "UPDATE users SET password = ? WHERE id = ?",
+      [hashedPassword, userId]
+    );
+
+    res.json({
+      success: true,
+      message: "Passordet er oppdatert."
+    });
+  } catch (error) {
+    console.error("changePassword error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Serverfeil"
+    });
+  }
+};
+
 
 /* =========================================
    GET ME
