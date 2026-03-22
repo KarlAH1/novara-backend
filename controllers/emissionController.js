@@ -1,5 +1,6 @@
 import pool from "../config/db.js";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
+import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 const emissionShareholderTableName = "emission_shareholders";
@@ -486,16 +487,7 @@ export const deleteEmissionByStartup = async (req, res) => {
       await connection.query("DELETE FROM emission_shareholders WHERE emission_id = ?", [emissionId]);
     }
 
-    await connection.query(
-      `
-      UPDATE documents
-      SET status = 'ARCHIVED'
-      WHERE startup_id = ?
-        AND type IN ('BOARD', 'GF')
-        AND status IN ('DRAFT', 'SIGNED', 'LOCKED')
-      `,
-      [startupId]
-    );
+    await cleanupLegalDocuments(connection, startupId, ["BOARD", "GF"]);
 
     await connection.query("DELETE FROM admin_issues WHERE emission_id = ?", [emissionId]);
     await connection.query("DELETE FROM emission_rounds WHERE id = ? AND startup_id = ?", [emissionId, startupId]);

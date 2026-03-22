@@ -3,6 +3,7 @@ import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
+import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
 
 const router = express.Router();
 const MAX_EMISSION_AMOUNT = 2147483647;
@@ -99,16 +100,7 @@ router.post(
           });
         }
 
-        await pool.query(
-          `
-          UPDATE documents
-          SET status = 'ARCHIVED'
-          WHERE startup_id = ?
-            AND type IN ('BOARD', 'GF')
-            AND status IN ('DRAFT', 'SIGNED', 'LOCKED')
-          `,
-          [req.user.id]
-        );
+        await cleanupLegalDocuments(pool, req.user.id, ["BOARD", "GF"]);
       }
       
       const [companyRows] = await pool.query(

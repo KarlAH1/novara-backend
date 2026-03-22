@@ -3,6 +3,7 @@ import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
+import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
 
 const router = express.Router();
 
@@ -73,16 +74,7 @@ router.post(
           });
         }
 
-        await pool.query(
-          `
-          UPDATE documents
-          SET status = 'ARCHIVED'
-          WHERE startup_id = ?
-            AND type = 'GF'
-            AND status IN ('DRAFT', 'SIGNED', 'LOCKED')
-          `,
-          [startupId]
-        );
+        await cleanupLegalDocuments(pool, startupId, ["GF"]);
       }
 
       /* =====================================================
