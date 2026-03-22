@@ -4,9 +4,7 @@ import { sendEmail } from "./emailService.js";
 export function isEmailVerificationRequired() {
   const explicit = String(process.env.AUTH_REQUIRE_EMAIL_VERIFICATION || "").trim().toLowerCase();
   if (explicit === "true") return true;
-  if (explicit === "false") return false;
-
-  return String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+  return false;
 }
 
 function getFrontendBase() {
