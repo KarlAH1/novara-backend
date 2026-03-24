@@ -211,14 +211,15 @@ export const investViaInvite = async (req, res) => {
         const [roundRows] = await connection.query(`
             SELECT
                 r.*,
-                u.name AS startup_name,
+                COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
                 u.email AS startup_email,
-                c.company_name AS company_legal_name,
+                COALESCE(c.company_name, sp.company_name, u.name) AS company_legal_name,
                 c.orgnr AS company_org_no
             FROM emission_rounds r
             JOIN users u ON r.startup_id = u.id
             LEFT JOIN company_memberships cm ON cm.user_id = u.id
             LEFT JOIN companies c ON c.id = cm.company_id
+            LEFT JOIN startup_profiles sp ON sp.user_id = r.startup_id
             WHERE r.id=? AND r.open=1
         `, [roundId]);
 

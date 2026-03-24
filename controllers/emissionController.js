@@ -1,6 +1,10 @@
 import pool from "../config/db.js";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
 import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
+import {
+  isUserInSameCompany,
+  resolveCompanyStartupOwner
+} from "../utils/startupContext.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 const emissionShareholderTableName = "emission_shareholders";
@@ -46,8 +50,8 @@ const normalizeShareholders = (rawShareholders) => {
 };
 export const startEmission = async (req, res) => {
     try {
-  
-      const startup_id = req.user.id;
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startup_id = startupContext.startupUserId;
 
       if (!(await canStartupCreateRaise(startup_id))) {
         return res.status(403).json({
@@ -191,13 +195,13 @@ export const getEmissionById = async (req, res) => {
         const emission = rows[0];
 
         // Access control (startup owner OR investor)
-        if (
-            req.user.role === "startup" &&
-            emission.startup_id !== userId
-        ) {
-            return res.status(403).json({
-                message: "Access denied"
-            });
+        if (req.user.role === "startup") {
+            const hasStartupAccess = await isUserInSameCompany(pool, userId, emission.startup_id);
+            if (!hasStartupAccess) {
+                return res.status(403).json({
+                    message: "Access denied"
+                });
+            }
         }
 
         const shareholders = await getEmissionShareholders(emissionId);
@@ -222,7 +226,8 @@ export const updateEmissionConfig = async (req, res) => {
     try {
   
       const emissionId = req.params.id;
-      const startupId = req.user.id;
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startupId = startupContext.startupUserId;
   
       let {
         conversion_years,
@@ -250,7 +255,7 @@ export const updateEmissionConfig = async (req, res) => {
         });
       }
   
-      if (rows[0].startup_id !== startupId) {
+      if (!(await isUserInSameCompany(pool, req.user.id, rows[0].startup_id))) {
         return res.status(403).json({
           message: "Access denied"
         });
@@ -334,7 +339,8 @@ export const activateEmission = async (req, res) => {
   try {
 
       const emissionId = req.params.id;
-      const startupId = req.user.id;
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startupId = startupContext.startupUserId;
 
       console.log("ACTIVATE PARAMS:", req.params);
       console.log("ACTIVATE USER:", startupId);
@@ -374,7 +380,8 @@ export const activateEmission = async (req, res) => {
 export const getActiveEmission = async (req, res) => {
   try {
 
-      const startupId = req.user.id;
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startupId = startupContext.startupUserId;
 
       const [rows] = await pool.query(`
           SELECT *
@@ -403,7 +410,8 @@ export const generateInvite = async (req, res) => {
     try {
 
         const { emissionId } = req.params;
-        const startupId = req.user.id;
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const startupId = startupContext.startupUserId;
 
         const [rows] = await pool.query(`
             SELECT id FROM emission_rounds
@@ -441,7 +449,8 @@ export const deleteEmissionByStartup = async (req, res) => {
 
   try {
     const emissionId = Number(req.params.id);
-    const startupId = req.user.id;
+    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupId = startupContext.startupUserId;
 
     const [emissionRows] = await connection.query(
       `
@@ -457,7 +466,7 @@ export const deleteEmissionByStartup = async (req, res) => {
       return res.status(404).json({ message: "Emission not found" });
     }
 
-    if (Number(emissionRows[0].startup_id) !== Number(startupId)) {
+    if (!(await isUserInSameCompany(connection, req.user.id, emissionRows[0].startup_id))) {
       return res.status(403).json({ message: "Access denied" });
     }
 
@@ -487,10 +496,10 @@ export const deleteEmissionByStartup = async (req, res) => {
       await connection.query("DELETE FROM emission_shareholders WHERE emission_id = ?", [emissionId]);
     }
 
-    await cleanupLegalDocuments(connection, startupId, ["BOARD", "GF"]);
+    await cleanupLegalDocuments(connection, emissionRows[0].startup_id, ["BOARD", "GF"]);
 
     await connection.query("DELETE FROM admin_issues WHERE emission_id = ?", [emissionId]);
-    await connection.query("DELETE FROM emission_rounds WHERE id = ? AND startup_id = ?", [emissionId, startupId]);
+    await connection.query("DELETE FROM emission_rounds WHERE id = ? AND startup_id = ?", [emissionId, emissionRows[0].startup_id]);
 
     await connection.commit();
 
@@ -536,7 +545,7 @@ export const reportEmissionIssue = async (req, res) => {
     const startupId = Number(emissionRows[0].startup_id);
     let hasAccess = false;
 
-    if (userRole === "startup" && startupId === Number(userId)) {
+    if (userRole === "startup" && await isUserInSameCompany(pool, userId, startupId)) {
       hasAccess = true;
     }
 

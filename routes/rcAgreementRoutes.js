@@ -119,7 +119,8 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         e.conversion_years,
         e.bank_account,
         e.deadline,
-        u.name AS startup_name,
+        COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
+        COALESCE(c.company_name, sp.company_name, u.name) AS company_legal_name,
         investor.name AS investor_name,
         investor.email AS investor_email,
         d.id AS document_id,
@@ -130,6 +131,9 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
       JOIN emission_rounds e ON a.round_id = e.id
       JOIN users u ON e.startup_id = u.id
       JOIN users investor ON a.investor_id = investor.id
+      LEFT JOIN company_memberships cm ON cm.user_id = u.id
+      LEFT JOIN companies c ON c.id = cm.company_id
+      LEFT JOIN startup_profiles sp ON sp.user_id = e.startup_id
       ${rcDocumentJoin}
       WHERE a.id = ?
       `,
@@ -192,11 +196,11 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
         e.deadline,
         e.open AS round_open,
         e.created_at AS round_created_at,
-        u.name AS startup_name,
+        COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
         u.email AS startup_email,
         investor.name AS investor_name,
         investor.email AS investor_email,
-        c.company_name AS company_legal_name,
+        COALESCE(c.company_name, sp.company_name, u.name) AS company_legal_name,
         c.orgnr AS company_org_no,
         d.id,
         d.title,
@@ -212,6 +216,7 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
       JOIN users investor ON a.investor_id = investor.id
       LEFT JOIN company_memberships cm ON cm.user_id = u.id
       LEFT JOIN companies c ON c.id = cm.company_id
+      LEFT JOIN startup_profiles sp ON sp.user_id = a.startup_id
       ${rcDocumentJoin}
       WHERE a.id = ?
       `,
@@ -567,12 +572,15 @@ router.get(
             e.valuation_cap,
             e.conversion_years,
             e.bank_account,
-            u.name AS startup_name,
+            COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
             d.id AS document_id,
             d.status AS document_status
           FROM rc_agreements a
           JOIN emission_rounds e ON a.round_id = e.id
           JOIN users u ON a.startup_id = u.id
+          LEFT JOIN company_memberships cm ON cm.user_id = u.id
+          LEFT JOIN companies c ON c.id = cm.company_id
+          LEFT JOIN startup_profiles sp ON sp.user_id = a.startup_id
           ${rcDocumentJoin}
           WHERE a.investor_id = ?
           ORDER BY a.created_at DESC

@@ -4,6 +4,7 @@ import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
 import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
+import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 
 const router = express.Router();
 const MAX_EMISSION_AMOUNT = 2147483647;
@@ -46,6 +47,8 @@ router.post(
     console.log("BOARD BODY:", req.body);
 
     try {
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startupId = startupContext.startupUserId;
 
       if (!(await canStartupCreateRaise(req.user.id))) {
         return res.status(403).json({
@@ -89,39 +92,28 @@ router.post(
           AND status IN ('SIGNED', 'LOCKED')
         LIMIT 1
         `,
-        [req.user.id]
+        [startupId]
       );
 
       if (existingLockedDocs.length > 0) {
-        const canRestart = await canRestartLegalFlow(req.user.id);
+        const canRestart = await canRestartLegalFlow(startupId);
         if (!canRestart) {
           return res.status(400).json({
             error: "Dokumentgrunnlaget kan ikke erstattes mens emisjon eller RC-prosess finnes."
           });
         }
 
-        await cleanupLegalDocuments(pool, req.user.id, ["BOARD", "GF"]);
+        await cleanupLegalDocuments(pool, startupId, ["BOARD", "GF"]);
       }
-      
-      const [companyRows] = await pool.query(
-        `
-        SELECT c.company_name, c.orgnr
-        FROM company_memberships cm
-        JOIN companies c ON c.id = cm.company_id
-        WHERE cm.user_id = ?
-        LIMIT 1
-        `,
-        [req.user.id]
-      );
 
-      if (!companyRows.length) {
+      if (!startupContext.company) {
         return res.status(400).json({
           error: "Fant ikke selskapsinformasjon for brukeren. Registrer startup først."
         });
       }
 
-      const companyName = String(companyRows[0].company_name || "").trim();
-      const orgnr = String(companyRows[0].orgnr || "").trim();
+      const companyName = String(startupContext.company.company_name || "").trim();
+      const orgnr = String(startupContext.company.orgnr || "").trim();
 
       if (!companyName || !orgnr) {
         return res.status(400).json({
@@ -136,7 +128,7 @@ router.post(
           `INSERT INTO startup_legal_data
           (startup_id, company_name, orgnr, amount, chair_name, secretary_name, secretary_email)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [req.user.id, companyName, orgnr, numericAmount, chairName, secretaryName, secretaryEmail]
+          [startupId, companyName, orgnr, numericAmount, chairName, secretaryName, secretaryEmail]
         );
 
       // 2️⃣ Hent template
@@ -166,7 +158,7 @@ router.post(
         `INSERT INTO documents
          (type, startup_id, title, html_content, status)
          VALUES ('BOARD', ?, ?, ?, 'DRAFT')`,
-        [req.user.id, `Styrets forslag – ${companyName}`, html]
+        [startupId, `Styrets forslag – ${companyName}`, html]
       );
 
       const documentId = docResult.insertId;

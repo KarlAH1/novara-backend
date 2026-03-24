@@ -1,6 +1,10 @@
 import express from "express";
 import pool from "../config/db.js";
 import { auth } from "../middleware/authMiddleware.js";
+import {
+    isUserInSameCompany,
+    resolveCompanyStartupOwner
+} from "../utils/startupContext.js";
 
 const router = express.Router();
 
@@ -13,6 +17,12 @@ const getRcPaymentColumns = async (connection) => {
     const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
     return new Set(columnRows.map((column) => column.Field));
 };
+
+const normalizePersonName = (value) =>
+    String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
 
 const syncRcAgreementSignatures = async (connection, documentId, htmlContent, documentHash) => {
     const agreementMatch = htmlContent.match(/rc_agreement_id:(\d+)/i);
@@ -126,8 +136,8 @@ const syncRcAgreementSignatures = async (connection, documentId, htmlContent, do
 
 router.get("/legal-status", auth, async (req, res) => {
     try {
-
-        const startupId = req.user.id;
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const startupId = startupContext.startupUserId;
 
         /* =========================
            BOARD
@@ -174,7 +184,9 @@ router.get("/legal-status", auth, async (req, res) => {
         let gf = {
             exists: false,
             signed: false,
-            documentId: null
+            documentId: null,
+            canSignDirect: false,
+            secretaryNameMatches: null
         };
 
         if (gfRows.length > 0) {
@@ -183,6 +195,47 @@ router.get("/legal-status", auth, async (req, res) => {
             gf.signed =
                 gfRows[0].status === "SIGNED" ||
                 gfRows[0].status === "LOCKED";
+
+            if (!gf.signed) {
+                const [[userRow], [signerRows], [legalRows]] = await Promise.all([
+                    pool.query(
+                        "SELECT name FROM users WHERE id = ? LIMIT 1",
+                        [req.user.id]
+                    ),
+                    pool.query(
+                        `
+                        SELECT id
+                        FROM document_signers
+                        WHERE document_id = ?
+                          AND role = 'Protokollunderskriver'
+                          AND signed_at IS NULL
+                          AND (user_id = ? OR email = ?)
+                        LIMIT 1
+                        `,
+                        [gf.documentId, req.user.id, req.user.email]
+                    ),
+                    pool.query(
+                        `
+                        SELECT secretary_name
+                        FROM startup_legal_data
+                        WHERE startup_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        `,
+                        [startupId]
+                    )
+                ]);
+
+                const secretaryName = legalRows[0]?.secretary_name || "";
+                const userName = userRow[0]?.name || "";
+                const nameLooksRight =
+                    !secretaryName ||
+                    !userName ||
+                    normalizePersonName(secretaryName) === normalizePersonName(userName);
+
+                gf.canSignDirect = signerRows.length > 0;
+                gf.secretaryNameMatches = signerRows.length > 0 ? nameLooksRight : null;
+            }
         }
 
         res.json({ board, gf });
@@ -392,6 +445,7 @@ router.post("/:id/sign", auth, async (req, res) => {
 
 router.get("/latest-gf", auth, async (req, res) => {
     try {
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
 
         const [rows] = await pool.query(
             `SELECT id
@@ -399,7 +453,7 @@ router.get("/latest-gf", auth, async (req, res) => {
              WHERE type = 'GF' AND startup_id = ?
              ORDER BY created_at DESC
              LIMIT 1`,
-            [req.user.id]
+            [startupContext.startupUserId]
         );
 
         if (rows.length === 0) {

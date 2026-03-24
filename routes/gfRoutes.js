@@ -4,6 +4,7 @@ import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
 import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
+import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 
 const router = express.Router();
 
@@ -42,8 +43,8 @@ router.post(
   requireRole(["startup"]),
   async (req, res) => {
     try {
-
-      const startupId = req.user.id;
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startupId = startupContext.startupUserId;
 
       if (!(await canStartupCreateRaise(startupId))) {
         return res.status(403).json({
@@ -136,6 +137,12 @@ router.post(
       );
 
       const documentId = docResult.insertId;
+      const [secretaryUsers] = await pool.query(
+        "SELECT id FROM users WHERE email = ? LIMIT 1",
+        [String(data.secretary_email || "").trim().toLowerCase()]
+      );
+      const secretaryUserId = secretaryUsers[0]?.id || null;
+      const secretaryStatus = secretaryUserId ? "ACCEPTED" : "INVITED";
 
       /* =====================================================
          5️⃣ Legg til signatører
@@ -152,9 +159,9 @@ router.post(
       // Protokollunderskriver (invited)
       await pool.query(
         `INSERT INTO document_signers
-         (document_id, email, role, status)
-         VALUES (?, ?, 'Protokollunderskriver', 'INVITED')`,
-        [documentId, data.secretary_email]
+         (document_id, email, user_id, role, status)
+         VALUES (?, ?, ?, 'Protokollunderskriver', ?)`,
+        [documentId, data.secretary_email, secretaryUserId, secretaryStatus]
       );
 
       /* =====================================================

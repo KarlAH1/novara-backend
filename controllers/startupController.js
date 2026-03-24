@@ -9,6 +9,10 @@ import {
     getStartupPlanDefinition,
     getStartupPlanSummaryForUser
 } from "../utils/startupPlanAccess.js";
+import {
+    getCompanyStartupProfile,
+    resolveCompanyStartupOwner
+} from "../utils/startupContext.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,12 +85,9 @@ export const createOrUpdateStartupProfile = async (req, res) => {
             });
         }
 
-        const [existing] = await pool.query(
-            "SELECT id FROM startup_profiles WHERE user_id=? LIMIT 1",
-            [userId]
-        );
+        const existing = await getCompanyStartupProfile(pool, userId);
 
-        if (existing.length > 0) {
+        if (existing) {
             await pool.query(
                 `UPDATE startup_profiles
                  SET company_name=?, sector=?, pitch=?, country=?, vision=?,
@@ -98,7 +99,7 @@ export const createOrUpdateStartupProfile = async (req, res) => {
                     useOfFundsValue,
                     "",
                     descriptionValue,
-                    raising_amount, slip_horizon_months, is_raising, userId
+                    raising_amount, slip_horizon_months, is_raising, existing.user_id
                 ]
             );
 
@@ -135,22 +136,24 @@ export const createOrUpdateStartupProfile = async (req, res) => {
 };
 
 export const getStartupByUser = async (req, res) => {
-    const [rows] = await pool.query(
-        "SELECT * FROM startup_profiles WHERE user_id=?",
-        [req.user.id]
-    );
+    const profile = await getCompanyStartupProfile(pool, req.user.id);
 
-    if (!rows.length) {
-        return res.json(rows);
+    if (!profile) {
+        return res.json([]);
     }
 
-    const latestPitchDeck = await getLatestPitchDeck(req.user.id);
-    rows[0].pitch_deck = latestPitchDeck;
-    res.json(rows);
+    const latestPitchDeck = await getLatestPitchDeck(profile.user_id);
+    res.json([{
+        ...profile,
+        pitch_deck: latestPitchDeck
+    }]);
 };
 
 export const deleteMyStartup = async (req, res) => {
     try {
+      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      const startupUserId = startupContext.startupUserId;
+
       const [emissionRows] = await pool.query(
         `
         SELECT id
@@ -158,7 +161,7 @@ export const deleteMyStartup = async (req, res) => {
         WHERE startup_id = ?
         LIMIT 1
         `,
-        [req.user.id]
+        [startupUserId]
       );
 
       if (emissionRows.length > 0) {
@@ -175,7 +178,7 @@ export const deleteMyStartup = async (req, res) => {
         WHERE e.startup_id = ?
         LIMIT 1
         `,
-        [req.user.id]
+        [startupUserId]
       );
 
       if (agreementRows.length > 0) {
@@ -186,7 +189,7 @@ export const deleteMyStartup = async (req, res) => {
 
       await pool.query(
         "DELETE FROM startup_profiles WHERE user_id=?",
-        [req.user.id]
+        [startupUserId]
       );
   
       res.json({ message: "Startup slettet." });
@@ -286,6 +289,8 @@ export const getMyOrganization = async (req, res) => {
 
 export const uploadStartupPitchDeck = async (req, res) => {
     try {
+        const existingProfile = await getCompanyStartupProfile(pool, req.user.id);
+        const targetStartupUserId = existingProfile?.user_id || req.user.id;
         const fileName = String(req.body.fileName || "").trim();
         const fileData = String(req.body.fileData || "").trim();
 
@@ -304,7 +309,7 @@ export const uploadStartupPitchDeck = async (req, res) => {
         }
 
         const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
-        const storedFileName = `${req.user.id}-${Date.now()}-${safeName}`;
+        const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
         const absolutePath = path.join(frontendUploadsDir, storedFileName);
         const publicPath = `uploads/pitch-decks/${storedFileName}`;
 
@@ -316,7 +321,7 @@ export const uploadStartupPitchDeck = async (req, res) => {
             INSERT INTO startup_documents (startup_id, filename, url)
             VALUES (?, ?, ?)
             `,
-            [req.user.id, fileName, publicPath]
+            [targetStartupUserId, fileName, publicPath]
         );
 
         res.json({

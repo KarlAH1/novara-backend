@@ -9,6 +9,7 @@ import { testConnection } from "./config/db.js";
 import { ensureAuthSchema } from "./utils/authSchema.js";
 import { ensureAdminIssueSchema } from "./utils/adminIssueSchema.js";
 import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
+import { ensureStartupProfileSchema } from "./utils/startupProfileSchema.js";
 
 /* =========================================
    ENVIRONMENT SAFETY CHECK
@@ -39,6 +40,7 @@ await testConnection();
 await ensureAuthSchema();
 await ensureAdminIssueSchema();
 await ensureStartupPlanSchema();
+await ensureStartupProfileSchema();
 
 /* =========================================
    CORS – Environment Controlled
