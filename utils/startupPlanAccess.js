@@ -24,7 +24,7 @@ export const STARTUP_PLAN_DEFINITIONS = {
   normal: {
     code: "normal",
     name: "Normal",
-    annual_price_nok: 1000,
+    annual_price_nok: 2000,
     available: true,
     features: [
       "Alt i Basic",

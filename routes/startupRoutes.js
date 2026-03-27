@@ -8,6 +8,7 @@ import {
   deleteMyStartup,
   getMyOrganization,
   uploadStartupPitchDeck,
+  uploadStartupArticlesOfAssociation,
   getStartupPlanStatus,
   selectStartupPlan,
   startStartupPlanPayment,
@@ -31,6 +32,7 @@ router.get("/ping", (req, res) =>
 ========================================= */
 router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
 router.post("/pitch-deck", authMiddleware, uploadStartupPitchDeck);
+router.post("/articles-of-association", authMiddleware, uploadStartupArticlesOfAssociation);
 router.get("/plan", authMiddleware, getStartupPlanStatus);
 router.post("/plan/select", authMiddleware, selectStartupPlan);
 router.post("/plan/payment/start", authMiddleware, startStartupPlanPayment);

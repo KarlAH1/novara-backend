@@ -2,6 +2,7 @@ import express from "express";
 import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { buildRcDocumentHtml, buildRcTemplateData, investViaInvite } from "../controllers/rcAgreementController.js";
+import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 
 const router = express.Router();
 
@@ -114,6 +115,8 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         CONCAT('Emisjon #', a.round_id) AS round_name,
         e.target_amount,
         e.amount_raised,
+        e.committed_amount,
+        e.closed_reason,
         e.discount_rate,
         e.valuation_cap,
         e.conversion_years,
@@ -145,6 +148,7 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
     }
 
     const agreement = rows[0];
+    const availability = await syncEmissionRoundAvailability(pool, agreement.round_id);
 
     if (agreement.investor_id !== userId && agreement.startup_id !== userId) {
       return res.status(403).json({ error: "Access denied" });
@@ -152,6 +156,10 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
 
     res.json({
       ...agreement,
+      round_status: availability?.status || null,
+      round_closed_reason: availability?.closedReason || null,
+      round_remaining_capacity: availability?.remainingCapacity ?? null,
+      round_committed_amount: availability?.committedAmount ?? null,
       ...getRcAgreementViewState(agreement)
     });
 
@@ -443,11 +451,21 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
     }
 
     const agreement = rows[0];
+    const availability = await syncEmissionRoundAvailability(connection, agreement.round_id, { lock: true });
 
     if (agreement.status !== "Awaiting Payment") {
       await connection.rollback();
       return res.status(400).json({
         error: "Agreement not ready for activation"
+      });
+    }
+
+    if (!availability?.canInvest || agreement.investment_amount > (availability?.remainingCapacity ?? 0)) {
+      await connection.rollback();
+      return res.status(400).json({
+        error: getCapacityExceededMessage(availability?.remainingCapacity ?? 0),
+        max_available_amount: availability?.remainingCapacity ?? 0,
+        remainingCapacity: availability?.remainingCapacity ?? 0
       });
     }
 
@@ -471,6 +489,8 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
       `,
       [agreement.investment_amount, agreement.round_id]
     );
+
+    await syncEmissionRoundAvailability(connection, agreement.round_id, { lock: true });
 
     const [paymentRows] = await connection.query(
       "SELECT id FROM rc_payments WHERE agreement_id = ?",
@@ -629,6 +649,8 @@ router.get(
           e.bank_account,
           e.target_amount,
           e.amount_raised,
+          e.committed_amount,
+          e.closed_reason,
           d.id AS document_id,
           d.status AS document_status
         FROM rc_agreements a

@@ -25,12 +25,12 @@
       <tr>
         <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
           <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Selskapet</p>
-          <p style="margin: 0;"><strong>{{company.legal_name}} AS</strong>, org.nr. {{company.org_no}}, {{company.address}}</p>
+          <p style="margin: 0;"><strong>{{company.legal_name}} AS</strong>, org.nr. {{company.org_no}}</p>
         </td>
         <td style="width: 16px;"></td>
         <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
           <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Investor</p>
-          <p style="margin: 0;"><strong>{{investor.legal_name}}</strong>, {{investor.identifier_label}} {{investor.identifier}}, {{investor.address}}</p>
+          <p style="margin: 0;"><strong>{{investor.legal_name}}</strong>, {{investor.identifier_label}} {{investor.identifier}}</p>
         </td>
       </tr>
     </table>
@@ -242,13 +242,11 @@
 
       <h3 style="margin: 0 0 10px; font-size: 16px;">Selskap</h3>
       <p style="margin: 0 0 6px;"><strong>Navn:</strong> {{company.legal_name}} AS</p>
-      <p style="margin: 0 0 6px;"><strong>Org.nr.:</strong> {{company.org_no}}</p>
-      <p style="margin: 0 0 18px;"><strong>Adresse:</strong> {{company.address}}</p>
+      <p style="margin: 0 0 18px;"><strong>Org.nr.:</strong> {{company.org_no}}</p>
 
       <h3 style="margin: 0 0 10px; font-size: 16px;">Investor</h3>
       <p style="margin: 0 0 6px;"><strong>Navn:</strong> {{investor.legal_name}}</p>
-      <p style="margin: 0 0 6px;"><strong>Identifikasjon:</strong> {{investor.identifier_label}} {{investor.identifier}}</p>
-      <p style="margin: 0 0 18px;"><strong>Adresse:</strong> {{investor.address}}</p>
+      <p style="margin: 0 0 18px;"><strong>Identifikasjon:</strong> {{investor.identifier_label}} {{investor.identifier}}</p>
 
       <h3 style="margin: 0 0 10px; font-size: 16px;">Investor-spesifikke vilkår</h3>
       <p style="margin: 0 0 6px;"><strong>Investeringsbeløp:</strong> {{summary.investment_amount}}</p>

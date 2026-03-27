@@ -5,6 +5,7 @@ import {
   isUserInSameCompany,
   resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
+import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 const emissionShareholderTableName = "emission_shareholders";
@@ -138,13 +139,17 @@ export const startEmission = async (req, res) => {
       ========================= */
   
       const [existing] = await pool.query(`
-        SELECT id FROM emission_rounds
-        WHERE startup_id=? AND open=1
+        SELECT id, open, closed_reason
+        FROM emission_rounds
+        WHERE startup_id=?
+        ORDER BY id DESC
+        LIMIT 1
       `, [startup_id]);
   
       if (existing.length > 0) {
         return res.status(400).json({
-          message: "Emission already active"
+          message: "Startupen har allerede en runde. I MVP støttes kun én runde før konvertering er håndtert.",
+          emissionId: existing[0].id
         });
       }
   
@@ -206,9 +211,16 @@ export const getEmissionById = async (req, res) => {
 
         const shareholders = await getEmissionShareholders(emissionId);
 
-        res.json({
-            ...emission,
-            shareholders
+      let emissionWithAvailability = null;
+      try {
+        emissionWithAvailability = await syncEmissionRoundAvailability(pool, emissionId);
+      } catch (availabilityError) {
+        console.error("Emission availability sync error:", availabilityError);
+      }
+
+      res.json({
+        ...(emissionWithAvailability || emission),
+        shareholders
         });
 
     } catch (err) {
@@ -231,15 +243,35 @@ export const updateEmissionConfig = async (req, res) => {
   
       let {
         conversion_years,
+        trigger_period,
         discount_rate,
         valuation_cap,
         bank_account,
         shareholders
       } = req.body;
 
-       //  tom streng → null
-       if (valuation_cap === "" || valuation_cap === undefined) {
-        valuation_cap = null;
+      const normalizedTriggerPeriod = Number(trigger_period || conversion_years || 0) || null;
+      conversion_years = normalizedTriggerPeriod;
+      discount_rate = discount_rate === "" || discount_rate == null ? 0 : Number(discount_rate);
+      valuation_cap = valuation_cap === "" || valuation_cap === undefined ? null : Number(valuation_cap);
+      bank_account = String(bank_account || "").trim();
+
+       if (!Number.isFinite(normalizedTriggerPeriod) || normalizedTriggerPeriod <= 0) {
+        return res.status(400).json({
+          message: "Triggerperiode må være satt."
+        });
+      }
+
+      if (!Number.isFinite(valuation_cap) || valuation_cap <= 0) {
+        return res.status(400).json({
+          message: "Valuation cap må være satt."
+        });
+      }
+
+      if (!bank_account) {
+        return res.status(400).json({
+          message: "Kontonummer må være satt."
+        });
       }
   
       // Sjekk at emission tilhører startup
@@ -280,12 +312,14 @@ export const updateEmissionConfig = async (req, res) => {
         UPDATE emission_rounds
         SET
           conversion_years = ?,
+          trigger_period = ?,
           discount_rate = ?,
           valuation_cap = ?,
           bank_account = ?
         WHERE id = ?
       `, [
         conversion_years,
+        normalizedTriggerPeriod,
         discount_rate,
         valuation_cap,
         bank_account,
@@ -395,7 +429,14 @@ export const getActiveEmission = async (req, res) => {
           return res.json(null);
       }
 
-      res.json(rows[0]);
+      let emission = null;
+      try {
+        emission = await syncEmissionRoundAvailability(pool, rows[0].id);
+      } catch (availabilityError) {
+        console.error("Active emission availability sync error:", availabilityError);
+      }
+
+      res.json(emission || rows[0]);
 
   } catch (err) {
       console.error("GET ACTIVE EMISSION ERROR:", err);

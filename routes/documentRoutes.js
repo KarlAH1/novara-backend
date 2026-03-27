@@ -5,6 +5,7 @@ import {
     isUserInSameCompany,
     resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
+import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 
 const router = express.Router();
 
@@ -246,6 +247,98 @@ router.get("/legal-status", auth, async (req, res) => {
     }
 });
 
+router.get("/startup/list", auth, async (req, res) => {
+    try {
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const startupId = startupContext.startupUserId;
+
+        const [documents] = await pool.query(
+            `
+            SELECT id, type, title, status, created_at, locked_at
+            FROM documents
+            WHERE startup_id = ?
+            ORDER BY created_at DESC, id DESC
+            `,
+            [startupId]
+        );
+
+        const [startupDocuments] = await pool.query(
+            `
+            SELECT
+              id,
+              document_type,
+              filename,
+              url,
+              mime_type,
+              status,
+              parse_status,
+              parsed_fields_json,
+              uploaded_at
+            FROM startup_documents
+            WHERE startup_id = ?
+              AND visible_in_document_room = 1
+            ORDER BY uploaded_at DESC, id DESC
+            `,
+            [startupId]
+        );
+
+        const [conversionRows] = await pool.query(
+            `
+            SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
+            FROM conversion_events
+            WHERE startup_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            `,
+            [startupId]
+        );
+
+        const conversion = conversionRows[0] || null;
+
+        res.json({
+            documents: [
+                ...documents,
+                ...startupDocuments.map((doc) => ({
+                    id: doc.id,
+                    source: "startup_document",
+                    type: doc.document_type,
+                    title: doc.filename,
+                    status: doc.status,
+                    parse_status: doc.parse_status,
+                    parsed_fields_json: doc.parsed_fields_json,
+                    url: doc.url,
+                    mime_type: doc.mime_type,
+                    created_at: doc.uploaded_at
+                }))
+            ],
+            conversion,
+            placeholders: [
+                {
+                    key: "conversion_share_register",
+                    category: "Konverteringsdokumenter",
+                    title: "Eierregister etter konvertering",
+                    status: conversion?.gf_document_id ? "ikke klar ennå" : "ikke klar"
+                },
+                {
+                    key: "conversion_articles",
+                    category: "Konverteringsdokumenter",
+                    title: "Vedtekter etter kapitalforhøyelse",
+                    status: conversion?.gf_document_id ? "ikke klar ennå" : "ikke klar"
+                },
+                {
+                    key: "conversion_package",
+                    category: "Altinn-pakke",
+                    title: "Altinn-pakke for konvertering",
+                    status: conversion?.gf_document_id ? "ikke klar ennå" : "ikke klar"
+                }
+            ]
+        });
+    } catch (err) {
+        console.error("Startup documents list error:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
 
 /* =========================================
    GET DOCUMENT
@@ -279,6 +372,46 @@ router.post("/:id/sign", auth, async (req, res) => {
 
         const documentId = req.params.id;
 
+        const [docRows] = await connection.query(
+            "SELECT type, startup_id, html_content FROM documents WHERE id=?",
+            [documentId]
+        );
+
+        if (docRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: "Document not found" });
+        }
+
+        const doc = docRows[0];
+
+        if (doc.type === "RC") {
+            const agreementMatch = doc.html_content.match(/rc_agreement_id:(\d+)/i);
+
+            if (agreementMatch) {
+                const agreementId = Number(agreementMatch[1]);
+                const [agreementRows] = await connection.query(
+                    `
+                    SELECT round_id
+                    FROM rc_agreements
+                    WHERE id = ?
+                    LIMIT 1
+                    `,
+                    [agreementId]
+                );
+
+                if (agreementRows.length > 0) {
+                    const availability = await syncEmissionRoundAvailability(connection, agreementRows[0].round_id, { lock: true });
+                    if (availability?.closedReason && availability.closedReason !== "target_reached") {
+                        await connection.rollback();
+                        return res.status(409).json({
+                            error: availability.message || "Runden er avsluttet.",
+                            code: availability.closedReason
+                        });
+                    }
+                }
+            }
+        }
+
         const [result] = await connection.query(
             `UPDATE document_signers
              SET signed_at = NOW(),
@@ -309,18 +442,6 @@ router.post("/:id/sign", auth, async (req, res) => {
             "SELECT id FROM document_signers WHERE document_id=? AND signed_at IS NULL",
             [documentId]
         );
-
-        const [docRows] = await connection.query(
-            "SELECT type, startup_id, html_content FROM documents WHERE id=?",
-            [documentId]
-        );
-
-        if (docRows.length === 0) {
-            await connection.rollback();
-            return res.status(404).json({ error: "Document not found" });
-        }
-
-        const doc = docRows[0];
         let documentHash = null;
 
         if (remaining.length === 0) {

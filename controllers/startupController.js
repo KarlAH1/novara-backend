@@ -13,10 +13,14 @@ import {
     getCompanyStartupProfile,
     resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
+import {
+    extractArticlesTextFromFile,
+    parseArticlesText
+} from "../utils/articlesParser.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const frontendUploadsDir = path.resolve(__dirname, "../../frontend/uploads/pitch-decks");
+const frontendUploadsDir = path.resolve(__dirname, "../../frontend/uploads/startup-documents");
 const STARTUP_TEXT_MAX_LENGTH = 200;
 
 function validateStartupText(value, fieldLabel, { required = false } = {}) {
@@ -37,19 +41,28 @@ async function getCompanyIdentityForUser(userId) {
     return getCompanyForUser(userId);
 }
 
-async function getLatestPitchDeck(userId) {
+async function getLatestStartupDocumentByType(userId, documentType) {
     const [rows] = await pool.query(
         `
-        SELECT filename, url, uploaded_at
+        SELECT id, filename, url, uploaded_at, document_type, mime_type, parse_status, parsed_fields_json, extracted_text, status
         FROM startup_documents
         WHERE startup_id = ?
+          AND document_type = ?
         ORDER BY uploaded_at DESC, id DESC
         LIMIT 1
         `,
-        [userId]
+        [userId, documentType]
     );
 
     return rows[0] || null;
+}
+
+function safeParseJson(value) {
+    try {
+        return JSON.parse(value || "{}");
+    } catch {
+        return {};
+    }
 }
 
 export const createOrUpdateStartupProfile = async (req, res) => {
@@ -65,7 +78,10 @@ export const createOrUpdateStartupProfile = async (req, res) => {
             vision,
             raising_amount,
             slip_horizon_months,
-            is_raising
+            is_raising,
+            nominal_value_per_share,
+            current_share_count,
+            share_basis_temporary
         } = req.body;
 
         if (!company?.company_name) {
@@ -78,6 +94,27 @@ export const createOrUpdateStartupProfile = async (req, res) => {
         const offeringError = validateStartupText(offeringValue, "Hva selskapet tilbyr", { required: true });
         const useOfFundsError = validateStartupText(useOfFundsValue, "Bruk av kapital", { required: true });
         const descriptionError = validateStartupText(descriptionValue, "Kort selskapsbeskrivelse");
+        const latestArticles = await getLatestStartupDocumentByType(userId, "current_articles_of_association");
+        const parsedArticles = safeParseJson(latestArticles?.parsed_fields_json);
+
+        let nominalValue = nominal_value_per_share === "" || nominal_value_per_share == null
+            ? null
+            : Number(nominal_value_per_share);
+        let currentShareCountValue = current_share_count === "" || current_share_count == null
+            ? null
+            : Number(current_share_count);
+        const temporaryShareBasis = Number(Boolean(share_basis_temporary));
+
+        if (temporaryShareBasis) {
+            if (!Number.isFinite(nominalValue) || nominalValue <= 0) {
+                nominalValue = 1;
+            }
+
+            const parsedShareCapital = Number(parsedArticles?.share_capital_amount || 0);
+            if ((!Number.isFinite(currentShareCountValue) || currentShareCountValue <= 0) && parsedShareCapital > 0 && nominalValue > 0) {
+                currentShareCountValue = Math.round(parsedShareCapital / nominalValue);
+            }
+        }
 
         if (offeringError || useOfFundsError || descriptionError) {
             return res.status(400).json({
@@ -91,7 +128,8 @@ export const createOrUpdateStartupProfile = async (req, res) => {
             await pool.query(
                 `UPDATE startup_profiles
                  SET company_name=?, sector=?, pitch=?, country=?, vision=?,
-                     raising_amount=?, slip_horizon_months=?, is_raising=?
+                     raising_amount=?, slip_horizon_months=?, is_raising=?,
+                     nominal_value_per_share=?, current_share_count=?, share_basis_temporary=?
                  WHERE user_id=?`,
                 [
                     company.company_name,
@@ -99,7 +137,13 @@ export const createOrUpdateStartupProfile = async (req, res) => {
                     useOfFundsValue,
                     "",
                     descriptionValue,
-                    raising_amount, slip_horizon_months, is_raising, existing.user_id
+                    raising_amount,
+                    slip_horizon_months,
+                    is_raising,
+                    nominalValue,
+                    currentShareCountValue,
+                    temporaryShareBasis,
+                    existing.user_id
                 ]
             );
 
@@ -109,8 +153,9 @@ export const createOrUpdateStartupProfile = async (req, res) => {
         await pool.query(
             `INSERT INTO startup_profiles
              (user_id, company_name, sector, pitch, country, vision,
-              raising_amount, slip_horizon_months, is_raising)
-             VALUES (?,?,?,?,?,?,?,?,?)`,
+              raising_amount, slip_horizon_months, is_raising,
+              nominal_value_per_share, current_share_count, share_basis_temporary)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
             [
                 userId,
                 company.company_name,
@@ -118,7 +163,8 @@ export const createOrUpdateStartupProfile = async (req, res) => {
                 useOfFundsValue,
                 "",
                 descriptionValue,
-                raising_amount, slip_horizon_months, is_raising
+                raising_amount, slip_horizon_months, is_raising,
+                nominalValue, currentShareCountValue, temporaryShareBasis
             ]
         );
 
@@ -142,10 +188,27 @@ export const getStartupByUser = async (req, res) => {
         return res.json([]);
     }
 
-    const latestPitchDeck = await getLatestPitchDeck(profile.user_id);
+    const latestPitchDeck = await getLatestStartupDocumentByType(profile.user_id, "pitch_deck");
+    const currentArticles = await getLatestStartupDocumentByType(profile.user_id, "current_articles_of_association");
+    const parsedArticles = safeParseJson(currentArticles?.parsed_fields_json);
+    const resolvedNominalValue = Number(profile.nominal_value_per_share || 0) > 0
+        ? profile.nominal_value_per_share
+        : (Number(parsedArticles?.nominal_value || 0) > 0 ? Number(parsedArticles.nominal_value) : null);
+    const parsedShareCount = Number(parsedArticles?.share_count || 0);
+    const parsedShareCapital = Number(parsedArticles?.share_capital_amount || 0);
+    const derivedShareCount = parsedShareCapital > 0 && Number(resolvedNominalValue || 0) > 0
+        ? Math.round(parsedShareCapital / Number(resolvedNominalValue))
+        : null;
+    const resolvedCurrentShareCount = Number(profile.current_share_count || 0) > 0
+        ? profile.current_share_count
+        : (parsedShareCount > 0 ? Math.round(parsedShareCount) : derivedShareCount);
+
     res.json([{
         ...profile,
-        pitch_deck: latestPitchDeck
+        current_share_count: resolvedCurrentShareCount,
+        nominal_value_per_share: resolvedNominalValue,
+        pitch_deck: latestPitchDeck,
+        current_articles_of_association: currentArticles
     }]);
 };
 
@@ -311,17 +374,18 @@ export const uploadStartupPitchDeck = async (req, res) => {
         const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
         const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
         const absolutePath = path.join(frontendUploadsDir, storedFileName);
-        const publicPath = `uploads/pitch-decks/${storedFileName}`;
+        const publicPath = `uploads/startup-documents/${storedFileName}`;
 
         await fs.mkdir(frontendUploadsDir, { recursive: true });
         await fs.writeFile(absolutePath, Buffer.from(match[1], "base64"));
 
         await pool.query(
             `
-            INSERT INTO startup_documents (startup_id, filename, url)
-            VALUES (?, ?, ?)
+            INSERT INTO startup_documents
+            (startup_id, filename, url, document_type, mime_type, uploaded_by_user_id, status, visible_in_document_room, used_for_conversion, parse_status)
+            VALUES (?, ?, ?, 'pitch_deck', 'application/pdf', ?, 'uploaded', 1, 0, 'not_started')
             `,
-            [targetStartupUserId, fileName, publicPath]
+            [targetStartupUserId, fileName, publicPath, req.user.id]
         );
 
         res.json({
@@ -334,6 +398,72 @@ export const uploadStartupPitchDeck = async (req, res) => {
     } catch (err) {
         console.error("Upload startup pitch deck error:", err);
         res.status(500).json({ error: "Kunne ikke laste opp pitch deck." });
+    }
+};
+
+export const uploadStartupArticlesOfAssociation = async (req, res) => {
+    try {
+        const existingProfile = await getCompanyStartupProfile(pool, req.user.id);
+        const targetStartupUserId = existingProfile?.user_id || req.user.id;
+        const fileName = String(req.body.fileName || "").trim();
+        const fileData = String(req.body.fileData || "").trim();
+
+        if (!fileName || !fileData) {
+            return res.status(400).json({ error: "Filnavn og filinnhold mangler." });
+        }
+
+        if (!/\.pdf$/i.test(fileName)) {
+            return res.status(400).json({ error: "Vedtekter må lastes opp som PDF." });
+        }
+
+        const match = fileData.match(/^data:application\/pdf;base64,(.+)$/);
+        if (!match) {
+            return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
+        }
+
+        const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
+        const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
+        const absolutePath = path.join(frontendUploadsDir, storedFileName);
+        const publicPath = `uploads/startup-documents/${storedFileName}`;
+
+        await fs.mkdir(frontendUploadsDir, { recursive: true });
+        await fs.writeFile(absolutePath, Buffer.from(match[1], "base64"));
+
+        const extractedText = await extractArticlesTextFromFile(absolutePath, "application/pdf");
+        const parsed = parseArticlesText(extractedText);
+
+        const [result] = await pool.query(
+            `
+            INSERT INTO startup_documents
+            (startup_id, filename, url, document_type, mime_type, uploaded_by_user_id, status, visible_in_document_room, used_for_conversion, parse_status, parsed_fields_json, extracted_text)
+            VALUES (?, ?, ?, 'current_articles_of_association', 'application/pdf', ?, 'uploaded', 1, 1, ?, ?, ?)
+            `,
+            [
+                targetStartupUserId,
+                fileName,
+                publicPath,
+                req.user.id,
+                parsed.parseStatus,
+                JSON.stringify(parsed.parsedFields || {}),
+                parsed.extractedText || null
+            ]
+        );
+
+        res.json({
+            success: true,
+            file: {
+                id: result.insertId,
+                filename: fileName,
+                url: publicPath,
+                document_type: "current_articles_of_association",
+                status: "uploaded",
+                parse_status: parsed.parseStatus,
+                parsed_fields: parsed.parsedFields || {}
+            }
+        });
+    } catch (err) {
+        console.error("Upload startup articles error:", err);
+        res.status(500).json({ error: "Kunne ikke laste opp vedtekter." });
     }
 };
 
@@ -616,7 +746,7 @@ export const applyStartupDiscountCode = async (req, res) => {
 
         if (code.allowed_plan !== selectedPlan) {
             await connection.rollback();
-            return res.status(400).json({ error: `Denne koden kan bare brukes pa ${String(code.allowed_plan || "").toUpperCase()}.` });
+            return res.status(400).json({ error: `Denne koden kan bare brukes på ${String(code.allowed_plan || "").toUpperCase()}.` });
         }
 
         if (Number(code.times_redeemed || 0) >= Number(code.max_redemptions || 0)) {
@@ -626,7 +756,7 @@ export const applyStartupDiscountCode = async (req, res) => {
 
         if (selectedPlan !== "basic") {
             await connection.rollback();
-            return res.status(400).json({ error: "Rabattkoden kan ikke brukes pa denne planen." });
+            return res.status(400).json({ error: "Rabattkoden kan ikke brukes på denne planen." });
         }
 
         const [existingRedemptions] = await connection.query(

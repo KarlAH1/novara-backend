@@ -1,0 +1,76 @@
+<section style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+  <header style="margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #d8d0c4;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="vertical-align: top;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Styret</p>
+          <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Styrets forslag til kapitalforhøyelse ved konvertering</h1>
+          <p style="margin: 10px 0 0; color: #374151;">Foreløpig SFC-mal for konverteringsfasen</p>
+        </td>
+        <td style="vertical-align: top; text-align: right;">
+          <div style="display: inline-block; min-width: 230px; padding: 14px 16px; border-radius: 14px; background: #efe7db; border: 1px solid #d8d0c4; text-align: left;">
+            <p style="margin: 0 0 6px;"><strong>Selskap:</strong> {{company_name}}</p>
+            <p style="margin: 0 0 6px;"><strong>Org.nr.:</strong> {{orgnr}}</p>
+            <p style="margin: 0;"><strong>Dato:</strong> {{date}}</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </header>
+
+  <section style="margin-bottom: 32px;">
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Bakgrunn</h2>
+    <p style="margin: 0 0 12px;">
+      Styret legger med dette frem forslag om kapitalforhøyelse som ledd i konvertering av tidligere inngåtte RC-avtaler.
+      Denne malen bruker foreløpig standardtekst og mockdata, og det endelige innholdet kan justeres senere.
+    </p>
+    <p style="margin: 0;">
+      Trigger event for denne konverteringen er registrert som <strong>{{trigger_type}}</strong>, knyttet til runde <strong>#{{round_id}}</strong>.
+    </p>
+  </section>
+
+  <section style="margin-bottom: 32px; padding: 20px; background: #efe7db; border: 1px solid #d8d0c4; border-radius: 16px;">
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Kort oversikt over forslaget</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Dokument</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">SFC</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Trigger event</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{trigger_type}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Runde</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">#{{round_id}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0;"><strong>Forslag</strong></td>
+        <td style="padding: 10px 0; text-align: right;">Kapitalforhøyelse og utstedelse av aksjer</td>
+      </tr>
+    </table>
+  </section>
+
+  <section style="margin-bottom: 34px;">
+    <h2 style="margin: 0 0 16px; font-size: 18px;">Styrets forslag til vedtak</h2>
+    <div style="padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px;">
+      <p style="margin: 0 0 10px;"><strong>1. Kapitalforhøyelse</strong><br>Styret foreslår at generalforsamlingen vedtar en kapitalforhøyelse for å gjennomføre konverteringen av relevante RC-avtaler.</p>
+      <p style="margin: 0 0 10px;"><strong>2. Aksjeutstedelse</strong><br>De investorer som omfattes av konverteringen skal tildeles aksjer i samsvar med de respektive avtalene og den senere generalforsamlingsbeslutningen.</p>
+      <p style="margin: 0 0 10px;"><strong>3. Fortrinnsrett</strong><br>Styret legger til grunn at eventuell fravikelse av eksisterende aksjeeieres fortrinnsrett behandles i selve kapitalforhøyelsesvedtaket.</p>
+      <p style="margin: 0;"><strong>4. Vedtekter og eierregister</strong><br>Som del av gjennomføringen må vedtekter og eierregister oppdateres når endelig konvertering er vedtatt og gjennomført.</p>
+    </div>
+    <p style="margin: 18px 0 0;">Dette er en foreløpig konverteringsmal. Selve dokumentinnholdet kan justeres senere uten at flyten endres.</p>
+  </section>
+
+  <section>
+    <p style="margin: 0 0 18px;">For styret i {{company_name}}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="width: 50%; vertical-align: top;">
+          <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{chair_name}}</div>
+          <p style="margin: 10px 0 0;">Styreleder</p>
+        </td>
+      </tr>
+    </table>
+  </section>
+</section>

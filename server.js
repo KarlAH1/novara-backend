@@ -8,6 +8,10 @@ import { fileURLToPath } from "url";
 import { testConnection } from "./config/db.js";
 import { ensureAuthSchema } from "./utils/authSchema.js";
 import { ensureAdminIssueSchema } from "./utils/adminIssueSchema.js";
+import { ensureConversionSchema } from "./utils/conversionSchema.js";
+import { ensureDocumentSchema } from "./utils/documentSchema.js";
+import { ensureEmissionRoundSchema } from "./utils/emissionRoundSchema.js";
+import { ensureStartupDocumentSchema } from "./utils/startupDocumentSchema.js";
 import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
 import { ensureStartupProfileSchema } from "./utils/startupProfileSchema.js";
 
@@ -39,6 +43,10 @@ const frontendDir = path.resolve(__dirname, "../frontend");
 await testConnection();
 await ensureAuthSchema();
 await ensureAdminIssueSchema();
+await ensureConversionSchema();
+await ensureDocumentSchema();
+await ensureEmissionRoundSchema();
+await ensureStartupDocumentSchema();
 await ensureStartupPlanSchema();
 await ensureStartupProfileSchema();
 
@@ -73,6 +81,7 @@ import rcAgreementRoutes from "./routes/rcAgreementRoutes.js";
 import rcPaymentRoutes from "./routes/rcPaymentRoutes.js";
 import rcDashboardRoutes from "./routes/rcDashboardRoutes.js";
 import rcInviteRoutes from "./routes/rcInviteRoutes.js";
+import conversionRoutes from "./routes/conversionRoutes.js";
 import gfRoutes from "./routes/gfRoutes.js";
 import documentRoutes from "./routes/documentRoutes.js";
 import documentSignerRoutes from "./routes/documentSignerRoutes.js";
@@ -104,6 +113,7 @@ app.use("/api/rc/agreements", rcAgreementRoutes);
 app.use("/api/rc/payments", rcPaymentRoutes);
 app.use("/api/rc/dashboard", rcDashboardRoutes);
 app.use("/api/rc/invites", rcInviteRoutes);
+app.use("/api/conversion", conversionRoutes);
 app.use("/api/startup/gf", gfRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/document-signers", documentSignerRoutes);
@@ -131,6 +141,8 @@ const frontendPages = [
   "rc-detail.html",
   "invest.html",
   "invite.html",
+  "convert.html",
+  "document.html",
   "admin.html"
 ];
 

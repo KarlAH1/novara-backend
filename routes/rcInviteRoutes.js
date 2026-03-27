@@ -7,6 +7,7 @@ import { generateInviteToken } from "../utils/inviteToken.js";
 import { getInvite } from "../controllers/rcInviteController.js";
 import { validatePasswordRequirements } from "../utils/authSecurity.js";
 import { isEmailVerificationRequired, sendVerificationEmail } from "../utils/authEmailFlow.js";
+import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 
 const router = express.Router();
 
@@ -101,13 +102,23 @@ router.get("/validate/:token", async (req, res) => {
         COALESCE(c.company_name, sp.company_name, u.name) AS company_name,
         sp.sector AS what_offers,
         sp.pitch AS use_of_funds,
-        sp.vision AS description
+        sp.vision AS description,
+        sd.filename AS pitch_deck_filename,
+        sd.url AS pitch_deck_url
       FROM rc_invites i
       JOIN emission_rounds r ON i.round_id = r.id
       JOIN users u ON r.startup_id = u.id
       LEFT JOIN company_memberships cm ON cm.user_id = r.startup_id
       LEFT JOIN companies c ON c.id = cm.company_id
       LEFT JOIN startup_profiles sp ON sp.user_id = r.startup_id
+      LEFT JOIN startup_documents sd ON sd.id = (
+        SELECT sd2.id
+        FROM startup_documents sd2
+        WHERE sd2.startup_id = r.startup_id
+          AND sd2.document_type = 'pitch_deck'
+        ORDER BY sd2.uploaded_at DESC, sd2.id DESC
+        LIMIT 1
+      )
       WHERE i.token = ?
       `,
       [token]
@@ -118,17 +129,31 @@ router.get("/validate/:token", async (req, res) => {
     }
 
     const invite = rows[0];
-
-    if (invite.open !== 1) {
-      return res.status(400).json({ error: "Emission closed" });
-    }
+    const availability = await syncEmissionRoundAvailability(pool, invite.round_id);
 
     res.json({
       startup: {
         companyName: invite.company_name,
         whatOffers: invite.what_offers || "",
         useOfFunds: invite.use_of_funds || "",
-        description: invite.description || ""
+        description: invite.description || "",
+        pitchDeck: invite.pitch_deck_url
+          ? {
+              filename: invite.pitch_deck_filename || "Åpne PDF",
+              url: invite.pitch_deck_url
+            }
+          : null
+      },
+      round: {
+        id: invite.round_id,
+        status: availability?.status || (invite.open === 1 ? "LIVE" : "DRAFT"),
+        targetAmount: availability?.targetAmount ?? Number(invite.target_amount || 0),
+        committedAmount: availability?.committedAmount ?? Number(invite.amount_raised || 0),
+        confirmedPaidAmount: availability?.confirmedPaidAmount ?? Number(invite.amount_raised || 0),
+        remainingCapacity: availability?.remainingCapacity ?? 0,
+        closedReason: availability?.closedReason || null,
+        canInvest: availability?.canInvest ?? false,
+        message: availability?.message || null
       },
       terms: {
         targetAmount: invite.target_amount,
@@ -171,8 +196,17 @@ router.post("/access/:token", async (req, res) => {
       [token]
     );
 
-    if (!inviteRows.length || inviteRows[0].open !== 1) {
+    if (!inviteRows.length) {
       return res.status(404).json({ error: "Ugyldig eller lukket investorinvitasjon" });
+    }
+
+    const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
+    if (!availability?.canInvest) {
+      return res.status(409).json({
+        error: availability?.message || "Runden er avsluttet.",
+        code: availability?.closedReason || "round_closed",
+        remainingCapacity: availability?.remainingCapacity || 0
+      });
     }
 
     await connection.beginTransaction();

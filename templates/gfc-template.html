@@ -1,0 +1,108 @@
+<section style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+  <header style="margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #d8d0c4;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="vertical-align: top;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Generalforsamling</p>
+          <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Protokoll for kapitalforhøyelse ved konvertering</h1>
+          <p style="margin: 10px 0 0; color: #374151;">Foreløpig GFC-mal for konverteringsfasen</p>
+        </td>
+        <td style="vertical-align: top; text-align: right;">
+          <div style="display: inline-block; min-width: 230px; padding: 14px 16px; border-radius: 14px; background: #efe7db; border: 1px solid #d8d0c4; text-align: left;">
+            <p style="margin: 0 0 6px;"><strong>Selskap:</strong> {{company_name}}</p>
+            <p style="margin: 0 0 6px;"><strong>Org.nr.:</strong> {{orgnr}}</p>
+            <p style="margin: 0 0 6px;"><strong>Dato:</strong> {{date}}</p>
+            <p style="margin: 0;"><strong>Sted:</strong> Digitalt møte</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </header>
+
+  <section style="margin-bottom: 28px;">
+    <h2 style="margin: 0 0 12px; font-size: 18px;">Møtedetaljer</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Selskap</p>
+          <p style="margin: 0;"><strong>{{company_name}}</strong><br>Org.nr. {{orgnr}}</p>
+        </td>
+        <td style="width: 16px;"></td>
+        <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Konvertering</p>
+          <p style="margin: 0;"><strong>Trigger:</strong> {{trigger_type}}<br><strong>Runde:</strong> #{{round_id}}</p>
+        </td>
+      </tr>
+    </table>
+  </section>
+
+  <section style="margin-bottom: 32px; padding: 20px; background: #efe7db; border: 1px solid #d8d0c4; border-radius: 16px;">
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Kort oversikt over vedtaket</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Dokument</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">GFC</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Møteleder</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{chair_name}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Medundertegner</strong></td>
+        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{secretary_name}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0;"><strong>Vedtak</strong></td>
+        <td style="padding: 10px 0; text-align: right;">Kapitalforhøyelse ved konvertering</td>
+      </tr>
+    </table>
+  </section>
+
+  <section style="margin-bottom: 34px;">
+    <h2 style="margin: 0 0 16px; font-size: 18px;">Foreløpig protokolltekst</h2>
+    <p style="margin: 0 0 14px;"><strong>1. Åpning av generalforsamlingen</strong></p>
+    <p style="margin: 0 0 18px;">Generalforsamlingen ble åpnet og gjennomgikk styrets forslag til kapitalforhøyelse som ledd i konvertering av tidligere RC-avtaler.</p>
+
+    <p style="margin: 0 0 14px;"><strong>2. Valg av møteleder og medundertegner</strong></p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0 0 18px; border-collapse: collapse; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+      <tr>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Møteleder</strong></td>
+        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{chair_name}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 14px;"><strong>Medundertegner</strong></td>
+        <td style="padding: 10px 14px; text-align: right;">{{secretary_name}}</td>
+      </tr>
+    </table>
+
+    <p style="margin: 0 0 14px;"><strong>3. Kapitalforhøyelsesvedtak</strong></p>
+    <div style="margin: 0 0 22px; padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px; color: #111827;">
+      <p style="margin: 0 0 10px;"><strong>1. Vedtak om konvertering</strong><br>Generalforsamlingen vedtar at relevante RC-avtaler kan konverteres til aksjer i selskapet i samsvar med de underliggende avtalevilkårene.</p>
+      <p style="margin: 0 0 10px;"><strong>2. Vedtak om kapitalforhøyelse</strong><br>Generalforsamlingen vedtar å forhøye selskapets aksjekapital som nødvendig for å gjennomføre konverteringen. Endelige tall og tegningsbeløp fylles inn senere.</p>
+      <p style="margin: 0 0 10px;"><strong>3. Oppdatering av vedtekter</strong><br>Generalforsamlingen vedtar at vedtektene oppdateres i den utstrekning kapitalforhøyelsen eller aksjeutstedelsen krever det.</p>
+      <p style="margin: 0;"><strong>4. Eierregister</strong><br>Selskapets eierregister skal oppdateres når konverteringen er gjennomført og de nye aksjene er registrert.</p>
+    </div>
+
+    <p style="margin: 0;">Denne GFC-malen er foreløpig og ment for å få flyt, signering og dokumenttilgjengelighet på plass i MVP.</p>
+  </section>
+
+  <section>
+    <h2 style="margin: 0 0 14px; font-size: 18px;">Signaturer</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="width: 50%; vertical-align: top; padding-right: 12px;">
+          <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+            <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{chair_name}}</div>
+            <p style="margin: 10px 0 0;">Møteleder</p>
+          </div>
+        </td>
+        <td style="width: 50%; vertical-align: top; padding-left: 12px;">
+          <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+            <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{secretary_name}}</div>
+            <p style="margin: 10px 0 0;">Medundertegner</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </section>
+</section>

@@ -1,5 +1,9 @@
 import pool from "../config/db.js";
 import fs from "fs";
+import {
+    getCapacityExceededMessage,
+    syncEmissionRoundAvailability
+} from "../utils/emissionRoundState.js";
 
 const formatNOK = (value) =>
     Number(value || 0).toLocaleString("no-NO") + " NOK";
@@ -207,6 +211,31 @@ export const investViaInvite = async (req, res) => {
         }
 
         const roundId = inviteRows[0].round_id;
+        const availability = await syncEmissionRoundAvailability(connection, roundId, { lock: true });
+
+        if (!availability) {
+            await connection.rollback();
+            return res.status(404).json({ error: "Emission not found" });
+        }
+
+        if (!availability.canInvest) {
+            await connection.rollback();
+            return res.status(409).json({
+                error: availability.message || "Runden er avsluttet.",
+                code: availability.closedReason || "round_closed",
+                remainingCapacity: availability.remainingCapacity
+            });
+        }
+
+        const requestedAmount = Number(amount);
+        if (requestedAmount > availability.remainingCapacity) {
+            await connection.rollback();
+            return res.status(400).json({
+                error: getCapacityExceededMessage(availability.remainingCapacity),
+                code: "capacity_exceeded",
+                remainingCapacity: availability.remainingCapacity
+            });
+        }
 
         const [roundRows] = await connection.query(`
             SELECT
@@ -253,7 +282,7 @@ export const investViaInvite = async (req, res) => {
             roundId,
             round.startup_id,
             investorId,
-            amount
+            requestedAmount
         ]);
 
         const agreementId = result.insertId;
@@ -269,7 +298,7 @@ export const investViaInvite = async (req, res) => {
             investor_name: investorRows[0].name || req.user.email,
             investor_email: investorRows[0].email || req.user.email,
             investor_identifier: investorRows[0].email || req.user.email,
-            investment_amount: amount,
+            investment_amount: requestedAmount,
             target_amount: round.target_amount,
             amount_raised: round.amount_raised,
             discount_rate: round.discount_rate,

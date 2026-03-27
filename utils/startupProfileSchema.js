@@ -52,6 +52,18 @@ export async function ensureStartupProfileSchema() {
         `ALTER TABLE startup_profiles MODIFY COLUMN ${columnName} TEXT NULL`
       );
     }
+
+    const additions = [
+      ["nominal_value_per_share", "ALTER TABLE startup_profiles ADD COLUMN nominal_value_per_share DECIMAL(12,2) NULL"],
+      ["current_share_count", "ALTER TABLE startup_profiles ADD COLUMN current_share_count INT NULL"],
+      ["share_basis_temporary", "ALTER TABLE startup_profiles ADD COLUMN share_basis_temporary TINYINT(1) NOT NULL DEFAULT 0"]
+    ];
+
+    for (const [columnName, sql] of additions) {
+      if (!(await columnExists(connection, "startup_profiles", columnName))) {
+        await connection.query(sql);
+      }
+    }
   } finally {
     connection.release();
   }
