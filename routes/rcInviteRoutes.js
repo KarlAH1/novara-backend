@@ -61,7 +61,7 @@ router.post(
       await connection.commit();
 
       res.status(201).json({
-        message: "Invite created",
+        message: "Privat invitasjonslenke opprettet",
         token
       });
 
@@ -125,7 +125,7 @@ router.get("/validate/:token", async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: "Invalid invite" });
+      return res.status(404).json({ error: "Ugyldig invitasjon til privat runde" });
     }
 
     const invite = rows[0];
@@ -134,6 +134,8 @@ router.get("/validate/:token", async (req, res) => {
     res.json({
       startup: {
         companyName: invite.company_name,
+        portalTitle: `${invite.company_name} sin private rundeportal`,
+        portalIntro: `Denne siden brukes av ${invite.company_name} for avtaler, dokumenter og status. Raisium leverer programvaren.`,
         whatOffers: invite.what_offers || "",
         useOfFunds: invite.use_of_funds || "",
         description: invite.description || "",
@@ -148,9 +150,8 @@ router.get("/validate/:token", async (req, res) => {
         id: invite.round_id,
         status: availability?.status || (invite.open === 1 ? "LIVE" : "DRAFT"),
         targetAmount: availability?.targetAmount ?? Number(invite.target_amount || 0),
-        committedAmount: availability?.committedAmount ?? Number(invite.amount_raised || 0),
-        confirmedPaidAmount: availability?.confirmedPaidAmount ?? Number(invite.amount_raised || 0),
-        remainingCapacity: availability?.remainingCapacity ?? 0,
+        committedAmount: availability?.committedAmount ?? availability?.committed_amount ?? null,
+        amountRaised: availability?.confirmedPaidAmount ?? availability?.amount_raised ?? invite.amount_raised ?? null,
         closedReason: availability?.closedReason || null,
         canInvest: availability?.canInvest ?? false,
         message: availability?.message || null
@@ -197,13 +198,13 @@ router.post("/access/:token", async (req, res) => {
     );
 
     if (!inviteRows.length) {
-      return res.status(404).json({ error: "Ugyldig eller lukket investorinvitasjon" });
+      return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
     }
 
     const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
     if (!availability?.canInvest) {
       return res.status(409).json({
-        error: availability?.message || "Runden er avsluttet.",
+        error: availability?.message || "Den private runden er avsluttet.",
         code: availability?.closedReason || "round_closed",
         remainingCapacity: availability?.remainingCapacity || 0
       });
@@ -248,10 +249,10 @@ router.post("/access/:token", async (req, res) => {
       }
     } else if (user.role.toLowerCase() !== "investor") {
       await connection.rollback();
-      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes som investor" });
+      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten" });
     } else {
       await connection.rollback();
-      return res.status(400).json({ error: "Investor finnes allerede. Logg inn med e-post og passord." });
+      return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
     }
 
     await connection.commit();

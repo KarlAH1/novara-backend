@@ -15,6 +15,22 @@ async function tableExists(connection, tableName) {
   return rows.length > 0;
 }
 
+async function columnExists(connection, tableName, columnName) {
+  const [rows] = await connection.query(
+    `
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+    LIMIT 1
+    `,
+    [tableName, columnName]
+  );
+
+  return rows.length > 0;
+}
+
 export async function ensureAdminIssueSchema() {
   const connection = await db.getConnection();
 
@@ -31,6 +47,9 @@ export async function ensureAdminIssueSchema() {
           issue_type VARCHAR(64) NOT NULL DEFAULT 'general',
           message TEXT NOT NULL,
           status VARCHAR(32) NOT NULL DEFAULT 'OPEN',
+          admin_response TEXT NULL,
+          resolved_by INT NULL,
+          resolved_at DATETIME NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           INDEX idx_admin_issues_status (status),
@@ -38,6 +57,19 @@ export async function ensureAdminIssueSchema() {
           INDEX idx_admin_issues_emission_id (emission_id)
         )
       `);
+    } else {
+      const hasAdminResponse = await columnExists(connection, "admin_issues", "admin_response");
+      if (!hasAdminResponse) {
+        await connection.query("ALTER TABLE admin_issues ADD COLUMN admin_response TEXT NULL");
+      }
+      const hasResolvedBy = await columnExists(connection, "admin_issues", "resolved_by");
+      if (!hasResolvedBy) {
+        await connection.query("ALTER TABLE admin_issues ADD COLUMN resolved_by INT NULL");
+      }
+      const hasResolvedAt = await columnExists(connection, "admin_issues", "resolved_at");
+      if (!hasResolvedAt) {
+        await connection.query("ALTER TABLE admin_issues ADD COLUMN resolved_at DATETIME NULL");
+      }
     }
   } finally {
     connection.release();

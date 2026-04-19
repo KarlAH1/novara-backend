@@ -3,13 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <title>Styrets forslag for konvertering</title>
+  <style>
+    .doc-template, .doc-template * { color: #000 !important; }
+  </style>
 </head>
 <body style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6; padding: 40px;">
-  <h1>Styrets forslag for konvertering</h1>
-  <p><strong>Selskap:</strong> {{company_name}}</p>
-  <p><strong>Runde:</strong> {{round_id}}</p>
-  <p><strong>Trigger event:</strong> {{trigger_type}}</p>
-  <p><strong>Dato:</strong> {{date}}</p>
-  <p>Dette er en foreløpig dokumentmal for konverteringsfasen. Endelig juridisk tekst fylles inn senere.</p>
+  <div class="doc-template">
+    <h1>Styrets forslag for konvertering</h1>
+    <p><strong>Selskap:</strong> {{company_name}}</p>
+    <p><strong>Runde:</strong> {{round_id}}</p>
+    <p><strong>Trigger event:</strong> {{trigger_type}}</p>
+    <p><strong>Dato:</strong> {{date}}</p>
+    <p>Dette er en foreløpig dokumentmal for konverteringsfasen. Endelig juridisk tekst fylles inn senere.</p>
+    <!-- digital_signature_line -->
+  </div>
 </body>
 </html>

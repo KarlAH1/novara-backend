@@ -55,9 +55,9 @@ const getRcDocumentState = (input = {}) => {
 
     if (paymentConfirmed) {
         return {
-            paymentStatus: "Payment confirmed",
-            finalStatus: "Finalized",
-            startupPreapprovalStatus: "Pre-approved on round activation",
+            paymentStatus: "Betaling bekreftet av selskapet",
+            finalStatus: "Avtale aktiv",
+            startupPreapprovalStatus: "Klargjort ved aktivering av privat runde",
             investorStatus: "Signed",
             isFinalized: true
         };
@@ -65,11 +65,11 @@ const getRcDocumentState = (input = {}) => {
 
     if (investorSigned) {
         return {
-            paymentStatus: "Payment pending",
-            finalStatus: "Signed awaiting payment",
+            paymentStatus: "Venter pa betaling til selskapet",
+            finalStatus: "Signert, venter pa betaling",
             startupPreapprovalStatus: startupPreApproved
-                ? "Pre-approved on round activation"
-                : "Pending",
+                ? "Klargjort ved aktivering av privat runde"
+                : "Venter",
             investorStatus: "Signed",
             isFinalized: false
         };
@@ -77,19 +77,19 @@ const getRcDocumentState = (input = {}) => {
 
     if (startupPreApproved) {
         return {
-            paymentStatus: "Not started",
-            finalStatus: "Startup pre-approved",
-            startupPreapprovalStatus: "Pre-approved on round activation",
-            investorStatus: "Pending",
+            paymentStatus: "Ikke startet",
+            finalStatus: "Klargjort av selskapet",
+            startupPreapprovalStatus: "Klargjort ved aktivering av privat runde",
+            investorStatus: "Venter",
             isFinalized: false
         };
     }
 
     return {
-        paymentStatus: "Not started",
-        finalStatus: "Draft",
-        startupPreapprovalStatus: "Pending",
-        investorStatus: "Pending",
+        paymentStatus: "Ikke startet",
+        finalStatus: "Utkast",
+        startupPreapprovalStatus: "Venter",
+        investorStatus: "Venter",
         isFinalized: false
     };
 };
@@ -121,11 +121,11 @@ export const buildRcTemplateData = (input = {}) => {
         "template.version": input.template_version || "RC-NO-1.0",
         "company.legal_name": companyName,
         "company.org_no": input.company_org_no || "-",
-        "company.address": input.company_address || "Ikke registrert i plattformen",
+        "company.address": input.company_address || "Ikke registrert i systemet",
         "investor.legal_name": investorName,
         "investor.identifier_label": input.investor_identifier_label || "E-post",
         "investor.identifier": input.investor_identifier || input.investor_email || "-",
-        "investor.address": input.investor_address || "Ikke registrert i plattformen",
+        "investor.address": input.investor_address || "Ikke registrert i systemet",
         "summary.investment_amount": formatNOK(input.investment_amount),
         "summary.payment_deadline": formatDateLabel(input.deadline),
         "summary.discount_rate": `${input.discount_rate || 0}%`,
@@ -137,12 +137,12 @@ export const buildRcTemplateData = (input = {}) => {
         "signature.company_signer.role": input.company_signer_role || "Rundeansvarlig for selskapet",
         "signature.company_signer.email": input.company_signer_email || input.startup_email || "-",
         "signature.company_signer.signed_at": formatDateTimeLabel(input.round_activated_at || input.round_created_at || input.created_at),
-        "signature.company_signer.method": input.company_signer_method || "Round activation in platform",
+        "signature.company_signer.method": input.company_signer_method || "Klargjoring i Raisium software",
         "signature.investor_signer.status": state.investorStatus,
         "signature.investor_signer.name": investorName,
         "signature.investor_signer.email": input.investor_email || "-",
         "signature.investor_signer.signed_at": formatDateTimeLabel(input.investor_signed_at || input.document_locked_at),
-        "signature.investor_signer.method": input.investor_signer_method || "Electronic signature in platform",
+        "signature.investor_signer.method": input.investor_signer_method || "Elektronisk signering i Raisium software",
         "payment.status": input.payment_status || state.paymentStatus,
         "payment.confirmed_at": formatDateTimeLabel(input.payment_confirmed_by_startup_at),
         "payment.confirmed_by": input.payment_confirmed_by || (state.isFinalized ? companyName : "-"),
@@ -150,7 +150,7 @@ export const buildRcTemplateData = (input = {}) => {
         "document.hash": input.document_hash || input.agreement_document_hash || "-",
         "document.generated_at": formatDateTimeLabel(generatedAt),
         "document.locked_at": formatDateTimeLabel(input.document_locked_at),
-        "attachment.snapshot.round_status": input.round_open === 1 ? "Published / active" : "Draft",
+        "attachment.snapshot.round_status": input.round_open === 1 ? "Privat runde aktiv" : "Utkast",
         "attachment.snapshot.deadline": formatDateLabel(input.deadline),
         "attachment.snapshot.round_target": formatNOK(input.target_amount),
         "attachment.snapshot.round_raised": formatNOK(input.amount_raised || 0),
@@ -162,12 +162,12 @@ export const buildRcTemplateData = (input = {}) => {
         "attachment.snapshot.document_hash": input.document_hash || input.agreement_document_hash || "-",
         "attachment.snapshot.generated_at": formatDateTimeLabel(generatedAt),
         "attachment.snapshot.locked_at": formatDateTimeLabel(input.document_locked_at),
-        "attachment.calc.model": input.valuation_cap ? "Cap / discount model" : "Discount model",
-        "attachment.calc.pool_note": "Dersom runden senere gjennomføres med pool-modell, beregnes investors forholdsmessige andel ut fra samlet signert og finansiert RC-volum.",
+        "attachment.calc.model": input.valuation_cap ? "Cap / discount-modell" : "Discount-modell",
+        "attachment.calc.pool_note": "Dersom runden senere gjennomfores med pool-modell, beregnes avtalepartens forholdsmessige andel ut fra samlet signert og finansiert RC-volum.",
         "attachment.calc.discount": `${input.discount_rate || 0}%`,
         "attachment.calc.cap": input.valuation_cap ? formatNOK(input.valuation_cap) : "Ingen",
         "attachment.calc.par_value_note": "Eventuelt nødvendig paribeløp innbetales ved tegning av konverteringsaksjer.",
-        "attachment.calc.trigger_note": "Vedlegg 2 er grunnlag for beregning ved Trigger Event og skal suppleres med runde- og transaksjonsdata når konvertering eller oppgjør faktisk gjennomføres."
+        "attachment.calc.trigger_note": "Vedlegg 2 er grunnlag for beregning ved Trigger Event og skal suppleres med runde- og transaksjonsdata når konvertering eller oppgjor faktisk gjennomfores."
     };
 };
 
@@ -319,7 +319,7 @@ export const investViaInvite = async (req, res) => {
             VALUES ('RC', ?, ?, ?, 'DRAFT')
         `, [
             round.startup_id,
-            `Raisium Convert - ${round.startup_name}`,
+            `Privat RC-avtale - ${round.startup_name}`,
             html
         ]);
 

@@ -120,6 +120,7 @@ router.post(
         .replace(/{{orgnr}}/g, data.orgnr)
         .replace(/{{date}}/g, today)
         .replace(/{{amount}}/g, Number(data.amount).toLocaleString("no-NO"))
+        .replace(/{{round_target_amount}}/g, `${Number(data.amount).toLocaleString("no-NO")} NOK`)
         .replace(/{{chair_name}}/g, data.chair_name)
         .replace(/{{secretary_name}}/g, data.secretary_name)
         .replace(/{{rc_round_name}}/g, rcRoundName)

@@ -40,6 +40,25 @@ export async function ensureEmissionRoundSchema() {
       return;
     }
 
+    const invitesExists = await tableExists(connection, "emission_invites");
+    if (!invitesExists) {
+      await connection.query(
+        `
+        CREATE TABLE emission_invites (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          emission_id INT NOT NULL,
+          email VARCHAR(255) NOT NULL,
+          invite_token VARCHAR(128) NOT NULL,
+          status VARCHAR(32) NOT NULL DEFAULT 'SENT',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_emission_invites_emission (emission_id),
+          CONSTRAINT fk_emission_invites_emission FOREIGN KEY (emission_id) REFERENCES emission_rounds(id) ON DELETE CASCADE
+        )
+        `
+      );
+    }
+
     const columns = [
       {
         name: "trigger_period",

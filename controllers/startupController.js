@@ -333,6 +333,7 @@ export const getMyOrganization = async (req, res) => {
                 organization_form: brregCompany?.formDescription || brregCompany?.form || null,
                 status: brregCompany?.status || null,
                 address: brregCompany?.address || null,
+                registered_share_count: brregCompany?.capitalShareCount ?? null,
                 has_registered_signature: brregCompany?.hasRegisteredSignature ?? null,
                 has_registered_prokura: brregCompany?.hasRegisteredProkura ?? null,
                 roles: brregRoles.slice(0, 16)
@@ -476,7 +477,6 @@ function buildPlanResponse(summary) {
         payment_status: summary.payment_status,
         payment_confirmed: summary.payment_confirmed,
         raise_form_unlocked: summary.raise_form_unlocked,
-        startup_has_basic_active: summary.startup_has_basic_active,
         startup_has_normal_active: summary.startup_has_normal_active,
         requires_normal_for_advanced_features: summary.requires_normal_for_advanced_features,
         upgrade_required_state: summary.upgrade_required_state,
@@ -500,9 +500,9 @@ function buildPaymentReference(planCode, companyId) {
     return `startup-${planCode}-${companyId}-${Date.now()}`;
 }
 
-function generateDiscountCodeValue(planCode = "basic") {
+function generateDiscountCodeValue(planCode = "normal") {
     const suffix = Math.random().toString(36).slice(2, 8).toUpperCase();
-    return `RAISIUM-${String(planCode || "basic").toUpperCase()}-${suffix}`;
+    return `RAISIUM-${String(planCode || "normal").toUpperCase()}-${suffix}`;
 }
 
 async function getActiveSubscriptionForCompany(companyId) {
@@ -558,7 +558,7 @@ export const selectStartupPlan = async (req, res) => {
             return res.status(400).json({ error: "Fant ikke selskapet som er koblet til brukeren." });
         }
 
-        if (!plan || !plan.available || planCode === "pro") {
+        if (!plan || !plan.available || planCode !== "normal") {
             return res.status(400).json({ error: "Valgt plan er ikke tilgjengelig ennå." });
         }
 
@@ -567,14 +567,6 @@ export const selectStartupPlan = async (req, res) => {
             const summary = await getStartupPlanSummaryForUser(req.user.id);
             return res.json({
                 message: `${plan.name}-plan er allerede aktiv.`,
-                ...buildPlanResponse(summary)
-            });
-        }
-
-        if (activeSubscription?.plan_code === "normal" && planCode === "basic") {
-            const summary = await getStartupPlanSummaryForUser(req.user.id);
-            return res.json({
-                message: "Normal-plan er allerede aktiv.",
                 ...buildPlanResponse(summary)
             });
         }
@@ -754,7 +746,7 @@ export const applyStartupDiscountCode = async (req, res) => {
             return res.status(400).json({ error: "Rabattkoden er brukt opp." });
         }
 
-        if (selectedPlan !== "basic") {
+        if (selectedPlan !== "normal") {
             await connection.rollback();
             return res.status(400).json({ error: "Rabattkoden kan ikke brukes på denne planen." });
         }
@@ -793,7 +785,7 @@ export const applyStartupDiscountCode = async (req, res) => {
             await connection.query(
                 `
                 UPDATE startup_plan_subscriptions
-                SET plan_code = 'basic',
+                SET plan_code = 'normal',
                     list_price_nok = ?,
                     final_price_nok = 0,
                     status = 'active',
@@ -804,7 +796,7 @@ export const applyStartupDiscountCode = async (req, res) => {
                     activated_at = NOW()
                 WHERE id = ?
                 `,
-                [STARTUP_PLAN_DEFINITIONS.basic.annual_price_nok, code.id, getNextAnnualExpiry(), subscriptionId]
+                [STARTUP_PLAN_DEFINITIONS.normal.annual_price_nok, code.id, getNextAnnualExpiry(), subscriptionId]
             );
         } else {
             const [insertResult] = await connection.query(
@@ -812,9 +804,9 @@ export const applyStartupDiscountCode = async (req, res) => {
                 INSERT INTO startup_plan_subscriptions
                 (company_id, user_id, plan_code, billing_period, list_price_nok, final_price_nok,
                  status, activation_source, discount_code_id, starts_at, expires_at, activated_at)
-                VALUES (?, ?, 'basic', 'annual', ?, 0, 'active', 'discount_code', ?, NOW(), ?, NOW())
+                VALUES (?, ?, 'normal', 'annual', ?, 0, 'active', 'discount_code', ?, NOW(), ?, NOW())
                 `,
-                [company.company_id, req.user.id, STARTUP_PLAN_DEFINITIONS.basic.annual_price_nok, code.id, getNextAnnualExpiry()]
+                [company.company_id, req.user.id, STARTUP_PLAN_DEFINITIONS.normal.annual_price_nok, code.id, getNextAnnualExpiry()]
             );
 
             subscriptionId = insertResult.insertId;
@@ -824,7 +816,7 @@ export const applyStartupDiscountCode = async (req, res) => {
             `
             INSERT INTO startup_discount_redemptions
             (discount_code_id, company_id, user_id, subscription_id, plan_code)
-            VALUES (?, ?, ?, ?, 'basic')
+            VALUES (?, ?, ?, ?, 'normal')
             `,
             [code.id, company.company_id, req.user.id, subscriptionId]
         );
@@ -843,7 +835,7 @@ export const applyStartupDiscountCode = async (req, res) => {
         const summary = await getStartupPlanSummaryForUser(req.user.id);
 
         res.json({
-            message: "Rabattkoden er aktivert. Basic-plan er nå aktiv.",
+            message: "Rabattkoden er aktivert. Normal-plan er nå aktiv.",
             ...buildPlanResponse(summary)
         });
     } catch (err) {
@@ -861,7 +853,7 @@ export const generateStartupDiscountCode = async (req, res) => {
             return res.status(403).json({ error: "Admin access required" });
         }
 
-        const planCode = String(req.body.plan || "basic").trim().toLowerCase();
+        const planCode = String(req.body.plan || "normal").trim().toLowerCase();
         const maxRedemptions = Math.max(1, Number(req.body.max_redemptions || 1));
         const plan = getStartupPlanDefinition(planCode);
 

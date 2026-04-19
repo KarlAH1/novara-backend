@@ -14,6 +14,22 @@ export async function ensureDocumentSchema() {
   const connection = await db.getConnection();
 
   try {
+    const [signerColumns] = await connection.query(
+      `
+      SELECT COLUMN_NAME
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'document_signers'
+        AND COLUMN_NAME = 'ip_address'
+      `
+    );
+
+    if (!signerColumns.length) {
+      await connection.query(
+        `ALTER TABLE document_signers ADD COLUMN ip_address VARCHAR(64) NULL AFTER signed_at`
+      );
+    }
+
     const [rows] = await connection.query("SHOW COLUMNS FROM documents LIKE 'type'");
     const typeColumn = rows[0];
 
@@ -27,7 +43,14 @@ export async function ensureDocumentSchema() {
     }
 
     const values = parseEnumValues(currentType);
-    const requiredValues = ["SFC", "GFC"];
+    const requiredValues = [
+      "SFC",
+      "GFC",
+      "CONVERSION_ARTICLES",
+      "CONVERSION_SHARE_REGISTER",
+      "CONVERSION_CAPITAL_CONFIRMATION",
+      "CONVERSION_PACKAGE"
+    ];
     const missingValues = requiredValues.filter((value) => !values.includes(value));
 
     if (!missingValues.length) {

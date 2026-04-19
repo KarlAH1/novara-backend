@@ -1,3 +1,4 @@
+import "./env.js";
 import mysql from "mysql2/promise";
 
 /* =========================================
@@ -24,6 +25,10 @@ const pool = mysql.createPool({
       : false
 });
 
+export const closePool = async () => {
+  await pool.end();
+};
+
 /* =========================================
    TEST CONNECTION ON STARTUP
 ========================================= */
@@ -35,10 +40,11 @@ export const testConnection = async () => {
     connection.release();
 
     console.log("✅ MySQL connected successfully");
+    return true;
 
   } catch (error) {
     console.error("❌ MySQL connection failed:", error.message);
-    process.exit(1);
+    throw error;
   }
 };
 

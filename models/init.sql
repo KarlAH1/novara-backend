@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS startup_discount_codes (
   id INT AUTO_INCREMENT PRIMARY KEY,
   code VARCHAR(64) NOT NULL UNIQUE,
   active TINYINT(1) NOT NULL DEFAULT 1,
-  allowed_plan VARCHAR(32) NOT NULL DEFAULT 'basic',
+  allowed_plan VARCHAR(32) NOT NULL DEFAULT 'normal',
   discount_type VARCHAR(32) NOT NULL DEFAULT 'full',
   discount_percent INT NOT NULL DEFAULT 100,
   max_redemptions INT NOT NULL DEFAULT 1,

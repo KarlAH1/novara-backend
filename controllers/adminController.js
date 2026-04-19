@@ -179,3 +179,88 @@ export const adminRemoveUserFromOrgnr = async (req, res) => {
 
     res.json({ message: "User removed from organization" });
 };
+
+export const adminGetIssues = async (req, res) => {
+    const status = String(req.query.status || "").trim().toUpperCase();
+    const params = [];
+    let whereClause = "";
+
+    if (status) {
+        whereClause = "WHERE UPPER(ai.status) = ?";
+        params.push(status);
+    }
+
+    const [rows] = await pool.query(
+        `
+        SELECT
+            ai.id,
+            ai.user_id,
+            ai.startup_id,
+            ai.emission_id,
+            ai.source,
+            ai.issue_type,
+            ai.message,
+            ai.status,
+            ai.admin_response,
+            ai.resolved_by,
+            ai.resolved_at,
+            ai.created_at,
+            ai.updated_at,
+            u.name AS reporter_name,
+            u.email AS reporter_email,
+            sp.company_name AS startup_name
+        FROM admin_issues ai
+        LEFT JOIN users u ON ai.user_id = u.id
+        LEFT JOIN startup_profiles sp ON sp.user_id = ai.startup_id
+        ${whereClause}
+        ORDER BY ai.created_at DESC
+        `,
+        params
+    );
+
+    res.json(rows);
+};
+
+export const adminUpdateIssue = async (req, res) => {
+    const issueId = Number(req.params.id);
+    const status = String(req.body.status || "").trim().toUpperCase();
+    const adminResponse = String(req.body.adminResponse || "").trim();
+
+    if (!issueId) {
+        return res.status(400).json({ error: "Ugyldig id" });
+    }
+
+    if (status && !["OPEN", "RESOLVED", "DISMISSED"].includes(status)) {
+        return res.status(400).json({ error: "Ugyldig status" });
+    }
+
+    const updates = [];
+    const params = [];
+
+    if (adminResponse !== "") {
+        updates.push("admin_response = ?");
+        params.push(adminResponse);
+    }
+
+    if (status) {
+        updates.push("status = ?");
+        params.push(status);
+        if (["RESOLVED", "DISMISSED"].includes(status)) {
+            updates.push("resolved_by = ?");
+            params.push(req.user.id);
+            updates.push("resolved_at = NOW()");
+        }
+    }
+
+    if (!updates.length) {
+        return res.status(400).json({ error: "Ingen oppdateringer gitt" });
+    }
+
+    params.push(issueId);
+    await pool.query(
+        `UPDATE admin_issues SET ${updates.join(", ")} WHERE id = ?`,
+        params
+    );
+
+    res.json({ message: "Oppdatert" });
+};

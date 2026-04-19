@@ -54,6 +54,6 @@ router.delete("/my", authMiddleware, deleteMyStartup);
 /* =========================================
    PUBLIC – GET ALL RAISING STARTUPS
 ========================================= */
-router.get("/raising", getAllRaisingStartups);
+router.get("/raising", authMiddleware, getAllRaisingStartups);
 
 export default router;

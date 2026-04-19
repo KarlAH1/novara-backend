@@ -4,10 +4,13 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
+    "db:bootstrap:local": "node scripts/bootstrapLocalDb.js",
     "dev": "node server.js",
     "start": "node server.js"
   },
   "dependencies": {
+    "puppeteer": "^22.12.1",
+    "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

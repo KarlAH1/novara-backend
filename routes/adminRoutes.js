@@ -13,7 +13,9 @@ import {
     adminGetInvestments,
     adminGetUsersByOrgnr,
     adminLinkUserToOrgnr,
-    adminRemoveUserFromOrgnr
+    adminRemoveUserFromOrgnr,
+    adminGetIssues,
+    adminUpdateIssue
 } from "../controllers/adminController.js";
 
 const router = express.Router();
@@ -32,5 +34,7 @@ router.get("/investments", authMiddleware, isAdmin, adminGetInvestments);
 router.get("/org/:orgnr/users", authMiddleware, isAdmin, adminGetUsersByOrgnr);
 router.post("/org/:orgnr/users", authMiddleware, isAdmin, adminLinkUserToOrgnr);
 router.delete("/org/:orgnr/users/:userId", authMiddleware, isAdmin, adminRemoveUserFromOrgnr);
+router.get("/issues", authMiddleware, isAdmin, adminGetIssues);
+router.patch("/issues/:id", authMiddleware, isAdmin, adminUpdateIssue);
 
 export default router;

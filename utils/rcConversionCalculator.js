@@ -35,12 +35,16 @@ export function calculateRcConversion(input = {}) {
 
   let discountPrice = null;
   if (triggerType === "new_priced_round") {
-    if (pricedRoundSharePrice == null || pricedRoundSharePrice <= 0) {
-      throw new Error("priced_round_share_price må være større enn 0 ved ny emisjon.");
+    const effectivePricedRoundSharePrice = (pricedRoundSharePrice == null || pricedRoundSharePrice <= 0)
+      ? capPrice
+      : pricedRoundSharePrice;
+
+    if (effectivePricedRoundSharePrice == null || effectivePricedRoundSharePrice <= 0) {
+      throw new Error("Kunne ikke beregne pris per aksje ved ny emisjon.");
     }
 
     if (discountPercent != null && discountPercent > 0) {
-      discountPrice = roundMoney(pricedRoundSharePrice * (1 - (discountPercent / 100)));
+      discountPrice = roundMoney(effectivePricedRoundSharePrice * (1 - (discountPercent / 100)));
     }
   }
 

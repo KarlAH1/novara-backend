@@ -9,9 +9,15 @@ import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 const emissionShareholderTableName = "emission_shareholders";
+const emissionInviteTableName = "emission_invites";
 
 const hasEmissionShareholderTable = async () => {
   const [rows] = await pool.query("SHOW TABLES LIKE ?", [emissionShareholderTableName]);
+  return rows.length > 0;
+};
+
+const hasEmissionInviteTable = async () => {
+  const [rows] = await pool.query("SHOW TABLES LIKE ?", [emissionInviteTableName]);
   return rows.length > 0;
 };
 
@@ -530,7 +536,10 @@ export const deleteEmissionByStartup = async (req, res) => {
     await connection.beginTransaction();
     transactionStarted = true;
 
-    await connection.query("DELETE FROM emission_invites WHERE emission_id = ?", [emissionId]);
+    const inviteTableExists = await hasEmissionInviteTable();
+    if (inviteTableExists) {
+      await connection.query("DELETE FROM emission_invites WHERE emission_id = ?", [emissionId]);
+    }
     await connection.query("DELETE FROM rc_invites WHERE round_id = ?", [emissionId]);
 
     if (await hasEmissionShareholderTable()) {
@@ -618,7 +627,7 @@ export const reportEmissionIssue = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Varsel sendt til Raisium"
+      message: "Varsel sendt til support"
     });
   } catch (err) {
     console.error("Report emission issue error:", err);
@@ -631,34 +640,7 @@ export const reportEmissionIssue = async (req, res) => {
    INVEST
 ===================================================== */
 export const investInEmission = async (req, res) => {
-    try {
-
-        const { emissionId } = req.params;
-        const { amount } = req.body;
-        const investorId = req.user.id;
-
-        if (!amount) {
-            return res.status(400).json({
-                message: "Amount required"
-            });
-        }
-
-        await pool.query(`
-            INSERT INTO emission_investments
-            (emission_id, investor_id, amount)
-            VALUES (?, ?, ?)
-        `, [emissionId, investorId, amount]);
-
-        await pool.query(`
-            UPDATE emission_rounds
-            SET amount_raised = amount_raised + ?
-            WHERE id=?
-        `, [amount, emissionId]);
-
-        res.json({ success: true });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server error" });
-    }
+    return res.status(410).json({
+        message: "Direkte investering i åpne runder er deaktivert. Bruk startupens private invitasjonslenke og RC-avtaleflyten."
+    });
 };

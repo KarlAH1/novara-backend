@@ -6,6 +6,7 @@ import {
     resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 
 const router = express.Router();
 
@@ -285,6 +286,7 @@ router.get("/startup/list", auth, async (req, res) => {
         const [conversionRows] = await pool.query(
             `
             SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
+                   , updated_articles_document_id, shareholder_register_document_id, capital_confirmation_document_id, altinn_package_document_id
             FROM conversion_events
             WHERE startup_id = ?
             ORDER BY created_at DESC, id DESC
@@ -294,6 +296,57 @@ router.get("/startup/list", auth, async (req, res) => {
         );
 
         const conversion = conversionRows[0] || null;
+
+        let rcInvestorByAgreement = new Map();
+        const rcDocs = documents.filter((doc) => doc.type === "RC");
+        if (rcDocs.length) {
+            const ids = rcDocs.map((doc) => doc.id);
+            const [rcHtmlRows] = await pool.query(
+                `
+                SELECT id, html_content
+                FROM documents
+                WHERE id IN (${ids.map(() => "?").join(",")})
+                `,
+                ids
+            );
+
+            const agreementIds = [];
+            const rcDocAgreementMap = new Map();
+            rcHtmlRows.forEach((row) => {
+                const match = String(row.html_content || "").match(/rc_agreement_id:(\d+)/i);
+                if (match) {
+                    const agreementId = Number(match[1]);
+                    if (Number.isFinite(agreementId)) {
+                        rcDocAgreementMap.set(row.id, agreementId);
+                        agreementIds.push(agreementId);
+                    }
+                }
+            });
+
+            if (agreementIds.length) {
+                const [agreementRows] = await pool.query(
+                    `
+                    SELECT a.id, u.name AS investor_name, u.email AS investor_email
+                    FROM rc_agreements a
+                    JOIN users u ON u.id = a.investor_id
+                    WHERE a.id IN (${agreementIds.map(() => "?").join(",")})
+                    `,
+                    agreementIds
+                );
+                agreementRows.forEach((row) => {
+                    rcInvestorByAgreement.set(row.id, row);
+                });
+
+                documents.forEach((doc) => {
+                    const agreementId = rcDocAgreementMap.get(doc.id);
+                    if (agreementId && rcInvestorByAgreement.has(agreementId)) {
+                        const investor = rcInvestorByAgreement.get(agreementId);
+                        doc.investor_name = investor.investor_name || null;
+                        doc.investor_email = investor.investor_email || null;
+                    }
+                });
+            }
+        }
 
         res.json({
             documents: [
@@ -317,19 +370,25 @@ router.get("/startup/list", auth, async (req, res) => {
                     key: "conversion_share_register",
                     category: "Konverteringsdokumenter",
                     title: "Eierregister etter konvertering",
-                    status: conversion?.gf_document_id ? "ikke klar ennå" : "ikke klar"
+                    status: conversion?.shareholder_register_document_id ? "klar" : "ikke klar"
                 },
                 {
                     key: "conversion_articles",
                     category: "Konverteringsdokumenter",
                     title: "Vedtekter etter kapitalforhøyelse",
-                    status: conversion?.gf_document_id ? "ikke klar ennå" : "ikke klar"
+                    status: conversion?.updated_articles_document_id ? "klar" : "ikke klar"
+                },
+                {
+                    key: "conversion_capital_confirmation",
+                    category: "Konverteringsdokumenter",
+                    title: "Bekreftelse for innskudd",
+                    status: conversion?.capital_confirmation_document_id ? "klar" : "ikke klar"
                 },
                 {
                     key: "conversion_package",
                     category: "Altinn-pakke",
                     title: "Altinn-pakke for konvertering",
-                    status: conversion?.gf_document_id ? "ikke klar ennå" : "ikke klar"
+                    status: conversion?.altinn_package_document_id ? "klar" : "ikke klar"
                 }
             ]
         });
@@ -343,6 +402,56 @@ router.get("/startup/list", auth, async (req, res) => {
 /* =========================================
    GET DOCUMENT
 ========================================= */
+
+router.get("/:id/pdf", auth, async (req, res) => {
+    try {
+        const documentId = req.params.id;
+        const [rows] = await pool.query(
+            "SELECT id, title, html_content, startup_id FROM documents WHERE id=?",
+            [documentId]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Document not found" });
+        }
+
+        const doc = rows[0];
+        const userId = req.user.id;
+        let hasAccess = Number(doc.startup_id) === Number(userId);
+
+        if (!hasAccess) {
+            const [signerRows] = await pool.query(
+                `
+                SELECT id
+                FROM document_signers
+                WHERE document_id = ?
+                  AND (user_id = ? OR email = ?)
+                LIMIT 1
+                `,
+                [documentId, userId, req.user.email]
+            );
+            hasAccess = signerRows.length > 0;
+        }
+
+        if (!hasAccess) {
+            return res.status(403).json({ error: "Access denied" });
+        }
+
+        const pdfBuffer = await renderHtmlToPdfBuffer(doc.html_content || "");
+        const safeTitle = String(doc.title || `dokument-${documentId}`)
+            .toLowerCase()
+            .replace(/[^a-z0-9æøå\-]+/gi, "-")
+            .replace(/^-+|-+$/g, "");
+        const filename = `${safeTitle || `dokument-${documentId}`}.pdf`;
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        res.send(pdfBuffer);
+    } catch (err) {
+        console.error("Document pdf error:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
 
 router.get("/:id", auth, async (req, res) => {
 
@@ -443,22 +552,36 @@ router.post("/:id/sign", auth, async (req, res) => {
             [documentId]
         );
         let documentHash = null;
+        let updatedHtml = doc.html_content;
 
         if (remaining.length === 0) {
+            const signedDate = new Date().toLocaleDateString("no-NO", {
+                year: "numeric",
+                month: "long",
+                day: "numeric"
+            });
+            const signedLine = `Signerte digitalt gjennom Raisium ${signedDate}`;
+
+            updatedHtml = updatedHtml.replace(
+                /<!--\s*digital_signature_line\s*-->/gi,
+                `<p style="margin: 10px 0 0; font-size: 13px;">${signedLine}</p>`
+            );
+
             const crypto = await import("crypto");
 
             documentHash = crypto.default
                 .createHash("sha256")
-                .update(doc.html_content)
+                .update(updatedHtml)
                 .digest("hex");
 
             await connection.query(
                 `UPDATE documents
                  SET status='LOCKED',
                      document_hash=?,
-                     locked_at=NOW()
+                     locked_at=NOW(),
+                     html_content=?
                  WHERE id=?`,
-                [documentHash, documentId]
+                [documentHash, updatedHtml, documentId]
             );
         }
 
@@ -466,9 +589,54 @@ router.post("/:id/sign", auth, async (req, res) => {
             await syncRcAgreementSignatures(
                 connection,
                 documentId,
-                doc.html_content,
+                updatedHtml,
                 documentHash
             );
+        }
+
+        if (remaining.length === 0 && ["SFC", "GFC", "CONVERSION_CAPITAL_CONFIRMATION"].includes(doc.type)) {
+            const [conversionRows] = await connection.query(
+                `
+                SELECT id, board_document_id, gf_document_id, capital_confirmation_document_id, altinn_package_document_id
+                FROM conversion_events
+                WHERE board_document_id = ?
+                   OR gf_document_id = ?
+                   OR capital_confirmation_document_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                `,
+                [documentId, documentId, documentId]
+            );
+
+            if (conversionRows.length > 0) {
+                const conversion = conversionRows[0];
+
+                if (doc.type === "SFC" && conversion.board_document_id === Number(documentId)) {
+                    await connection.query(
+                        "UPDATE conversion_events SET status = 'board_signed' WHERE id = ?",
+                        [conversion.id]
+                    );
+                }
+
+                if (doc.type === "GFC" && conversion.gf_document_id === Number(documentId)) {
+                    await connection.query(
+                        "UPDATE conversion_events SET status = 'gf_signed' WHERE id = ?",
+                        [conversion.id]
+                    );
+                }
+
+                if (doc.type === "CONVERSION_CAPITAL_CONFIRMATION" && conversion.capital_confirmation_document_id === Number(documentId)) {
+                    await connection.query(
+                        `
+                        UPDATE conversion_events
+                        SET third_party_confirmed_at = NOW(),
+                            status = 'third_party_confirmed'
+                        WHERE id = ?
+                        `,
+                        [conversion.id]
+                    );
+                }
+            }
         }
 
         /* =====================================================

@@ -1,0 +1,24 @@
+<section class="doc-template" style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+  <style>
+    .doc-template, .doc-template * { color: #000 !important; }
+  </style>
+  <header style="margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #d8d0c4;">
+    <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Bekreftelse for innskudd</p>
+    <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Bekreftelse på innbetalt kapital og paribeløp</h1>
+    <p style="margin: 10px 0 0; color: #374151;">Skal signeres av selskapets tredjepart før Altinn-pakken brukes.</p>
+  </header>
+  <p><strong>Selskap:</strong> {{company_name}}</p>
+  <p><strong>Org.nr.:</strong> {{orgnr}}</p>
+  <p><strong>Dato:</strong> {{date}}</p>
+  <p><strong>Tredjepart:</strong> {{third_party_name}} ({{third_party_email}})</p>
+  <p><strong>Trigger event:</strong> {{trigger_type}}</p>
+  <p><strong>Konverteringsdato:</strong> {{conversion_date}}</p>
+  <p><strong>Paribeløp forfaller:</strong> {{par_value_due_date}}</p>
+  <p style="margin-top:18px;">Undertegnede bekrefter at opplysninger om kapitalinnskudd, paribeløp og grunnlaget for gjennomføring av kapitalforhøyelsen er kontrollert og funnet i orden.</p>
+  <div style="margin-top: 20px; padding: 18px; background:#f8f4ed; border:1px solid #ddd4c7; border-radius:14px;">
+    <p style="margin:0 0 10px;"><strong>Totalt antall aksjer som utstedes:</strong> {{total_new_shares}}</p>
+    <p style="margin:0 0 10px;"><strong>Total aksjekapitaløkning:</strong> {{total_nominal_amount}}</p>
+    <p style="margin:0;"><strong>Total overkurs:</strong> {{total_share_premium}}</p>
+  </div>
+  <!-- digital_signature_line -->
+</section>

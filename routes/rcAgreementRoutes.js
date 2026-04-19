@@ -3,6 +3,7 @@ import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { buildRcDocumentHtml, buildRcTemplateData, investViaInvite } from "../controllers/rcAgreementController.js";
 import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 
 const router = express.Router();
 
@@ -43,40 +44,40 @@ const getRcAgreementViewState = (agreement = {}) => {
 
   if (paymentConfirmed) {
     return {
-      flow_status: "Finalized / downloadable",
-      flow_message: "Betaling er bekreftet av startupen. Endelig RC-avtale kan lastes ned.",
-      final_document_status: "Finalized",
+      flow_status: "Avtale aktiv / nedlastbar",
+      flow_message: "Betaling er bekreftet av selskapet. Den endelige avtalen kan lastes ned.",
+      final_document_status: "Avtale aktiv",
       is_downloadable: true,
-      payment_status: "Payment confirmed"
+      payment_status: "Betaling bekreftet av selskapet"
     };
   }
 
   if (investorSigned) {
     return {
-      flow_status: "Investor signed / payment pending",
-      flow_message: "Investor har signert. Avtalen blir endelig og nedlastbar når betaling er bekreftet.",
-      final_document_status: "Signed awaiting payment",
+      flow_status: "Signert / venter pa betaling",
+      flow_message: "Avtaleparten har signert. Avtalen blir endelig og nedlastbar nar betaling er bekreftet av selskapet.",
+      final_document_status: "Signert, venter pa betaling",
       is_downloadable: false,
-      payment_status: "Payment pending"
+      payment_status: "Venter pa betaling til selskapet"
     };
   }
 
   if (startupPreApproved) {
     return {
-      flow_status: "Startup pre-approved",
-      flow_message: "Runden er aktivert med startupens forhåndsgodkjenning av standard RC-malen. Investor må signere før avtalen går videre.",
-      final_document_status: "Startup pre-approved",
+      flow_status: "Klargjort av selskapet",
+      flow_message: "Selskapet har klargjort standardavtalen i sin private rundeportal. Avtaleparten ma signere for a ga videre.",
+      final_document_status: "Klargjort av selskapet",
       is_downloadable: false,
-      payment_status: "Not started"
+      payment_status: "Ikke startet"
     };
   }
 
   return {
-    flow_status: "Draft",
+    flow_status: "Utkast",
     flow_message: "Avtalen er fortsatt i utkaststadiet.",
-    final_document_status: "Draft",
+    final_document_status: "Utkast",
     is_downloadable: false,
-    payment_status: "Not started"
+    payment_status: "Ikke startet"
   };
 };
 
@@ -126,6 +127,9 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         COALESCE(c.company_name, sp.company_name, u.name) AS company_legal_name,
         investor.name AS investor_name,
         investor.email AS investor_email,
+        pr.par_value_amount,
+        pr.due_date AS par_value_due_date,
+        pr.status AS par_value_status,
         d.id AS document_id,
         d.title AS document_title,
         d.status AS document_status,
@@ -137,6 +141,14 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
       LEFT JOIN company_memberships cm ON cm.user_id = u.id
       LEFT JOIN companies c ON c.id = cm.company_id
       LEFT JOIN startup_profiles sp ON sp.user_id = e.startup_id
+      LEFT JOIN conversion_par_value_requests pr
+        ON pr.id = (
+          SELECT req.id
+          FROM conversion_par_value_requests req
+          WHERE req.agreement_id = a.id
+          ORDER BY req.id DESC
+          LIMIT 1
+        )
       ${rcDocumentJoin}
       WHERE a.id = ?
       `,
@@ -295,6 +307,135 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
 
   } catch (err) {
     console.error("Get RC document error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/:id(\\d+)/document/pdf", auth, async (req, res) => {
+  try {
+    const agreementId = req.params.id;
+    const userId = req.user.id;
+    const rcAgreementColumns = await getRcAgreementColumns();
+    const investorSignedAtSelect = rcAgreementColumns.has("investor_signed_at")
+      ? "a.investor_signed_at"
+      : rcAgreementColumns.has("signed_at")
+        ? "a.signed_at AS investor_signed_at"
+        : "NULL AS investor_signed_at";
+    const paymentConfirmedAtSelect = rcAgreementColumns.has("payment_confirmed_by_startup_at")
+      ? "a.payment_confirmed_by_startup_at"
+      : "NULL AS payment_confirmed_by_startup_at";
+
+    const [rows] = await pool.query(
+      `
+      SELECT
+        a.investor_id,
+        a.startup_id,
+        a.round_id,
+        a.rc_id,
+        a.investment_amount,
+        a.status AS agreement_status,
+        a.created_at,
+        ${investorSignedAtSelect},
+        ${paymentConfirmedAtSelect},
+        e.target_amount,
+        e.amount_raised,
+        e.discount_rate,
+        e.valuation_cap,
+        e.conversion_years,
+        e.bank_account,
+        e.deadline,
+        e.open AS round_open,
+        e.created_at AS round_created_at,
+        COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
+        u.email AS startup_email,
+        investor.name AS investor_name,
+        investor.email AS investor_email,
+        COALESCE(c.company_name, sp.company_name, u.name) AS company_legal_name,
+        c.orgnr AS company_org_no,
+        d.id,
+        d.title,
+        d.type,
+        d.status,
+        d.document_hash,
+        d.locked_at,
+        d.html_content,
+        d.created_at AS document_generated_at
+      FROM rc_agreements a
+      JOIN emission_rounds e ON a.round_id = e.id
+      JOIN users u ON a.startup_id = u.id
+      JOIN users investor ON a.investor_id = investor.id
+      LEFT JOIN company_memberships cm ON cm.user_id = u.id
+      LEFT JOIN companies c ON c.id = cm.company_id
+      LEFT JOIN startup_profiles sp ON sp.user_id = a.startup_id
+      ${rcDocumentJoin}
+      WHERE a.id = ?
+      `,
+      [agreementId]
+    );
+
+    if (!rows.length || !rows[0].id) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const document = rows[0];
+
+    if (document.investor_id !== userId && document.startup_id !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const viewState = getRcAgreementViewState(document);
+    if (!viewState.is_downloadable) {
+      return res.status(400).json({
+        error: viewState.flow_message
+      });
+    }
+
+    const htmlContent = buildRcDocumentHtml(buildRcTemplateData({
+      agreement_id: agreementId,
+      rc_id: document.rc_id,
+      round_id: document.round_id,
+      startup_name: document.startup_name,
+      startup_email: document.startup_email,
+      company_legal_name: document.company_legal_name,
+      company_org_no: document.company_org_no,
+      investor_name: document.investor_name,
+      investor_email: document.investor_email,
+      investor_identifier: document.investor_email,
+      investment_amount: document.investment_amount,
+      target_amount: document.target_amount,
+      amount_raised: document.amount_raised,
+      discount_rate: document.discount_rate,
+      valuation_cap: document.valuation_cap,
+      conversion_years: document.conversion_years,
+      bank_account: document.bank_account,
+      deadline: document.deadline,
+      round_open: document.round_open,
+      round_created_at: document.round_created_at,
+      created_at: document.created_at,
+      investor_signed_at: document.investor_signed_at,
+      payment_confirmed_by_startup_at: document.payment_confirmed_by_startup_at,
+      document_hash: document.document_hash,
+      agreement_document_hash: document.document_hash,
+      document_locked_at: document.locked_at,
+      document_generated_at: document.document_generated_at,
+      payment_status: viewState.payment_status,
+      payment_confirmed_by: document.startup_name,
+      document_final_status: viewState.final_document_status,
+      status: document.agreement_status
+    }));
+
+    const pdfBuffer = await renderHtmlToPdfBuffer(htmlContent || "");
+    const safeTitle = String(document.title || `rc-avtale-${agreementId}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9æøå\-]+/gi, "-")
+      .replace(/^-+|-+$/g, "");
+    const filename = `${safeTitle || `rc-avtale-${agreementId}`}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("Get RC document pdf error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });

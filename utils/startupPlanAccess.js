@@ -1,38 +1,18 @@
 import pool from "../config/db.js";
 
 export const STARTUP_PLAN_DEFINITIONS = {
-  basic: {
-    code: "basic",
-    name: "Basic",
-    annual_price_nok: 500,
-    available: true,
-    features: [
-      "Startupen kan fullføre en emisjon i Raisium",
-      "Tilgang til dagens kjerneflyt",
-      "Dokumenter kan genereres",
-      "Startupen må laste ned og oppbevare dokumentene selv",
-      "Raisium lagrer ikke dokumentene for startupen",
-      "Ingen konverteringspakke senere",
-      "Ingen løpende oppfølging inkludert",
-      "Ingen juridisk hjelp inkludert"
-    ],
-    includes_document_storage: false,
-    includes_conversion_package: false,
-    includes_follow_up: false,
-    includes_legal_help: false
-  },
   normal: {
     code: "normal",
     name: "Normal",
     annual_price_nok: 2000,
     available: true,
     features: [
-      "Alt i Basic",
+      "Full dokumentflyt i Raisium",
       "Dokumentlagring",
       "Dokumentproduksjon",
       "Konverteringspakke",
-      "Oppfolging",
-      "Juridisk hjelp ved tvister og spørsmål"
+      "Oppfolging av status og dokumentflyt",
+      "Assistanse ved spørsmål"
     ],
     includes_document_storage: true,
     includes_conversion_package: true,
@@ -42,7 +22,7 @@ export const STARTUP_PLAN_DEFINITIONS = {
   pro: {
     code: "pro",
     name: "Pro",
-    annual_price_nok: 2000,
+    annual_price_nok: 4000,
     available: false,
     features: [
       "Utvidet stotte",
@@ -119,6 +99,7 @@ function buildStartupPlanState({ company, activeSubscription, pendingSubscriptio
   const activePlan = activeSubscription?.plan_code || null;
   const pendingPlan = pendingSubscription?.plan_code || null;
   const selectedPlan = pendingPlan || activePlan || null;
+  const hasFullPlan = activePlan === "normal" || activePlan === "pro";
 
   let state = STARTUP_PLAN_STATES.NO_PLAN_SELECTED;
   if (activeSubscription) {
@@ -140,15 +121,14 @@ function buildStartupPlanState({ company, activeSubscription, pendingSubscriptio
     payment_status: activeSubscription ? "confirmed" : pendingSubscription?.status || null,
     payment_confirmed: !!activeSubscription,
     raise_form_unlocked: !!activeSubscription,
-    startup_has_basic_active: activePlan === "basic",
     startup_has_normal_active: activePlan === "normal",
-    requires_normal_for_advanced_features: activePlan !== "normal",
-    upgrade_required_state: activePlan === "basic" ? "upgrade_required" : null,
-    upgrade_message: activePlan === "basic" ? "Denne funksjonen krever Normal-plan." : null,
-    can_store_documents: activePlan === "normal",
-    includes_conversion_package: activePlan === "normal",
-    includes_follow_up: activePlan === "normal",
-    includes_legal_help: activePlan === "normal",
+    requires_normal_for_advanced_features: !hasFullPlan,
+    upgrade_required_state: null,
+    upgrade_message: null,
+    can_store_documents: hasFullPlan,
+    includes_conversion_package: hasFullPlan,
+    includes_follow_up: hasFullPlan,
+    includes_legal_help: hasFullPlan,
     plan_options: STARTUP_PLAN_DEFINITIONS,
     active_subscription: activeSubscription,
     pending_subscription: pendingSubscription

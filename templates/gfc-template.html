@@ -1,93 +1,81 @@
-<section style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+<section class="doc-template" style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+  <style>
+    .doc-template, .doc-template * { color: #000 !important; }
+    .doc-table { width: 100%; border-collapse: collapse; }
+    .doc-table th, .doc-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd4c7; vertical-align: top; }
+    .doc-table th { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f; }
+    .doc-box { padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px; }
+    .doc-list { margin: 8px 0 0 18px; padding: 0; }
+  </style>
+
   <header style="margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #d8d0c4;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
-      <tr>
-        <td style="vertical-align: top;">
-          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Generalforsamling</p>
-          <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Protokoll for kapitalforhøyelse ved konvertering</h1>
-          <p style="margin: 10px 0 0; color: #374151;">Foreløpig GFC-mal for konverteringsfasen</p>
-        </td>
-        <td style="vertical-align: top; text-align: right;">
-          <div style="display: inline-block; min-width: 230px; padding: 14px 16px; border-radius: 14px; background: #efe7db; border: 1px solid #d8d0c4; text-align: left;">
-            <p style="margin: 0 0 6px;"><strong>Selskap:</strong> {{company_name}}</p>
-            <p style="margin: 0 0 6px;"><strong>Org.nr.:</strong> {{orgnr}}</p>
-            <p style="margin: 0 0 6px;"><strong>Dato:</strong> {{date}}</p>
-            <p style="margin: 0;"><strong>Sted:</strong> Digitalt møte</p>
-          </div>
-        </td>
-      </tr>
-    </table>
+    <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">PROTOKOLL – EKSTRAORDINÆR</p>
+    <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">GENERALFORSAMLING</h1>
+    <p style="margin: 6px 0 0; font-weight: 700;">{{company_name}}</p>
+    <p style="margin: 2px 0 0;">Org.nr.: {{orgnr}}</p>
+    <p style="margin: 6px 0 0;"><strong>Dato:</strong> {{date}}</p>
+    <p style="margin: 0;"><strong>Sted:</strong> Digitalt</p>
   </header>
 
-  <section style="margin-bottom: 28px;">
-    <h2 style="margin: 0 0 12px; font-size: 18px;">Møtedetaljer</h2>
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
-      <tr>
-        <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
-          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Selskap</p>
-          <p style="margin: 0;"><strong>{{company_name}}</strong><br>Org.nr. {{orgnr}}</p>
-        </td>
-        <td style="width: 16px;"></td>
-        <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
-          <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Konvertering</p>
-          <p style="margin: 0;"><strong>Trigger:</strong> {{trigger_type}}<br><strong>Runde:</strong> #{{round_id}}</p>
-        </td>
-      </tr>
-    </table>
+  <section style="margin-bottom: 18px;">
+    <p style="margin: 0 0 10px;"><strong>1. Åpning av generalforsamlingen</strong></p>
+    <p style="margin: 0 0 16px;">Generalforsamlingen ble åpnet av styrets leder. Innkalling og dagsorden ble godkjent. Samtlige aksjer og stemmer i selskapet var representert. Generalforsamlingen ble erklært lovlig satt.</p>
+
+    <p style="margin: 0 0 10px;"><strong>2. Valg av møteleder og protokollunderskriver</strong></p>
+    <ul class="doc-list">
+      <li>Møteleder: {{chair_name}}</li>
+      <li>Protokollunderskriver: {{secretary_name}}</li>
+    </ul>
   </section>
 
-  <section style="margin-bottom: 32px; padding: 20px; background: #efe7db; border: 1px solid #d8d0c4; border-radius: 16px;">
-    <h2 style="margin: 0 0 14px; font-size: 18px;">Kort oversikt over vedtaket</h2>
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
-      <tr>
-        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Dokument</strong></td>
-        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">GFC</td>
-      </tr>
-      <tr>
-        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Møteleder</strong></td>
-        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{chair_name}}</td>
-      </tr>
-      <tr>
-        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Medundertegner</strong></td>
-        <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">{{secretary_name}}</td>
-      </tr>
-      <tr>
-        <td style="padding: 10px 0;"><strong>Vedtak</strong></td>
-        <td style="padding: 10px 0; text-align: right;">Kapitalforhøyelse ved konvertering</td>
-      </tr>
-    </table>
-  </section>
+  <section style="margin-bottom: 20px;">
+    <p style="margin: 0 0 10px;"><strong>3. Kapitalforhøyelse ved kontantinnskudd</strong></p>
+    <p style="margin: 0 0 12px;">Styret hadde fremmet forslag om kapitalforhøyelse ved kontantinnskudd. Generalforsamlingen traff følgende vedtak:</p>
 
-  <section style="margin-bottom: 34px;">
-    <h2 style="margin: 0 0 16px; font-size: 18px;">Foreløpig protokolltekst</h2>
-    <p style="margin: 0 0 14px;"><strong>1. Åpning av generalforsamlingen</strong></p>
-    <p style="margin: 0 0 18px;">Generalforsamlingen ble åpnet og gjennomgikk styrets forslag til kapitalforhøyelse som ledd i konvertering av tidligere RC-avtaler.</p>
+    <div class="doc-box" style="margin-bottom: 14px;">
+      <p style="margin: 0 0 6px;"><strong>a) Aksjekapital før forhøyelse</strong></p>
+      <p style="margin: 0 0 12px;">{{pre_capital_amount}}, fordelt på {{pre_share_count}} aksjer à {{nominal_value}}</p>
 
-    <p style="margin: 0 0 14px;"><strong>2. Valg av møteleder og medundertegner</strong></p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 0 0 18px; border-collapse: collapse; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
-      <tr>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7;"><strong>Møteleder</strong></td>
-        <td style="padding: 10px 14px; border-bottom: 1px solid #ddd4c7; text-align: right;">{{chair_name}}</td>
-      </tr>
-      <tr>
-        <td style="padding: 10px 14px;"><strong>Medundertegner</strong></td>
-        <td style="padding: 10px 14px; text-align: right;">{{secretary_name}}</td>
-      </tr>
-    </table>
+      <p style="margin: 0 0 6px;"><strong>b) Forhøyelsesbeløp</strong></p>
+      <p style="margin: 0 0 12px;">Aksjekapitalen forhøyes med {{increase_amount}} ved utstedelse av {{new_shares}} nye aksjer, hver pålydende {{nominal_value}}.</p>
 
-    <p style="margin: 0 0 14px;"><strong>3. Kapitalforhøyelsesvedtak</strong></p>
-    <div style="margin: 0 0 22px; padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px; color: #111827;">
-      <p style="margin: 0 0 10px;"><strong>1. Vedtak om konvertering</strong><br>Generalforsamlingen vedtar at relevante RC-avtaler kan konverteres til aksjer i selskapet i samsvar med de underliggende avtalevilkårene.</p>
-      <p style="margin: 0 0 10px;"><strong>2. Vedtak om kapitalforhøyelse</strong><br>Generalforsamlingen vedtar å forhøye selskapets aksjekapital som nødvendig for å gjennomføre konverteringen. Endelige tall og tegningsbeløp fylles inn senere.</p>
-      <p style="margin: 0 0 10px;"><strong>3. Oppdatering av vedtekter</strong><br>Generalforsamlingen vedtar at vedtektene oppdateres i den utstrekning kapitalforhøyelsen eller aksjeutstedelsen krever det.</p>
-      <p style="margin: 0;"><strong>4. Eierregister</strong><br>Selskapets eierregister skal oppdateres når konverteringen er gjennomført og de nye aksjene er registrert.</p>
+      <p style="margin: 0 0 6px;"><strong>c) Aksjekapital etter forhøyelse</strong></p>
+      <p style="margin: 0 0 12px;">{{post_capital_amount}}, fordelt på {{post_share_count}} aksjer à {{nominal_value}}</p>
+
+      <p style="margin: 0 0 6px;"><strong>d) Tegningskurs</strong></p>
+      <p style="margin: 0 0 12px;">{{subscription_price}} per aksje<br>– {{nominal_value}} til aksjekapital<br>– {{share_premium_per_share}} til overkursfond</p>
+
+      <p style="margin: 0 0 6px;"><strong>e) Samlet tegningsbeløp</strong></p>
+      <p style="margin: 0 0 12px;">{{total_subscription_amount}}<br>– Aksjekapital: {{increase_amount}}<br>– Overkurs: {{total_share_premium}}</p>
+
+      <p style="margin: 0 0 6px;"><strong>f) Tegning av aksjer</strong></p>
+      <div>{{subscription_rows}}</div>
+
+      <p style="margin: 12px 0 6px;"><strong>g) Tegning og betaling</strong></p>
+      <p style="margin: 0 0 12px;">Tegning skjer ved signatur på denne protokollen. Tegningsbeløpet innbetales kontant til selskapets konto innen {{payment_due_date}}. Innbetalt beløp kan disponeres av selskapet før kapitalforhøyelsen er registrert i Foretaksregisteret, jf. aksjeloven § 10-9.</p>
+
+      <p style="margin: 0 0 6px;"><strong>h) Fravikelse av fortrinnsrett (jf. aksjeloven § 10-5)</strong></p>
+      <p style="margin: 0 0 6px;">Aksjeeiernes fortrinnsrett fravikes. De nye aksjene kan kun tegnes av:</p>
+      <div>{{preemption_rows}}</div>
+      <p style="margin: 8px 0 12px;">Begrunnelse: Emisjonen er en målrettet kapitalinnhenting fra navngitte investorer for å styrke selskapets finansiering på en effektiv måte. Generalforsamlingen anser dette som i selskapets og aksjonærfellesskapets interesse.</p>
+
+      <p style="margin: 0 0 6px;"><strong>i) Rettigheter</strong></p>
+      <p style="margin: 0;">De nye aksjene gir fulle aksjonærrettigheter fra registrering av kapitalforhøyelsen i Foretaksregisteret.</p>
     </div>
+  </section>
 
-    <p style="margin: 0;">Denne GFC-malen er foreløpig og ment for å få flyt, signering og dokumenttilgjengelighet på plass i MVP.</p>
+  <section style="margin-bottom: 20px;">
+    <p style="margin: 0 0 8px;"><strong>4. Endring av vedtekter</strong></p>
+    <p style="margin: 0 0 10px;">Vedtektenes bestemmelse om aksjekapital endres til:</p>
+    <p style="margin: 0 0 10px;"><strong>Aksjekapitalen er {{post_capital_amount}} fordelt på {{post_share_count}} aksjer, hver pålydende {{nominal_value}}.</strong></p>
+    <p style="margin: 0;">Oppdaterte vedtekter ble godkjent.</p>
   </section>
 
   <section>
-    <h2 style="margin: 0 0 14px; font-size: 18px;">Signaturer</h2>
+    <p style="margin: 0 0 10px;"><strong>5. Avslutning</strong></p>
+    <p style="margin: 0 0 18px;">Det var ikke flere saker til behandling, og generalforsamlingen ble hevet.</p>
+
+    <h2 style="margin: 0 0 12px; font-size: 18px;">Signaturer</h2>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
       <tr>
         <td style="width: 50%; vertical-align: top; padding-right: 12px;">
@@ -99,10 +87,11 @@
         <td style="width: 50%; vertical-align: top; padding-left: 12px;">
           <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
             <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{secretary_name}}</div>
-            <p style="margin: 10px 0 0;">Medundertegner</p>
+            <p style="margin: 10px 0 0;">Protokollunderskriver</p>
           </div>
         </td>
       </tr>
     </table>
+    <!-- digital_signature_line -->
   </section>
 </section>

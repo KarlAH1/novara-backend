@@ -66,6 +66,9 @@ export const fetchBrregCompany = async (rawOrgnr) => {
       : null,
     hasRegisteredProkura: typeof data.harRegistrertProkura === "boolean"
       ? data.harRegistrertProkura
+      : null,
+    capitalShareCount: Number.isFinite(Number(data.kapital?.antallAksjer))
+      ? Number(data.kapital.antallAksjer)
       : null
   };
 };

@@ -1,4 +1,7 @@
-<section style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+<section class="doc-template" style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: #f4efe6; padding: 32px; border: 1px solid #d8d0c4; border-radius: 18px; line-height: 1.72;">
+  <style>
+    .doc-template, .doc-template * { color: #000 !important; }
+  </style>
    <header style="margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #d8d0c4;">
      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
        <tr>
@@ -19,9 +22,9 @@
      </table>
    </header>
  
-   <section style="margin-bottom: 28px;">
-     <h2 style="margin: 0 0 12px; font-size: 18px;">Møtedetaljer</h2>
-     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+  <section style="margin-bottom: 28px;">
+    <h2 style="margin: 0 0 12px; font-size: 18px;">Møtedetaljer</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
        <tr>
          <td style="width: 50%; vertical-align: top; padding: 18px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
            <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Selskap</p>
@@ -32,9 +35,10 @@
            <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #7c6f5f;">Møte</p>
            <p style="margin: 0;"><strong>Dato:</strong> {{date}}<br><strong>Sted:</strong> Digitalt møte</p>
          </td>
-       </tr>
-     </table>
-   </section>
+      </tr>
+    </table>
+    <p style="margin: 14px 0 0;">Selskapet henter inntil <strong>{{round_target_amount}}</strong> i denne runden.</p>
+  </section>
  
    <section style="margin-bottom: 32px; padding: 20px; background: #efe7db; border: 1px solid #d8d0c4; border-radius: 16px;">
      <h2 style="margin: 0 0 14px; font-size: 18px;">Kort oversikt over vedtaket</h2>
@@ -85,14 +89,15 @@
  
      <p style="margin: 0 0 14px;"><strong>3. Godkjenning av RC-runde og utstedelse av rett til senere aksjetegning</strong></p>
  
-     <p style="margin: 0 0 10px;">Styret hadde fremmet forslag om at generalforsamlingen godkjenner etableringen av en RC-runde (Raisium Convert) og beslutter å utstede RC-instrumenter som gir utvalgte investorer rett til senere å kreve eller tegne aksjer i selskapet på nærmere angitte vilkår.</p>
+     <p style="margin: 0 0 10px;">Styret hadde fremmet forslag om at generalforsamlingen godkjenner etableringen av en RC-runde og beslutter å utstede RC-instrumenter som gir utvalgte investorer rett til senere å kreve eller tegne aksjer i selskapet på nærmere angitte vilkår.</p>
  
      <p style="margin: 0 0 18px;">Det ble redegjort for at RC-instrumentene ikke er lån og ikke innebærer utstedelse av aksjer på tidspunktet for investorens inngåelse av RC-instrumentet. Investor betaler et investeringsbeløp ved inngåelsen som vederlag for RC-instrumentet og den senere retten til aksjetegning. Aksjer utstedes først ved et senere Trigger Event, i samsvar med vilkårene i det aktuelle RC-instrumentet og nødvendige selskapsrettslige beslutninger.</p>
  
      <div style="margin: 0 0 22px; padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px; color: #111827;">
        <p style="margin: 0 0 12px; color: #111827;"><strong>Generalforsamlingen traff deretter følgende vedtak:</strong></p>
  
-       <p style="margin: 0 0 10px; color: #111827;"><strong>1. Godkjenning av RC-runde</strong><br>Generalforsamlingen godkjenner at selskapet etablerer og gjennomfører RC-runden identifisert som <strong>{{rc_round_name}}</strong>, og at selskapet kan tilby og inngå individuelle RC-instrumenter innenfor denne runden med aksjeeiere eller bestemte navngitte eller på forhånd identifiserbare investorer.</p>
+      <p style="margin: 0 0 10px; color: #111827;"><strong>1. Godkjenning av RC-runde</strong><br>Generalforsamlingen godkjenner at selskapet etablerer og gjennomfører RC-runden identifisert som <strong>{{rc_round_name}}</strong>, og at selskapet kan tilby og inngå individuelle RC-instrumenter innenfor denne runden med aksjeeiere eller bestemte navngitte eller på forhånd identifiserbare investorer.</p>
+      <p style="margin: 0 0 10px; color: #111827;">Selskapet henter inntil <strong>{{round_target_amount}}</strong> i denne runden.</p>
  
        <p style="margin: 0 0 10px; color: #111827;"><strong>2. Utstedelse av RC-instrumenter</strong><br>Generalforsamlingen beslutter at selskapet kan utstede RC-instrumenter som gir rettighetshaverne rett til senere å kreve eller tegne nye aksjer i selskapet på de vilkår som følger av dette vedtaket, rundevilkårene og det enkelte RC-instrumentet.</p>
  
@@ -130,21 +135,22 @@
  
    <section>
      <h2 style="margin: 0 0 14px; font-size: 18px;">Signaturer</h2>
-     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
-       <tr>
-         <td style="width: 50%; vertical-align: top; padding-right: 12px;">
-           <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
-             <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{chair_name}}</div>
-             <p style="margin: 10px 0 0;">Møteleder</p>
-           </div>
-         </td>
-         <td style="width: 50%; vertical-align: top; padding-left: 12px;">
-           <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
-             <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{secretary_name}}</div>
-             <p style="margin: 10px 0 0;">Medundertegner</p>
-           </div>
-         </td>
-       </tr>
-     </table>
-   </section>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+      <tr>
+        <td style="width: 50%; vertical-align: top; padding-right: 12px;">
+          <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+            <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{chair_name}}</div>
+            <p style="margin: 10px 0 0;">Møteleder</p>
+          </div>
+        </td>
+        <td style="width: 50%; vertical-align: top; padding-left: 12px;">
+          <div style="padding: 24px 18px; min-height: 120px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 14px;">
+            <div style="display: inline-block; min-width: 220px; text-align: center; border-top: 1px solid #111827; padding-top: 8px;">{{secretary_name}}</div>
+            <p style="margin: 10px 0 0;">Medundertegner</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+    <!-- digital_signature_line -->
+  </section>
  </section>
