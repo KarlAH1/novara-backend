@@ -142,16 +142,15 @@ router.post(
       });
 
       const rcRoundName = `${companyName} RC-runde`;
-      const rcConversionPeriodYears = "3";
 
       const html = template
         .replace(/{{company_name}}/g, companyName)
         .replace(/{{orgnr}}/g, orgnr)
         .replace(/{{board_date}}/g, today)
         .replace(/{{amount}}/g, numericAmount.toLocaleString("no-NO"))
+        .replace(/{{round_target_amount}}/g, `${numericAmount.toLocaleString("no-NO")} NOK`)
         .replace(/{{chair_name}}/g, chairName)
-        .replace(/{{rc_round_name}}/g, rcRoundName)
-        .replace(/{{rc_conversion_period_years}}/g, rcConversionPeriodYears);
+        .replace(/{{rc_round_name}}/g, rcRoundName);
 
       // 3️⃣ Lag dokument
       const [docResult] = await pool.query(

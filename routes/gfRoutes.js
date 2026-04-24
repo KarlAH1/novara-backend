@@ -113,7 +113,6 @@ router.post(
       });
 
       const rcRoundName = `${data.company_name} RC-runde`;
-      const rcConversionPeriodYears = "3";
 
       const html = template
         .replace(/{{company_name}}/g, data.company_name)
@@ -123,8 +122,7 @@ router.post(
         .replace(/{{round_target_amount}}/g, `${Number(data.amount).toLocaleString("no-NO")} NOK`)
         .replace(/{{chair_name}}/g, data.chair_name)
         .replace(/{{secretary_name}}/g, data.secretary_name)
-        .replace(/{{rc_round_name}}/g, rcRoundName)
-        .replace(/{{rc_conversion_period_years}}/g, rcConversionPeriodYears);
+        .replace(/{{rc_round_name}}/g, rcRoundName);
 
       /* =====================================================
          4️⃣ Opprett dokument

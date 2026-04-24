@@ -59,10 +59,6 @@
          <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4;"><strong>Instrument</strong></td>
          <td style="padding: 10px 0; border-bottom: 1px solid #d8d0c4; text-align: right;">RC med rett til senere aksjetegning</td>
        </tr>
-       <tr>
-         <td style="padding: 10px 0;"><strong>RC-periode</strong></td>
-         <td style="padding: 10px 0; text-align: right;">{{rc_conversion_period_years}} år</td>
-       </tr>
      </table>
      <p style="margin: 14px 0 0; color: #374151;">
        Protokollen dokumenterer generalforsamlingens godkjenning av RC-runden og rammene for senere utøvelse av retten til aksjetegning.
@@ -89,19 +85,18 @@
  
      <p style="margin: 0 0 14px;"><strong>3. Godkjenning av RC-runde og utstedelse av rett til senere aksjetegning</strong></p>
  
-     <p style="margin: 0 0 10px;">Styret hadde fremmet forslag om at generalforsamlingen godkjenner etableringen av en RC-runde og beslutter å utstede RC-instrumenter som gir utvalgte investorer rett til senere å kreve eller tegne aksjer i selskapet på nærmere angitte vilkår.</p>
+     <p style="margin: 0 0 10px;">Styret hadde fremmet forslag om at selskapet kan hente inn inntil <strong>{{round_target_amount}}</strong> gjennom en privat kapitalinnhenting basert på RC-instrumenter, med investorer som selskapet kontakter og inngår avtale med.</p>
  
      <p style="margin: 0 0 18px;">Det ble redegjort for at RC-instrumentene ikke er lån og ikke innebærer utstedelse av aksjer på tidspunktet for investorens inngåelse av RC-instrumentet. Investor betaler et investeringsbeløp ved inngåelsen som vederlag for RC-instrumentet og den senere retten til aksjetegning. Aksjer utstedes først ved et senere Trigger Event, i samsvar med vilkårene i det aktuelle RC-instrumentet og nødvendige selskapsrettslige beslutninger.</p>
  
      <div style="margin: 0 0 22px; padding: 20px; background: #f8f4ed; border: 1px solid #ddd4c7; border-radius: 16px; color: #111827;">
        <p style="margin: 0 0 12px; color: #111827;"><strong>Generalforsamlingen traff deretter følgende vedtak:</strong></p>
  
-      <p style="margin: 0 0 10px; color: #111827;"><strong>1. Godkjenning av RC-runde</strong><br>Generalforsamlingen godkjenner at selskapet etablerer og gjennomfører RC-runden identifisert som <strong>{{rc_round_name}}</strong>, og at selskapet kan tilby og inngå individuelle RC-instrumenter innenfor denne runden med aksjeeiere eller bestemte navngitte eller på forhånd identifiserbare investorer.</p>
-      <p style="margin: 0 0 10px; color: #111827;">Selskapet henter inntil <strong>{{round_target_amount}}</strong> i denne runden.</p>
+      <p style="margin: 0 0 10px; color: #111827;"><strong>1. Godkjenning av RC-runde</strong><br>Generalforsamlingen godkjenner at selskapet kan hente inn inntil <strong>{{round_target_amount}}</strong> gjennom RC-runden identifisert som <strong>{{rc_round_name}}</strong>, og at selskapet kan tilby og inngå individuelle RC-instrumenter innenfor denne runden med investorer som selskapet kontakter og avtaler med.</p>
  
        <p style="margin: 0 0 10px; color: #111827;"><strong>2. Utstedelse av RC-instrumenter</strong><br>Generalforsamlingen beslutter at selskapet kan utstede RC-instrumenter som gir rettighetshaverne rett til senere å kreve eller tegne nye aksjer i selskapet på de vilkår som følger av dette vedtaket, rundevilkårene og det enkelte RC-instrumentet.</p>
  
-       <p style="margin: 0 0 10px; color: #111827;"><strong>3. Hvem som kan tegne RC-instrumentene</strong><br>RC-instrumentene kan bare tilbys til aksjeeiere eller bestemte navngitte eller på forhånd identifiserbare investorer som omfattes av den aktuelle private rettede kapitalinnhentingen.</p>
+       <p style="margin: 0 0 10px; color: #111827;"><strong>3. Hvem som kan tegne RC-instrumentene</strong><br>RC-instrumentene kan tilbys til investorer som selskapet selv kontakter og inngår avtale med i den private kapitalinnhentingen. Den enkelte investor blir først rettighetshaver når et individuelt RC-instrument er inngått.</p>
  
        <p style="margin: 0 0 10px; color: #111827;"><strong>4. Vederlag for RC-instrumentene</strong><br>Den enkelte investor skal ved inngåelse av sitt RC-instrument innbetale det investeringsbeløp som følger av det aktuelle RC-instrumentet. Dette beløpet utgjør vederlaget for RC-instrumentet og retten til senere aksjetegning, og ikke betaling for aksjer som utstedes på tidspunktet for inngåelsen.</p>
  
@@ -109,21 +104,17 @@
  
        <p style="margin: 0 0 10px; color: #111827;">Ved utøvelse skal investoren ha rett til å tegne eller kreve utstedt det antall aksjer som følger av det aktuelle RC-instrumentet. Investor skal da betale det pålydende beløpet per aksje og eventuelt annet beløp som etter RC-instrumentet og gjeldende rett skal innbetales i forbindelse med aksjeutstedelsen.</p>
  
-       <p style="margin: 0 0 10px; color: #111827;"><strong>6. RC-periodens varighet og utøvelse</strong><br>RC-instrumentet gjelder i inntil <strong>{{rc_conversion_period_years}}</strong> år fra investorens bindende inngåelse av det aktuelle RC-instrumentet. For denne runden er perioden satt til <strong>3 år</strong>, med mindre kortere periode følger av det enkelte RC-instrumentet.</p>
- 
-       <p style="margin: 0 0 10px; color: #111827;">Retten til senere aksjetegning eller aksjeutstedelse etter RC-instrumentet kan utøves ved et Trigger Event i samsvar med vilkårene i det enkelte RC-instrumentet. Dersom Optional Exercise er aktivert i rundevilkårene eller i det enkelte RC-instrumentet, kan retten også utøves på det grunnlaget innenfor samme periode.</p>
- 
-       <p style="margin: 0 0 10px; color: #111827;"><strong>7. Aksjeklasse</strong><br>Aksjer som utstedes ved utøvelse av RC-instrumentet skal være ordinære aksjer, med mindre det aktuelle RC-instrumentet eller vilkårene i en senere kvalifiserende egenkapitalfinansiering uttrykkelig og lovlig tilsier at investoren skal motta aksjer i samme aksjeklasse som nye investorer i den aktuelle finansieringsrunden.</p>
- 
-       <p style="margin: 0 0 10px; color: #111827;"><strong>8. Rettighetshavernes stilling før utøvelse</strong><br>Rettighetshaverne etter RC-instrumentene skal ikke anses som aksjeeiere før aksjene faktisk er utstedt. Selskapet skal likevel ikke foreta disposisjoner, transaksjoner eller strukturtilpasninger med hovedformål å omgå, uthule eller vesentlig svekke rettighetene etter gyldig utstedte RC-instrumenter.</p>
- 
+       <p style="margin: 0 0 10px; color: #111827;"><strong>6. Aksjeklasse</strong><br>Aksjer som utstedes ved utøvelse av RC-instrumentet skal være ordinære aksjer, med mindre det aktuelle RC-instrumentet eller vilkårene i en senere kvalifiserende egenkapitalfinansiering uttrykkelig og lovlig tilsier at investoren skal motta aksjer i samme aksjeklasse som nye investorer i den aktuelle finansieringsrunden.</p>
+
+       <p style="margin: 0 0 10px; color: #111827;"><strong>7. Rettighetshavernes stilling før utøvelse</strong><br>Rettighetshaverne etter RC-instrumentene skal ikke anses som aksjeeiere før aksjene faktisk er utstedt. Selskapet skal likevel ikke foreta disposisjoner, transaksjoner eller strukturtilpasninger med hovedformål å omgå, uthule eller vesentlig svekke rettighetene etter gyldig utstedte RC-instrumenter.</p>
+
        <p style="margin: 0 0 10px; color: #111827;">Ved aksjesplitt, spleis, fondsemisjon, omklassifisering eller tilsvarende kapitalhendelser skal rettighetene etter RC-instrumentene justeres på en rimelig og økonomisk nøytral måte i samsvar med vilkårene i RC-instrumentet.</p>
- 
-       <p style="margin: 0 0 10px; color: #111827;"><strong>9. Selskapets gjennomføringsplikt ved Trigger Event</strong><br>Ved gyldig utøvelse av et RC-instrument skal styret uten ugrunnet opphold sørge for at selskapet fremmer og gjennomfører de nødvendige selskapsrettslige beslutninger for å oppfylle instrumentet, herunder kapitalforhøyelse, aksjeutstedelse, eventuelt fravikelse av aksjeeiernes fortrinnsrett og nødvendige vedtektsendringer, i den utstrekning dette kreves etter lov eller det enkelte RC-instrumentet.</p>
- 
-       <p style="margin: 0 0 10px; color: #111827;"><strong>10. Fravikelse av fortrinnsrett</strong><br>Generalforsamlingen legger til grunn at aksjer som senere utstedes ved utøvelse av RC-instrumenter skal kunne tilordnes de investorer som er rettighetshavere etter instrumentene. Styret skal derfor, i den utstrekning det er nødvendig for å oppfylle gyldig utstedte RC-instrumenter, fremme forslag om eller gjennomføre med tilstrekkelig hjemmel fravikelse av aksjeeiernes fortrinnsrett slik at aksjene kan utstedes i samsvar med RC-instrumentene.</p>
- 
-       <p style="margin: 0; color: #111827;"><strong>11. Fullmakt til nødvendige vedtektsendringer og gjennomføring</strong><br>Styret gis fullmakt til å foreslå og gjennomføre de vedtektsendringer og øvrige tiltak som er nødvendige som følge av aksjeutstedelser og kapitalforhøyelser knyttet til utøvelse av RC-instrumentene, innenfor rammene av lov og dette vedtaket.</p>
+
+       <p style="margin: 0 0 10px; color: #111827;"><strong>8. Selskapets gjennomføringsplikt ved Trigger Event</strong><br>Ved gyldig utøvelse av et RC-instrument skal styret uten ugrunnet opphold sørge for at selskapet fremmer og gjennomfører de nødvendige selskapsrettslige beslutninger for å oppfylle instrumentet, herunder kapitalforhøyelse, aksjeutstedelse, eventuelt fravikelse av aksjeeiernes fortrinnsrett og nødvendige vedtektsendringer, i den utstrekning dette kreves etter lov eller det enkelte RC-instrumentet.</p>
+
+       <p style="margin: 0 0 10px; color: #111827;"><strong>9. Fravikelse av fortrinnsrett</strong><br>Generalforsamlingen legger til grunn at aksjer som senere utstedes ved utøvelse av RC-instrumenter skal kunne tilordnes de investorene som er rettighetshavere etter instrumentene. Styret skal derfor, i den utstrekning det er nødvendig for å oppfylle gyldig utstedte RC-instrumenter, fremme forslag om eller gjennomføre med tilstrekkelig hjemmel fravikelse av aksjeeiernes fortrinnsrett slik at aksjene kan utstedes i samsvar med RC-instrumentene.</p>
+
+       <p style="margin: 0; color: #111827;"><strong>10. Fullmakt til nødvendige vedtektsendringer og gjennomføring</strong><br>Styret gis fullmakt til å foreslå og gjennomføre de vedtektsendringer og øvrige tiltak som er nødvendige som følge av aksjeutstedelser og kapitalforhøyelser knyttet til utøvelse av RC-instrumentene, innenfor rammene av lov og dette vedtaket.</p>
      </div>
  
      <p style="margin: 0 0 14px;"><strong>4. Viktig presisering</strong></p>
