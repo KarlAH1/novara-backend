@@ -469,6 +469,8 @@ export const uploadStartupArticlesOfAssociation = async (req, res) => {
 };
 
 function buildPlanResponse(summary) {
+    const pendingSubscription = summary.pending_subscription || null;
+
     return {
         state: summary.state,
         selected_plan: summary.selected_plan,
@@ -486,7 +488,15 @@ function buildPlanResponse(summary) {
         includes_follow_up: summary.includes_follow_up,
         includes_legal_help: summary.includes_legal_help,
         company: summary.company,
-        plan_options: summary.plan_options
+        plan_options: summary.plan_options,
+        manual_payment: {
+            recipient: process.env.RAISIUM_PAYMENT_RECIPIENT || "Raisium AS",
+            account_number: process.env.RAISIUM_BANK_ACCOUNT || "15203206876",
+            amount_nok: pendingSubscription?.final_price_nok ?? null,
+            reference: pendingSubscription?.payment_reference || null,
+            requested_at: pendingSubscription?.payment_requested_at || null,
+            note: process.env.RAISIUM_PAYMENT_NOTE || "Betal fra selskapets bankkonto når det er mulig. Bruk betalingsreferansen i meldingsfeltet slik at betalingen kan avstemmes og godkjennes i admin."
+        }
     };
 }
 
@@ -497,7 +507,16 @@ function getNextAnnualExpiry() {
 }
 
 function buildPaymentReference(planCode, companyId) {
-    return `startup-${planCode}-${companyId}-${Date.now()}`;
+    const planPrefix = String(planCode || "normal").trim().toUpperCase().slice(0, 3) || "NOR";
+    return `R-${planPrefix}-${companyId}`;
+}
+
+function getStartupPlanFinalPrice(planCode, listPrice) {
+    if (String(planCode || "").toLowerCase() === "normal") {
+        return 1500;
+    }
+
+    return Number(listPrice || 0);
 }
 
 function generateDiscountCodeValue(planCode = "normal") {
@@ -573,6 +592,7 @@ export const selectStartupPlan = async (req, res) => {
 
         const openSubscription = await getOpenSubscriptionForCompany(company.company_id);
         const price = Number(plan.annual_price_nok || 0);
+        const finalPrice = getStartupPlanFinalPrice(planCode, price);
 
         if (openSubscription) {
             await pool.query(
@@ -584,7 +604,7 @@ export const selectStartupPlan = async (req, res) => {
                     starts_at = NULL, expires_at = NULL, activated_at = NULL
                 WHERE id = ?
                 `,
-                [planCode, price, price, openSubscription.id]
+                [planCode, price, finalPrice, openSubscription.id]
             );
         } else {
             await pool.query(
@@ -593,7 +613,7 @@ export const selectStartupPlan = async (req, res) => {
                 (company_id, user_id, plan_code, billing_period, list_price_nok, final_price_nok, status)
                 VALUES (?, ?, ?, 'annual', ?, ?, 'payment_required')
                 `,
-                [company.company_id, req.user.id, planCode, price, price]
+                [company.company_id, req.user.id, planCode, price, finalPrice]
             );
         }
 
@@ -631,7 +651,9 @@ export const startStartupPlanPayment = async (req, res) => {
             `
             UPDATE startup_plan_subscriptions
             SET status = 'payment_pending',
-                payment_reference = ?
+                payment_reference = ?,
+                payment_requested_at = NOW(),
+                payment_admin_note = NULL
             WHERE id = ?
             `,
             [buildPaymentReference(openSubscription.plan_code, company.company_id), openSubscription.id]
@@ -640,7 +662,7 @@ export const startStartupPlanPayment = async (req, res) => {
         const summary = await getStartupPlanSummaryForUser(req.user.id);
 
         res.json({
-            message: "Betaling er startet.",
+            message: "Betalingsinformasjon er klar. Planen aktiveres når Raisium har bekreftet betalingen.",
             ...buildPlanResponse(summary)
         });
     } catch (err) {
@@ -651,6 +673,10 @@ export const startStartupPlanPayment = async (req, res) => {
 
 export const confirmStartupPlanPayment = async (req, res) => {
     try {
+        if (req.user.role !== "admin") {
+            return res.status(403).json({ error: "Betaling må bekreftes av admin." });
+        }
+
         const company = await getCompanyForUser(req.user.id);
 
         if (!company) {

@@ -718,7 +718,7 @@ router.get(
   
         const [rows] = await pool.query(
           `
-          SELECT 
+          SELECT
             a.id,
             a.rc_id,
             a.round_id,
@@ -733,6 +733,9 @@ router.get(
             e.valuation_cap,
             e.conversion_years,
             e.bank_account,
+            e.open AS round_open,
+            e.closed_at AS round_closed_at,
+            e.closed_reason AS round_closed_reason,
             COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
             d.id AS document_id,
             d.status AS document_status

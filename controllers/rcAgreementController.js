@@ -4,6 +4,7 @@ import {
     getCapacityExceededMessage,
     syncEmissionRoundAvailability
 } from "../utils/emissionRoundState.js";
+import { sendRcAgreementCreatedEmails } from "../utils/notificationEmailFlow.js";
 
 const formatNOK = (value) =>
     Number(value || 0).toLocaleString("no-NO") + " NOK";
@@ -331,7 +332,26 @@ export const investViaInvite = async (req, res) => {
             VALUES (?, ?, ?, 'Investor', 'ACCEPTED')
         `, [documentId, investorId, investorRows[0].email]);
 
+        await connection.query(
+            "INSERT INTO notifications (user_id, message) VALUES (?, ?)",
+            [
+                round.startup_id,
+                `${investorRows[0].name || investorRows[0].email || "Investor"} har registrert ${formatNOK(requestedAmount)} i den private runden.`
+            ]
+        ).catch(() => {});
+
         await connection.commit();
+
+        sendRcAgreementCreatedEmails({
+            startupEmail: round.startup_email,
+            startupName: round.startup_name,
+            investorEmail: investorRows[0].email,
+            investorName: investorRows[0].name,
+            amount: requestedAmount,
+            agreementId
+        }).catch((emailError) => {
+            console.error("RC agreement notification email failed:", emailError);
+        });
 
         res.json({
             agreementId,

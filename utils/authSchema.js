@@ -52,6 +52,18 @@ export async function ensureAuthSchema() {
       {
         name: "company_role_check_orgnr",
         sql: "ALTER TABLE users ADD COLUMN company_role_check_orgnr VARCHAR(9) NULL"
+      },
+      {
+        name: "vipps_sub",
+        sql: "ALTER TABLE users ADD COLUMN vipps_sub VARCHAR(128) NULL"
+      },
+      {
+        name: "vipps_phone",
+        sql: "ALTER TABLE users ADD COLUMN vipps_phone VARCHAR(32) NULL"
+      },
+      {
+        name: "last_login_provider",
+        sql: "ALTER TABLE users ADD COLUMN last_login_provider VARCHAR(32) NULL"
       }
     ];
 
@@ -60,6 +72,17 @@ export async function ensureAuthSchema() {
       if (!exists) {
         await connection.query(column.sql);
       }
+    }
+
+    await connection.query(
+      "ALTER TABLE users MODIFY COLUMN role ENUM('investor','startup','admin') NOT NULL"
+    );
+
+    const [indexes] = await connection.query(
+      "SHOW INDEX FROM users WHERE Key_name = 'idx_users_vipps_sub'"
+    );
+    if (!indexes.length) {
+      await connection.query("CREATE INDEX idx_users_vipps_sub ON users (vipps_sub)");
     }
   } finally {
     connection.release();

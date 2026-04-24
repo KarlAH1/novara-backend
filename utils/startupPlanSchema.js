@@ -15,6 +15,22 @@ async function tableExists(connection, tableName) {
   return rows.length > 0;
 }
 
+async function columnExists(connection, tableName, columnName) {
+  const [rows] = await connection.query(
+    `
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+    LIMIT 1
+    `,
+    [tableName, columnName]
+  );
+
+  return rows.length > 0;
+}
+
 export async function ensureStartupPlanSchema() {
   const connection = await db.getConnection();
 
@@ -43,6 +59,32 @@ export async function ensureStartupPlanSchema() {
           INDEX idx_startup_plan_company_created (company_id, created_at)
         )
       `);
+    }
+
+    const subscriptionColumns = [
+      {
+        name: "payment_requested_at",
+        sql: "ALTER TABLE startup_plan_subscriptions ADD COLUMN payment_requested_at DATETIME NULL"
+      },
+      {
+        name: "payment_confirmed_by_admin_id",
+        sql: "ALTER TABLE startup_plan_subscriptions ADD COLUMN payment_confirmed_by_admin_id INT NULL"
+      },
+      {
+        name: "payment_confirmed_at",
+        sql: "ALTER TABLE startup_plan_subscriptions ADD COLUMN payment_confirmed_at DATETIME NULL"
+      },
+      {
+        name: "payment_admin_note",
+        sql: "ALTER TABLE startup_plan_subscriptions ADD COLUMN payment_admin_note TEXT NULL"
+      }
+    ];
+
+    for (const column of subscriptionColumns) {
+      const exists = await columnExists(connection, "startup_plan_subscriptions", column.name);
+      if (!exists) {
+        await connection.query(column.sql);
+      }
     }
 
     const codesExists = await tableExists(connection, "startup_discount_codes");

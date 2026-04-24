@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "db:bootstrap:local": "node scripts/bootstrapLocalDb.js",
+    "admin:create": "node scripts/createAdminUser.js",
     "dev": "node server.js",
     "start": "node server.js"
   },

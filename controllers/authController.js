@@ -10,6 +10,50 @@ import {
   sendVerificationEmail
 } from "../utils/authEmailFlow.js";
 import { hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
+import {
+  buildVippsAuthorizationUrl,
+  createVippsState,
+  exchangeVippsCodeForTokens,
+  fetchVippsUserinfo,
+  isVippsLoginConfigured,
+  verifyVippsIdToken,
+  verifyVippsState
+} from "../utils/vippsLogin.js";
+
+function createAuthToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      role: String(user.role || "").toLowerCase(),
+      email: user.email
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+
+function escapeScriptString(value) {
+  return JSON.stringify(String(value ?? ""));
+}
+
+function sendVippsLoginResult(res, { token, user, redirect }) {
+  const safeRedirect = String(redirect || "profile.html").startsWith("/")
+    ? "profile.html"
+    : String(redirect || "profile.html");
+
+  res.type("html").send(`
+<!doctype html>
+<html lang="no">
+<head><meta charset="utf-8"><title>Vipps Login</title></head>
+<body>
+<script>
+localStorage.setItem("token", ${escapeScriptString(token)});
+localStorage.setItem("user", ${JSON.stringify(JSON.stringify(user))});
+window.location.replace(${escapeScriptString(safeRedirect)});
+</script>
+</body>
+</html>`);
+}
 
 /* =========================================
    REGISTER
@@ -183,6 +227,13 @@ export const login = async (req, res) => {
 
     const user = users[0];
 
+    if (!user.password) {
+      return res.status(400).json({
+        success: false,
+        error: "Denne brukeren er opprettet med Vipps. Logg inn med Vipps, eller bruk glemt passord for å sette passord."
+      });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
@@ -208,15 +259,12 @@ await db.execute(
     [user.id, user.email]
   );
 
-    const token = jwt.sign(
-      {
-        id: user.id,
-        role: user.role.toLowerCase(),
-        email: user.email
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
+    await db.execute(
+      "UPDATE users SET last_login_provider = 'password' WHERE id = ?",
+      [user.id]
     );
+
+    const token = createAuthToken(user);
 
     res.json({
       success: true,
@@ -235,6 +283,137 @@ await db.execute(
       success: false,
       error: "Serverfeil"
     });
+  }
+};
+
+export const vippsStart = async (req, res) => {
+  try {
+    if (!isVippsLoginConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: "Vipps Login er ikke konfigurert i dette miljøet"
+      });
+    }
+
+    const redirect = String(req.query.redirect || "profile.html").trim() || "profile.html";
+    const role = String(req.query.role || "investor").toLowerCase() === "startup" ? "startup" : "investor";
+    const state = createVippsState({ redirect, role });
+    const authorizationUrl = await buildVippsAuthorizationUrl({ state });
+
+    res.redirect(authorizationUrl);
+  } catch (error) {
+    console.error("vippsStart error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Kunne ikke starte Vipps Login"
+    });
+  }
+};
+
+export const vippsCallback = async (req, res) => {
+  try {
+    const code = String(req.query.code || "").trim();
+    const state = String(req.query.state || "").trim();
+    const error = String(req.query.error || "").trim();
+
+    if (error) {
+      return res.redirect(`/login.html?vipps_error=${encodeURIComponent(error)}`);
+    }
+
+    if (!code || !state) {
+      return res.redirect("/login.html?vipps_error=missing_code");
+    }
+
+    const decodedState = verifyVippsState(state);
+    const { config, tokens } = await exchangeVippsCodeForTokens(code);
+    const idClaims = await verifyVippsIdToken({ idToken: tokens.id_token, config });
+    const userinfo = await fetchVippsUserinfo({
+      accessToken: tokens.access_token,
+      userinfoEndpoint: config.userinfo_endpoint
+    });
+
+    const vippsSub = String(userinfo?.sub || idClaims.sub || "").trim();
+    const email = String(userinfo?.email || idClaims.email || "").trim().toLowerCase();
+    const name = String(userinfo?.name || [userinfo?.given_name, userinfo?.family_name].filter(Boolean).join(" ") || "").trim();
+    const phone = String(userinfo?.phone_number || idClaims.phone_number || "").trim();
+
+    if (!vippsSub) {
+      return res.redirect("/login.html?vipps_error=missing_identity");
+    }
+
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      const [byVipps] = await connection.execute(
+        "SELECT * FROM users WHERE vipps_sub = ? LIMIT 1",
+        [vippsSub]
+      );
+      const [byEmail] = email
+        ? await connection.execute("SELECT * FROM users WHERE email = ? LIMIT 1", [email])
+        : [[]];
+
+      let user = byVipps[0] || byEmail[0];
+
+      if (!user) {
+        if (!email) {
+          await connection.rollback();
+          return res.redirect("/login.html?vipps_error=missing_email");
+        }
+
+        const role = decodedState.role === "startup" ? "startup" : "investor";
+        const vippsPasswordPlaceholder = await bcrypt.hash(`vipps:${vippsSub}:${Date.now()}`, 10);
+        const [result] = await connection.execute(
+          `INSERT INTO users
+           (name, email, password, role, email_verified, vipps_sub, vipps_phone, last_login_provider)
+           VALUES (?, ?, ?, ?, 1, ?, ?, 'vipps')`,
+          [name || email, email, vippsPasswordPlaceholder, role, vippsSub, phone || null]
+        );
+
+        user = {
+          id: result.insertId,
+          name: name || email,
+          email,
+          role
+        };
+      } else {
+        await connection.execute(
+          `
+          UPDATE users
+          SET vipps_sub = COALESCE(vipps_sub, ?),
+              vipps_phone = ?,
+              email_verified = 1,
+              last_login_provider = 'vipps'
+          WHERE id = ?
+          `,
+          [vippsSub, phone || user.vipps_phone || null, user.id]
+        );
+      }
+
+      await connection.commit();
+
+      const normalizedUser = {
+        id: user.id,
+        name: user.name || name || email || "Vipps-bruker",
+        email: user.email || email,
+        role: String(user.role || decodedState.role || "investor").toLowerCase()
+      };
+
+      const token = createAuthToken(normalizedUser);
+      sendVippsLoginResult(res, {
+        token,
+        user: normalizedUser,
+        redirect: decodedState.redirect
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("vippsCallback error:", error);
+    res.redirect("/login.html?vipps_error=callback_failed");
   }
 };
 
@@ -489,15 +668,11 @@ export const updateMe = async (req, res) => {
 
     const user = users[0];
     const normalizedRole = String(user.role || "").toLowerCase();
-    const token = jwt.sign(
-      {
-        id: user.id,
-        role: normalizedRole,
-        email: user.email
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const token = createAuthToken({
+      id: user.id,
+      role: normalizedRole,
+      email: user.email
+    });
 
     res.json({
       success: true,

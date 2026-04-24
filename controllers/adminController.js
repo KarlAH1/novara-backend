@@ -1,5 +1,11 @@
 import pool from "../config/db.js";
 
+function getNextAnnualExpiry() {
+    const next = new Date();
+    next.setFullYear(next.getFullYear() + 1);
+    return next;
+}
+
 //
 // ADMIN: GET ALL USERS
 //
@@ -15,9 +21,9 @@ export const adminGetUsers = async (req, res) => {
 //
 export const adminChangeRole = async (req, res) => {
     const { id } = req.params;
-    const { role } = req.body;
+    const role = String(req.body.role || "").trim().toLowerCase();
 
-    if (!["Admin", "Startup", "Investor"].includes(role)) {
+    if (!["admin", "startup", "investor"].includes(role)) {
         return res.status(400).json({ error: "Invalid role" });
     }
 
@@ -78,6 +84,115 @@ export const adminGetInvestments = async (req, res) => {
         `SELECT * FROM investments ORDER BY id DESC`
     );
     res.json(rows);
+};
+
+export const adminGetPlanPayments = async (req, res) => {
+    const status = String(req.query.status || "payment_pending").trim();
+    const allowedStatuses = ["payment_required", "payment_pending", "active", "cancelled"];
+    const selectedStatus = allowedStatuses.includes(status) ? status : "payment_pending";
+
+    const [rows] = await pool.query(
+        `
+        SELECT
+            s.id,
+            s.company_id,
+            s.user_id,
+            s.plan_code,
+            s.billing_period,
+            s.list_price_nok,
+            s.final_price_nok,
+            s.status,
+            s.payment_reference,
+            s.payment_requested_at,
+            s.payment_confirmed_at,
+            s.payment_admin_note,
+            s.created_at,
+            s.updated_at,
+            c.company_name,
+            c.orgnr,
+            u.name AS user_name,
+            u.email AS user_email,
+            admin.email AS confirmed_by_email
+        FROM startup_plan_subscriptions s
+        LEFT JOIN companies c ON c.id = s.company_id
+        LEFT JOIN users u ON u.id = s.user_id
+        LEFT JOIN users admin ON admin.id = s.payment_confirmed_by_admin_id
+        WHERE s.status = ?
+        ORDER BY COALESCE(s.payment_requested_at, s.created_at) DESC, s.id DESC
+        `,
+        [selectedStatus]
+    );
+
+    res.json(rows);
+};
+
+export const adminApprovePlanPayment = async (req, res) => {
+    const subscriptionId = Number(req.params.id);
+    const note = String(req.body.note || "").trim();
+
+    if (!subscriptionId) {
+        return res.status(400).json({ error: "Ugyldig betaling." });
+    }
+
+    const [rows] = await pool.query(
+        `
+        SELECT *
+        FROM startup_plan_subscriptions
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [subscriptionId]
+    );
+
+    const subscription = rows[0];
+    if (!subscription) {
+        return res.status(404).json({ error: "Betaling ikke funnet." });
+    }
+
+    if (!["payment_required", "payment_pending"].includes(subscription.status)) {
+        return res.status(400).json({ error: "Denne betalingen kan ikke godkjennes." });
+    }
+
+    await pool.query(
+        `
+        UPDATE startup_plan_subscriptions
+        SET status = 'active',
+            activation_source = 'admin_manual_payment',
+            starts_at = COALESCE(starts_at, NOW()),
+            expires_at = ?,
+            activated_at = NOW(),
+            payment_confirmed_at = NOW(),
+            payment_confirmed_by_admin_id = ?,
+            payment_admin_note = ?
+        WHERE id = ?
+        `,
+        [getNextAnnualExpiry(), req.user.id, note || null, subscriptionId]
+    );
+
+    res.json({ message: "Betaling godkjent. Startup-planen er aktivert." });
+};
+
+export const adminRejectPlanPayment = async (req, res) => {
+    const subscriptionId = Number(req.params.id);
+    const note = String(req.body.note || "").trim();
+
+    if (!subscriptionId) {
+        return res.status(400).json({ error: "Ugyldig betaling." });
+    }
+
+    await pool.query(
+        `
+        UPDATE startup_plan_subscriptions
+        SET status = 'payment_required',
+            payment_admin_note = ?,
+            payment_requested_at = NULL
+        WHERE id = ?
+          AND status = 'payment_pending'
+        `,
+        [note || "Avvist av admin. Venter på ny betaling.", subscriptionId]
+    );
+
+    res.json({ message: "Betaling avvist og satt tilbake til betalingskrav." });
 };
 
 export const adminGetUsersByOrgnr = async (req, res) => {

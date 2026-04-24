@@ -12,7 +12,6 @@ import {
   getStartupPlanStatus,
   selectStartupPlan,
   startStartupPlanPayment,
-  confirmStartupPlanPayment,
   applyStartupDiscountCode,
   generateStartupDiscountCode
 } from "../controllers/startupController.js";
@@ -36,7 +35,6 @@ router.post("/articles-of-association", authMiddleware, uploadStartupArticlesOfA
 router.get("/plan", authMiddleware, getStartupPlanStatus);
 router.post("/plan/select", authMiddleware, selectStartupPlan);
 router.post("/plan/payment/start", authMiddleware, startStartupPlanPayment);
-router.post("/plan/payment/confirm", authMiddleware, confirmStartupPlanPayment);
 router.post("/plan/discount-code", authMiddleware, applyStartupDiscountCode);
 router.post("/plan/codes/generate", authMiddleware, generateStartupDiscountCode);
 

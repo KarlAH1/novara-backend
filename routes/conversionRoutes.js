@@ -1315,6 +1315,14 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     const dateLabel = formatDateLabel(new Date()).replace(/\s+/g, "-").toLowerCase();
     const zipName = `${baseName}-konverteringspakke-${dateLabel}.zip`;
 
+    // Close the round so startup can start a new one
+    await connection.query(
+      `UPDATE emission_rounds
+       SET open = 0, closed_at = NOW(), closed_reason = 'conversion_downloaded'
+       WHERE id = ? AND open = 1`,
+      [round.id]
+    );
+
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
 

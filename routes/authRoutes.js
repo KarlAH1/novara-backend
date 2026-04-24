@@ -10,7 +10,9 @@ import {
     forgotPassword,
     resetPassword,
     verifyEmail,
-    resendVerification
+    resendVerification,
+    vippsStart,
+    vippsCallback
 } from "../controllers/authController.js";
 
 const router = express.Router();
@@ -77,6 +79,22 @@ router.post("/company-role-check", async (req, res, next) => {
 router.post("/login", async (req, res, next) => {
     try {
         await login(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get("/vipps/start", async (req, res, next) => {
+    try {
+        await vippsStart(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get("/vipps/callback", async (req, res, next) => {
+    try {
+        await vippsCallback(req, res);
     } catch (err) {
         next(err);
     }

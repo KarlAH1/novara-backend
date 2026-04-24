@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS users (
   company_role_check_status VARCHAR(32),
   company_role_check_checked_at DATETIME,
   company_role_check_orgnr VARCHAR(9),
-  role ENUM('investor','startup') NOT NULL,
+  vipps_sub VARCHAR(128),
+  vipps_phone VARCHAR(32),
+  last_login_provider VARCHAR(32),
+  role ENUM('investor','startup','admin') NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -92,6 +95,10 @@ CREATE TABLE IF NOT EXISTS startup_plan_subscriptions (
   activation_source VARCHAR(32),
   payment_reference VARCHAR(128),
   discount_code_id INT,
+  payment_requested_at DATETIME,
+  payment_confirmed_by_admin_id INT,
+  payment_confirmed_at DATETIME,
+  payment_admin_note TEXT,
   starts_at DATETIME,
   expires_at DATETIME,
   activated_at DATETIME,

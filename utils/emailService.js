@@ -34,15 +34,15 @@ export async function sendEmail({ to, subject, html, text }) {
     return { mode: "resend" };
   }
 
+  if (isProduction()) {
+    throw new Error("Email provider is not configured. Set RESEND_API_KEY and EMAIL_FROM.");
+  }
+
   console.log("=== AUTH EMAIL PREVIEW ===");
   console.log("TO:", to);
   console.log("SUBJECT:", subject);
   console.log("TEXT:", text || html || "");
   console.log("==========================");
-
-  if (isProduction()) {
-    console.warn("Email not actually sent because RESEND_API_KEY or EMAIL_FROM is missing.");
-  }
 
   return { mode: "log" };
 }
