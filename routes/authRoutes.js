@@ -2,6 +2,8 @@ import express from "express";
 import { auth as authMiddleware } from "../middleware/authMiddleware.js";
 import {
     register,
+    sendStartupRegistrationCode,
+    verifyStartupRegistrationCode,
     completeStartupRegistration,
     login,
     companyRoleCheck,
@@ -22,6 +24,12 @@ const publicAuthLimiter = createRateLimiter({
     keyPrefix: "auth-public",
     windowMs: 10 * 60 * 1000,
     maxRequests: 40
+});
+const companyRoleCheckLimiter = createRateLimiter({
+    keyPrefix: "auth-company-role-check",
+    windowMs: 10 * 60 * 1000,
+    maxRequests: 80,
+    message: "For mange forsøk på selskapskontroll. Vent litt og prøv igjen."
 });
 const loginLimiter = createRateLimiter({
     keyPrefix: "auth-login",
@@ -78,6 +86,22 @@ router.post("/register", publicAuthLimiter, async (req, res, next) => {
     }
 });
 
+router.post("/startup-email-code/send", publicAuthLimiter, async (req, res, next) => {
+    try {
+        await sendStartupRegistrationCode(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post("/startup-email-code/verify", publicAuthLimiter, async (req, res, next) => {
+    try {
+        await verifyStartupRegistrationCode(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
 router.post("/startup/complete", authMiddleware, publicAuthLimiter, async (req, res, next) => {
     try {
         await completeStartupRegistration(req, res);
@@ -86,7 +110,7 @@ router.post("/startup/complete", authMiddleware, publicAuthLimiter, async (req, 
     }
 });
 
-router.post("/company-role-check", publicAuthLimiter, async (req, res, next) => {
+router.post("/company-role-check", companyRoleCheckLimiter, async (req, res, next) => {
     try {
         await companyRoleCheck(req, res);
     } catch (err) {

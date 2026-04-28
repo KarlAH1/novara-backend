@@ -3,7 +3,7 @@ import pool from "../config/db.js";
 export const STARTUP_PLAN_DEFINITIONS = {
   normal: {
     code: "normal",
-    name: "Normal",
+    name: "Seed",
     annual_price_nok: 2000,
     available: true,
     features: [
@@ -21,7 +21,7 @@ export const STARTUP_PLAN_DEFINITIONS = {
   },
   pro: {
     code: "pro",
-    name: "Pro",
+    name: "Scale",
     annual_price_nok: 4000,
     available: false,
     features: [

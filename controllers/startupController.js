@@ -644,7 +644,7 @@ export const startStartupPlanPayment = async (req, res) => {
         }
 
         if (openSubscription.plan_code === "pro") {
-            return res.status(400).json({ error: "Pro-plan er ikke tilgjengelig ennå." });
+            return res.status(400).json({ error: "Scale-plan er ikke tilgjengelig ennå." });
         }
 
         await pool.query(
@@ -861,7 +861,7 @@ export const applyStartupDiscountCode = async (req, res) => {
         const summary = await getStartupPlanSummaryForUser(req.user.id);
 
         res.json({
-            message: "Rabattkoden er aktivert. Normal-plan er nå aktiv.",
+            message: "Rabattkoden er aktivert. Seed-plan er nå aktiv.",
             ...buildPlanResponse(summary)
         });
     } catch (err) {
@@ -907,5 +907,47 @@ export const generateStartupDiscountCode = async (req, res) => {
     } catch (err) {
         console.error("Generate startup discount code error:", err);
         res.status(500).json({ error: "Kunne ikke opprette rabattkode." });
+    }
+};
+
+export const reportStartupIssue = async (req, res) => {
+    try {
+        const userId = Number(req.user?.id || 0);
+        const userRole = String(req.user?.role || "startup").toLowerCase();
+        const issueType = String(req.body.issueType || "general").trim().toLowerCase();
+        const message = String(req.body.message || "").trim();
+        const source = String(req.body.source || "startup_payment").trim().toLowerCase() || "startup_payment";
+
+        if (!userId) {
+            return res.status(401).json({ error: "Ikke autentisert." });
+        }
+
+        if (!message) {
+            return res.status(400).json({ error: "Skriv litt om problemet før du sender inn." });
+        }
+
+        await pool.query(
+            `
+            INSERT INTO admin_issues (user_id, startup_id, emission_id, source, issue_type, message, status)
+            VALUES (?, ?, NULL, ?, ?, ?, 'OPEN')
+            `,
+            [userId, userId, source, issueType, message]
+        ).then(async ([issueResult]) => {
+            await pool.query(
+                `
+                INSERT INTO admin_issue_messages (issue_id, sender_user_id, sender_role, message)
+                VALUES (?, ?, ?, ?)
+                `,
+                [issueResult.insertId, userId, userRole || "startup", message]
+            );
+        });
+
+        res.status(201).json({
+            success: true,
+            message: "Meldingen er sendt til support."
+        });
+    } catch (err) {
+        console.error("Report startup issue error:", err);
+        res.status(500).json({ error: "Kunne ikke sende inn meldingen." });
     }
 };

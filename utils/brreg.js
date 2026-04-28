@@ -2,6 +2,32 @@ import { isValidOrgnr, normalizeOrgnr } from "./orgnr.js";
 
 const BRREG_BASE_URL = "https://data.brreg.no/enhetsregisteret/api/enheter";
 const BRREG_ROLES_BASE_URL = "https://data.brreg.no/enhetsregisteret/api/enheter";
+const BRREG_CACHE_TTL_MS = 5 * 60 * 1000;
+const BRREG_TIMEOUT_MS = 3500;
+
+const brregCache = new Map();
+
+function getCacheKey(kind, orgnr) {
+  return `${kind}:${orgnr}`;
+}
+
+function getCachedValue(kind, orgnr) {
+  const key = getCacheKey(kind, orgnr);
+  const entry = brregCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    brregCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedValue(kind, orgnr, value) {
+  brregCache.set(getCacheKey(kind, orgnr), {
+    value,
+    expiresAt: Date.now() + BRREG_CACHE_TTL_MS
+  });
+}
 
 const toAddressLabel = (address) => {
   if (!address || typeof address !== "object") {
@@ -16,13 +42,26 @@ const toAddressLabel = (address) => {
 
 const fetchBrregJson = async (url, notFoundMessage) => {
   let response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), BRREG_TIMEOUT_MS);
 
   try {
-    response = await fetch(url);
+    response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json"
+      }
+    });
   } catch (err) {
-    const error = new Error("Brønnøysund er utilgjengelig akkurat nå");
+    const error = new Error(
+      err?.name === "AbortError"
+        ? "Brønnøysund bruker for lang tid akkurat nå"
+        : "Brønnøysund er utilgjengelig akkurat nå"
+    );
     error.status = 502;
     throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (response.status === 404) {
@@ -49,12 +88,17 @@ export const fetchBrregCompany = async (rawOrgnr) => {
     throw error;
   }
 
+  const cached = getCachedValue("company", orgnr);
+  if (cached) {
+    return cached;
+  }
+
   const data = await fetchBrregJson(
     `${BRREG_BASE_URL}/${orgnr}`,
     "Fant ikke selskap i Brønnøysund"
   );
 
-  return {
+  const company = {
     orgnr,
     name: data.navn,
     form: data.organisasjonsform?.kode || null,
@@ -71,6 +115,9 @@ export const fetchBrregCompany = async (rawOrgnr) => {
       ? Number(data.kapital.antallAksjer)
       : null
   };
+
+  setCachedValue("company", orgnr, company);
+  return company;
 };
 
 const getPersonName = (value) => {
@@ -170,6 +217,11 @@ export const fetchBrregRoles = async (rawOrgnr) => {
     throw error;
   }
 
+  const cached = getCachedValue("roles", orgnr);
+  if (cached) {
+    return cached;
+  }
+
   const data = await fetchBrregJson(
     `${BRREG_ROLES_BASE_URL}/${orgnr}/roller`,
     "Fant ikke roller i Brønnøysund"
@@ -207,5 +259,6 @@ export const fetchBrregRoles = async (rawOrgnr) => {
     ).values()
   );
 
+  setCachedValue("roles", orgnr, deduped);
   return deduped;
 };

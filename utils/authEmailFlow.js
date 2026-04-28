@@ -80,3 +80,20 @@ export async function sendPasswordResetEmail(executor, { userId, email, name }) 
     `
   });
 }
+
+export async function sendStartupRegistrationCodeEmail({ email, code }) {
+  const safeEmail = String(email || "").trim().toLowerCase();
+  const safeCode = String(code || "").trim();
+
+  await sendEmail({
+    to: safeEmail,
+    subject: "Din kode for startup-registrering i Raisium",
+    text: `Hei,\n\nKoden din for å fortsette startup-registreringen i Raisium er: ${safeCode}\n\nKoden utløper om 15 minutter.`,
+    html: `
+      <p>Hei,</p>
+      <p>Koden din for å fortsette startup-registreringen i Raisium er:</p>
+      <p style="font-size:28px; font-weight:700; letter-spacing:0.18em;">${safeCode}</p>
+      <p>Koden utløper om 15 minutter.</p>
+    `
+  });
+}

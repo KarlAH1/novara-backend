@@ -113,6 +113,89 @@ function parseRequestedDate(value) {
   return date;
 }
 
+async function getRcAgreementColumns(connection) {
+  const [rows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
+  return new Set(rows.map((row) => row.Field));
+}
+
+async function getTargetReachedAt(connection, round) {
+  if (!round) return null;
+
+  const targetAmount = Number(round.target_amount || 0);
+  if (!targetAmount || targetAmount <= 0) {
+    return null;
+  }
+
+  const rcColumns = await getRcAgreementColumns(connection);
+  const orderColumn = rcColumns.has("payment_confirmed_by_startup_at")
+    ? "a.payment_confirmed_by_startup_at"
+    : "a.created_at";
+
+  const [rows] = await connection.query(
+    `
+    SELECT
+      a.investment_amount,
+      ${orderColumn} AS effective_confirmed_at
+    FROM rc_agreements a
+    WHERE a.round_id = ?
+      AND a.status = 'Active RC'
+    ORDER BY effective_confirmed_at ASC, a.id ASC
+    `,
+    [round.id]
+  );
+
+  let cumulative = 0;
+  for (const row of rows) {
+    cumulative += Number(row.investment_amount || 0);
+    if (cumulative >= targetAmount && row.effective_confirmed_at) {
+      return new Date(row.effective_confirmed_at);
+    }
+  }
+
+  if (round.closed_reason === "target_reached" && round.closed_at) {
+    const fallbackDate = new Date(round.closed_at);
+    if (!Number.isNaN(fallbackDate.getTime())) {
+      return fallbackDate;
+    }
+  }
+
+  return null;
+}
+
+async function evaluateTriggerApproval(connection, round, triggerType) {
+  const normalizedTriggerType = normalizeTriggerType(triggerType);
+  if (!["new_priced_round", "ownership_change"].includes(normalizedTriggerType)) {
+    return {
+      requiresAdminApproval: false,
+      targetReachedAt: null,
+      approvalBlockedUntil: null,
+      reason: null
+    };
+  }
+
+  const targetReachedAt = await getTargetReachedAt(connection, round);
+  if (!targetReachedAt) {
+    return {
+      requiresAdminApproval: false,
+      targetReachedAt: null,
+      approvalBlockedUntil: null,
+      reason: null
+    };
+  }
+
+  const approvalBlockedUntil = addDays(targetReachedAt, 30);
+  const requiresAdminApproval = approvalBlockedUntil.getTime() > Date.now();
+
+  return {
+    requiresAdminApproval,
+    targetReachedAt,
+    approvalBlockedUntil,
+    reason: requiresAdminApproval
+      ? `Trigger event er registrert mindre enn 30 dager etter at målbeløpet ble nådd (${formatDateLabel(targetReachedAt)}). Admin må godkjenne før dokumentflyten kan starte.`
+      : null
+  };
+}
+
 function buildParValueReference(agreementId, conversionId) {
   const safeAgreementId = String(agreementId || "").trim() || "0";
   const safeConversionId = String(conversionId || "").trim() || "0";
@@ -1076,7 +1159,13 @@ async function buildConversionState(connection, startupContext, user) {
   }
 
   const conversionData = await buildConversionCalculations(connection, startupId, round, conversion);
-  if (conversion?.id && conversionData.calculations) {
+  const adminApprovalPending = Boolean(
+    conversion?.id &&
+    Number(conversion.requires_admin_approval || 0) === 1 &&
+    !conversion.admin_approved_at
+  );
+
+  if (conversion?.id && conversionData.calculations && !adminApprovalPending) {
     await connection.query(
       `
       UPDATE conversion_events
@@ -1155,14 +1244,16 @@ async function buildConversionState(connection, startupContext, user) {
           trigger_label: getTriggerLabel(conversion.trigger_type),
           conversion_date_label: formatDateLabel(conversion.conversion_date),
           par_value_due_date_label: formatDateLabel(conversion.par_value_due_date),
-          preparation_started_at_label: formatDateTimeLabel(conversion.preparation_started_at)
+          preparation_started_at_label: formatDateTimeLabel(conversion.preparation_started_at),
+          admin_approval_pending: adminApprovalPending,
+          admin_approved_at_label: formatDateTimeLabel(conversion.admin_approved_at)
         }
       : null,
     calculations: conversionData.calculations,
     calculation_error: conversionData.calculationError,
     par_value_requests: parValueRequests,
     steps: {
-      trigger: { status: conversion ? "done" : "pending" },
+      trigger: { status: adminApprovalPending ? "pending_admin_approval" : (conversion ? "done" : "pending") },
       par_value: {
         status: parValueRequests.length
           ? (parValueRequests.every((item) => item.notice_sent_at) ? "ready" : "pending")
@@ -1210,6 +1301,11 @@ async function persistConversionContext(connection, conversionId, payload = {}) 
     params.push(Number.isFinite(numeric) && numeric > 0 ? numeric : null);
   }
 
+  if (payload.triggerRequestReason !== undefined) {
+    updates.push("trigger_request_reason = ?");
+    params.push(String(payload.triggerRequestReason || "").trim() || null);
+  }
+
   if (!updates.length) {
     return;
   }
@@ -1252,34 +1348,74 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
     const existing = await getCurrentConversionEvent(connection, startupId, round.id);
     const timeline = resolveConversionTimeline(round, triggerType, req.body.conversionDate);
     const pricedRoundSharePrice = Number(req.body.pricedRoundSharePrice);
+    const triggerRequestReason = String(req.body.triggerRequestReason || "").trim();
+    const triggerApproval = await evaluateTriggerApproval(connection, round, triggerType);
+    const triggerStatus = triggerApproval.requiresAdminApproval ? "pending_admin_approval" : "triggered";
+
+    if (triggerApproval.requiresAdminApproval && !triggerRequestReason) {
+      return res.status(400).json({
+        error: "Skriv en kort begrunnelse for hvorfor trigger event må registreres før 30 dager."
+      });
+    }
 
     if (!existing) {
       await connection.query(
         `
         INSERT INTO conversion_events (
-          startup_id, round_id, trigger_type, status, conversion_date, par_value_due_date, preparation_started_at, third_party_name, third_party_email, priced_round_share_price
+          startup_id, round_id, trigger_type, status, conversion_date, par_value_due_date, preparation_started_at, third_party_name, third_party_email, priced_round_share_price, trigger_request_reason, requires_admin_approval, admin_approval_reason
         )
-        VALUES (?, ?, ?, 'triggered', ?, ?, NOW(), ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?)
         `,
         [
           startupId,
           round.id,
           triggerType,
+          triggerStatus,
           toMysqlDateTime(timeline.conversionDate),
           toMysqlDateTime(timeline.parValueDueDate),
           String(req.body.thirdPartyName || "").trim() || null,
           String(req.body.thirdPartyEmail || "").trim().toLowerCase() || null,
           Number.isFinite(pricedRoundSharePrice) && pricedRoundSharePrice > 0
             ? pricedRoundSharePrice
-            : null
+            : null,
+          triggerRequestReason || null,
+          triggerApproval.requiresAdminApproval ? 1 : 0,
+          triggerApproval.reason
         ]
       );
     } else {
+      if (existing.status === "pending_admin_approval" && Number(existing.requires_admin_approval || 0) === 1 && !existing.admin_approved_at) {
+        return res.status(409).json({
+          error: existing.admin_approval_reason || "Trigger event venter allerede på godkjenning fra admin."
+        });
+      }
+
+      const updateChunks = [
+        "status = ?",
+        "requires_admin_approval = ?",
+        "admin_approval_reason = ?",
+        "trigger_request_reason = ?",
+        "admin_approved_at = NULL",
+        "admin_approved_by_user_id = NULL"
+      ];
+      const updateParams = [
+        triggerStatus,
+        triggerApproval.requiresAdminApproval ? 1 : 0,
+        triggerApproval.reason,
+        triggerRequestReason || null,
+        existing.id
+      ];
+      await connection.query(
+        `UPDATE conversion_events SET ${updateChunks.join(", ")} WHERE id = ?`,
+        updateParams
+      );
+
       await persistConversionContext(connection, existing.id, {
         conversionDate: req.body.conversionDate,
         thirdPartyName: req.body.thirdPartyName,
         thirdPartyEmail: req.body.thirdPartyEmail,
-        pricedRoundSharePrice: req.body.pricedRoundSharePrice
+        pricedRoundSharePrice: req.body.pricedRoundSharePrice,
+        triggerRequestReason
       });
     }
 
@@ -1289,7 +1425,15 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
       startupName: startupContext.company?.company_name || req.user.name || "",
       triggerLabel: getTriggerLabel(triggerType)
     });
-    res.status(201).json(state);
+    res.status(triggerApproval.requiresAdminApproval ? 202 : 201).json({
+      ...state,
+      adminApproval: {
+        required: triggerApproval.requiresAdminApproval,
+        targetReachedAt: triggerApproval.targetReachedAt ? triggerApproval.targetReachedAt.toISOString() : null,
+        blockedUntil: triggerApproval.approvalBlockedUntil ? triggerApproval.approvalBlockedUntil.toISOString() : null,
+        reason: triggerApproval.reason
+      }
+    });
   } catch (err) {
     console.error("Start conversion error:", err);
     res.status(500).json({ error: "Internal server error" });

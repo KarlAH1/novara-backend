@@ -81,6 +81,10 @@ export const adminGetConversionReviews = async (req, res) => {
             ce.id,
             ce.status,
             ce.trigger_type,
+            ce.trigger_request_reason,
+            ce.requires_admin_approval,
+            ce.admin_approved_at,
+            ce.admin_approval_reason,
             ce.third_party_name,
             ce.third_party_email,
             ce.third_party_confirmed_at,
@@ -98,6 +102,7 @@ export const adminGetConversionReviews = async (req, res) => {
         LEFT JOIN startup_profiles sp ON sp.user_id = ce.startup_id
         LEFT JOIN documents d ON d.id = ce.capital_confirmation_document_id
         WHERE ce.capital_confirmation_document_id IS NOT NULL
+           OR ce.status = 'pending_admin_approval'
         ORDER BY COALESCE(d.locked_at, ce.updated_at, ce.created_at) DESC, ce.id DESC
         `
     );
@@ -187,6 +192,50 @@ export const adminApproveConversionReview = async (req, res) => {
     } finally {
         connection.release();
     }
+};
+
+export const adminApproveConversionTrigger = async (req, res) => {
+    if (!REVIEW_ROLES.includes(String(req.user?.role || "").toLowerCase())) {
+        return res.status(403).json({ error: "Ingen tilgang." });
+    }
+
+    const conversionId = Number(req.params.id || 0);
+    if (!conversionId) {
+        return res.status(400).json({ error: "Ugyldig trigger." });
+    }
+
+    const [rows] = await pool.query(
+        `
+        SELECT id, status, requires_admin_approval
+        FROM conversion_events
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [conversionId]
+    );
+
+    const conversion = rows[0];
+    if (!conversion) {
+        return res.status(404).json({ error: "Fant ikke trigger event." });
+    }
+
+    if (!Number(conversion.requires_admin_approval || 0) || conversion.status !== "pending_admin_approval") {
+        return res.status(400).json({ error: "Denne triggeren trenger ikke admin-godkjenning." });
+    }
+
+    await pool.query(
+        `
+        UPDATE conversion_events
+        SET status = 'triggered',
+            admin_approved_at = NOW(),
+            admin_approved_by_user_id = ?,
+            admin_approval_reason = NULL
+        WHERE id = ?
+        `,
+        [req.user.id, conversionId]
+    );
+
+    res.json({ message: "Trigger event er godkjent. Dokumentflyten kan nå starte." });
 };
 
 //

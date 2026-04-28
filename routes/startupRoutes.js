@@ -13,7 +13,8 @@ import {
   selectStartupPlan,
   startStartupPlanPayment,
   applyStartupDiscountCode,
-  generateStartupDiscountCode
+  generateStartupDiscountCode,
+  reportStartupIssue
 } from "../controllers/startupController.js";
 
 const router = express.Router();
@@ -37,6 +38,7 @@ router.post("/plan/select", authMiddleware, selectStartupPlan);
 router.post("/plan/payment/start", authMiddleware, startStartupPlanPayment);
 router.post("/plan/discount-code", authMiddleware, applyStartupDiscountCode);
 router.post("/plan/codes/generate", authMiddleware, generateStartupDiscountCode);
+router.post("/issues", authMiddleware, reportStartupIssue);
 
 /* =========================================
    GET MY STARTUP

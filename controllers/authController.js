@@ -1,15 +1,15 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import db from "../config/db.js";
-import { fetchBrregCompany } from "../utils/brreg.js";
 import { checkCompanyRoleMatch } from "../utils/companyRoleCheck.js";
 import { ensureCompanyAndMembership } from "../utils/companyMembership.js";
 import {
   isEmailVerificationRequired,
+  sendStartupRegistrationCodeEmail,
   sendPasswordResetEmail,
   sendVerificationEmail
 } from "../utils/authEmailFlow.js";
-import { hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
+import { createExpiry, createRawToken, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
 import {
   buildVippsAuthorizationUrl,
   createVippsState,
@@ -32,6 +32,165 @@ function createAuthToken(user) {
     { expiresIn: "7d" }
   );
 }
+
+function createSixDigitCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function consumeStartupEmailVerification(connection, email, rawVerificationToken) {
+  const safeEmail = String(email || "").trim().toLowerCase();
+  const safeTokenHash = hashToken(rawVerificationToken);
+
+  const [rows] = await connection.query(
+    `
+    SELECT id, expires_at, verified_at, consumed_at
+    FROM startup_email_verifications
+    WHERE email = ?
+      AND verification_token_hash = ?
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [safeEmail, safeTokenHash]
+  );
+
+  const record = rows[0];
+  if (!record) {
+    return { ok: false, error: "E-postkoden er ikke verifisert eller har utløpt." };
+  }
+
+  const expiresAt = new Date(record.expires_at);
+  if (!record.verified_at || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+    return { ok: false, error: "E-postkoden er ikke verifisert eller har utløpt." };
+  }
+
+  if (record.consumed_at) {
+    return { ok: false, error: "E-postkoden er allerede brukt. Be om en ny kode." };
+  }
+
+  await connection.query(
+    `
+    UPDATE startup_email_verifications
+    SET consumed_at = NOW()
+    WHERE id = ?
+    `,
+    [record.id]
+  );
+
+  return { ok: true };
+}
+
+export const sendStartupRegistrationCode = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, error: "Skriv inn en gyldig e-postadresse." });
+    }
+
+    const [existing] = await connection.query(
+      "SELECT id FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+    if (existing.length) {
+      return res.status(400).json({ success: false, error: "E-post er allerede registrert." });
+    }
+
+    const code = createSixDigitCode();
+    const expiresAt = createExpiry(0.25);
+
+    await connection.query(
+      `
+      INSERT INTO startup_email_verifications (email, code_hash, verification_token_hash, expires_at)
+      VALUES (?, ?, NULL, ?)
+      `,
+      [email, hashToken(code), expiresAt]
+    );
+
+    await sendStartupRegistrationCodeEmail({ email, code });
+
+    res.json({
+      success: true,
+      message: "Vi har sendt en kode til e-posten din.",
+      expiresAt
+    });
+  } catch (error) {
+    console.error("Send startup registration code error:", error);
+    res.status(500).json({ success: false, error: "Kunne ikke sende kode akkurat nå." });
+  } finally {
+    connection.release();
+  }
+};
+
+export const verifyStartupRegistrationCode = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const code = String(req.body.code || "").trim();
+
+    if (!email || !code) {
+      return res.status(400).json({ success: false, error: "E-post og kode er påkrevd." });
+    }
+
+    const [rows] = await connection.query(
+      `
+      SELECT id, code_hash, expires_at, attempts
+      FROM startup_email_verifications
+      WHERE email = ?
+        AND consumed_at IS NULL
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [email]
+    );
+
+    const record = rows[0];
+    if (!record) {
+      return res.status(400).json({ success: false, error: "Fant ingen aktiv kode. Be om en ny kode." });
+    }
+
+    const expiresAt = new Date(record.expires_at);
+    if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ success: false, error: "Koden har utløpt. Be om en ny kode." });
+    }
+
+    const providedHash = hashToken(code);
+    if (providedHash !== record.code_hash) {
+      await connection.query(
+        `
+        UPDATE startup_email_verifications
+        SET attempts = attempts + 1
+        WHERE id = ?
+        `,
+        [record.id]
+      );
+      return res.status(400).json({ success: false, error: "Koden er ugyldig." });
+    }
+
+    const verificationToken = createRawToken();
+    await connection.query(
+      `
+      UPDATE startup_email_verifications
+      SET verified_at = NOW(),
+          verification_token_hash = ?
+      WHERE id = ?
+      `,
+      [hashToken(verificationToken), record.id]
+    );
+
+    res.json({
+      success: true,
+      message: "E-posten er verifisert. Du kan fortsette.",
+      verificationToken
+    });
+  } catch (error) {
+    console.error("Verify startup registration code error:", error);
+    res.status(500).json({ success: false, error: "Kunne ikke verifisere koden." });
+  } finally {
+    connection.release();
+  }
+};
 
 function escapeScriptString(value) {
   return JSON.stringify(String(value ?? ""));
@@ -62,19 +221,19 @@ window.location.replace(${escapeScriptString(safeRedirect)});
 export const register = async (req, res) => {
   const connection = await db.getConnection();
   let transactionStarted = false;
-  const requireEmailVerification = isEmailVerificationRequired();
 
   try {
-    let { name, email, password, orgnr } = req.body;
+    let { name, email, password, orgnr, emailVerificationToken, allowRoleCheckFallback } = req.body;
     name = String(name || "").trim();
     email = String(email || "").trim().toLowerCase();
     password = String(password || "");
     orgnr = String(orgnr || "").trim();
+    allowRoleCheckFallback = allowRoleCheckFallback === true;
 
-    if (!name || !email || !password || !orgnr) {
+    if (!name || !email || !password || !orgnr || !emailVerificationToken) {
       return res.status(400).json({
         success: false,
-        error: "Navn, e-post, passord og organisasjonsnummer er påkrevd"
+        error: "Navn, e-post, passord, organisasjonsnummer og verifisert e-postkode er påkrevd"
       });
     }
 
@@ -91,13 +250,17 @@ export const register = async (req, res) => {
       fullName: name,
       orgnr
     });
-    const company = roleCheck.company || await fetchBrregCompany(orgnr);
+    const company = roleCheck.company;
+    const roleCheckStatus = roleCheck.matched ? "matched" : "pending_manual_review";
 
-    if (!roleCheck.matched) {
+    if (!roleCheck.matched && !allowRoleCheckFallback) {
       return res.status(400).json({
         success: false,
         error: "Vi fant ingen registrert rolle i virksomheten som matcher opplysningene du oppga.",
-        code: "COMPANY_ROLE_MATCH_NOT_FOUND"
+        code: "COMPANY_ROLE_MATCH_NOT_FOUND",
+        fallbackAvailable: true,
+        company,
+        roleCount: roleCheck.roles.length
       });
     }
 
@@ -117,11 +280,21 @@ export const register = async (req, res) => {
     await connection.beginTransaction();
     transactionStarted = true;
 
+    const verification = await consumeStartupEmailVerification(connection, email, emailVerificationToken);
+    if (!verification.ok) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(400).json({
+        success: false,
+        error: verification.error
+      });
+    }
+
     const [result] = await connection.execute(
       `INSERT INTO users
        (name, email, password, role, email_verified, company_role_check_status, company_role_check_checked_at, company_role_check_orgnr)
-       VALUES (?, ?, ?, ?, ?, 'matched', NOW(), ?)`,
-      [name, email, hashedPassword, role, requireEmailVerification ? 0 : 1, company.orgnr]
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)`,
+      [name, email, hashedPassword, role, 1, roleCheckStatus, company.orgnr]
     );
 
     const userId = result.insertId;
@@ -131,23 +304,26 @@ export const register = async (req, res) => {
       companyName: company.name
     });
 
-    if (requireEmailVerification) {
-      await sendVerificationEmail(connection, {
-        userId,
-        email,
-        name
-      });
-    }
-
     await connection.commit();
+
+    const user = {
+      id: userId,
+      name,
+      email,
+      role
+    };
+    const token = createAuthToken(user);
 
     res.status(201).json({
       success: true,
-      message: requireEmailVerification
-        ? "Startup registrert. Bekreft e-posten din før du logger inn."
-        : "Startup registrert. Du kan logge inn med en gang i dev.",
-      requiresEmailVerification: requireEmailVerification,
-      company
+      message: roleCheck.matched
+        ? "Startup registrert."
+        : "Startup registrert. Selskapsrollen må vurderes manuelt.",
+      requiresEmailVerification: false,
+      company,
+      roleCheckStatus,
+      token,
+      user
     });
 
   } catch (error) {
@@ -214,7 +390,7 @@ export const completeStartupRegistration = async (req, res) => {
       fullName: user.name,
       orgnr
     });
-    const company = roleCheck.company || await fetchBrregCompany(orgnr);
+    const company = roleCheck.company;
 
     if (!roleCheck.matched) {
       logAuditEvent("startup_orgnr_match_failed", {
@@ -310,7 +486,9 @@ export const companyRoleCheck = async (req, res) => {
         : "Vi fant ingen registrert rolle i virksomheten som matcher opplysningene du oppga.",
       company: result.company,
       matchedRoles: result.matchedRoles.slice(0, 5),
-      roleCount: result.roles.length
+      roleCount: result.roles.length,
+      fallbackAvailable: !result.matched,
+      sampleRoles: result.roles.slice(0, 5)
     });
   } catch (error) {
     console.error("companyRoleCheck error:", error);

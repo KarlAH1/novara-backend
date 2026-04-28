@@ -21,6 +21,7 @@ import {
     adminRejectPlanPayment,
     adminGetConversionReviews,
     adminApproveConversionReview,
+    adminApproveConversionTrigger,
     adminGetMyIssues,
     adminReplyIssue,
     replyToOwnIssue,
@@ -44,6 +45,7 @@ router.get("/plan-payments", authMiddleware, isAdmin, adminGetPlanPayments);
 router.post("/plan-payments/:id/approve", authMiddleware, isAdmin, adminApprovePlanPayment);
 router.post("/plan-payments/:id/reject", authMiddleware, isAdmin, adminRejectPlanPayment);
 router.get("/conversion-reviews", authMiddleware, isAdmin, adminGetConversionReviews);
+router.post("/conversion-reviews/:id/approve-trigger", authMiddleware, isAdmin, adminApproveConversionTrigger);
 router.post("/conversion-reviews/:id/approve", authMiddleware, isAdmin, adminApproveConversionReview);
 router.get("/org/:orgnr/users", authMiddleware, isAdmin, adminGetUsersByOrgnr);
 router.post("/org/:orgnr/users", authMiddleware, isAdmin, adminLinkUserToOrgnr);

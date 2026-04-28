@@ -96,6 +96,35 @@ export async function ensureAuthSchema() {
     if (!indexes.length) {
       await connection.query("CREATE INDEX idx_users_vipps_sub ON users (vipps_sub)");
     }
+
+    const [verificationTables] = await connection.query(
+      `
+      SELECT 1
+      FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'startup_email_verifications'
+      LIMIT 1
+      `
+    );
+
+    if (!verificationTables.length) {
+      await connection.query(`
+        CREATE TABLE startup_email_verifications (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          email VARCHAR(255) NOT NULL,
+          code_hash VARCHAR(64) NOT NULL,
+          verification_token_hash VARCHAR(64) NULL,
+          expires_at DATETIME NOT NULL,
+          verified_at DATETIME NULL,
+          consumed_at DATETIME NULL,
+          attempts INT NOT NULL DEFAULT 0,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_startup_email_verifications_email (email),
+          INDEX idx_startup_email_verifications_expires (expires_at)
+        )
+      `);
+    }
   } finally {
     connection.release();
   }
