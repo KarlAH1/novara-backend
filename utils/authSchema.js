@@ -64,6 +64,18 @@ export async function ensureAuthSchema() {
       {
         name: "last_login_provider",
         sql: "ALTER TABLE users ADD COLUMN last_login_provider VARCHAR(32) NULL"
+      },
+      {
+        name: "last_login_at",
+        sql: "ALTER TABLE users ADD COLUMN last_login_at DATETIME NULL"
+      },
+      {
+        name: "last_login_ip",
+        sql: "ALTER TABLE users ADD COLUMN last_login_ip VARCHAR(64) NULL"
+      },
+      {
+        name: "startup_identity_provider",
+        sql: "ALTER TABLE users ADD COLUMN startup_identity_provider VARCHAR(32) NULL"
       }
     ];
 

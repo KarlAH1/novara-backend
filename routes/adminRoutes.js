@@ -18,7 +18,13 @@ import {
     adminUpdateIssue,
     adminGetPlanPayments,
     adminApprovePlanPayment,
-    adminRejectPlanPayment
+    adminRejectPlanPayment,
+    adminGetConversionReviews,
+    adminApproveConversionReview,
+    adminGetMyIssues,
+    adminReplyIssue,
+    replyToOwnIssue,
+    adminDeleteIssue
 } from "../controllers/adminController.js";
 
 const router = express.Router();
@@ -37,10 +43,16 @@ router.get("/investments", authMiddleware, isAdmin, adminGetInvestments);
 router.get("/plan-payments", authMiddleware, isAdmin, adminGetPlanPayments);
 router.post("/plan-payments/:id/approve", authMiddleware, isAdmin, adminApprovePlanPayment);
 router.post("/plan-payments/:id/reject", authMiddleware, isAdmin, adminRejectPlanPayment);
+router.get("/conversion-reviews", authMiddleware, isAdmin, adminGetConversionReviews);
+router.post("/conversion-reviews/:id/approve", authMiddleware, isAdmin, adminApproveConversionReview);
 router.get("/org/:orgnr/users", authMiddleware, isAdmin, adminGetUsersByOrgnr);
 router.post("/org/:orgnr/users", authMiddleware, isAdmin, adminLinkUserToOrgnr);
 router.delete("/org/:orgnr/users/:userId", authMiddleware, isAdmin, adminRemoveUserFromOrgnr);
 router.get("/issues", authMiddleware, isAdmin, adminGetIssues);
 router.patch("/issues/:id", authMiddleware, isAdmin, adminUpdateIssue);
+router.delete("/issues/:id", authMiddleware, isAdmin, adminDeleteIssue);
+router.post("/issues/:id/reply", authMiddleware, isAdmin, adminReplyIssue);
+router.get("/issues/mine", authMiddleware, adminGetMyIssues);
+router.post("/issues/:id/reply-own", authMiddleware, replyToOwnIssue);
 
 export default router;

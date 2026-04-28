@@ -513,7 +513,7 @@ function buildPaymentReference(planCode, companyId) {
 
 function getStartupPlanFinalPrice(planCode, listPrice) {
     if (String(planCode || "").toLowerCase() === "normal") {
-        return 1500;
+        return Number(listPrice || 0);
     }
 
     return Number(listPrice || 0);
@@ -790,7 +790,7 @@ export const applyStartupDiscountCode = async (req, res) => {
 
         if (existingRedemptions.length > 0) {
             await connection.rollback();
-            return res.status(400).json({ error: "Rabattkoden er allerede brukt pa dette selskapet." });
+            return res.status(400).json({ error: "Rabattkoden er allerede brukt på dette selskapet." });
         }
 
         const [openRows] = await connection.query(

@@ -339,6 +339,7 @@ const statements = [
     investor_name VARCHAR(255) NULL,
     investor_email VARCHAR(255) NULL,
     par_value_amount DECIMAL(12,2) NOT NULL,
+    reference VARCHAR(128) NULL,
     due_date DATETIME NOT NULL,
     notice_sent_at DATETIME NULL,
     paid_confirmed_at DATETIME NULL,

@@ -6,6 +6,8 @@ import {
   resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import { sendRoundActivatedEmail } from "../utils/notificationEmailFlow.js";
+import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 const emissionShareholderTableName = "emission_shareholders";
@@ -59,6 +61,7 @@ export const startEmission = async (req, res) => {
     try {
       const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
       const startup_id = startupContext.startupUserId;
+      const legalResetCutoff = await getLegalResetCutoff(pool, startup_id);
 
       if (!(await canStartupCreateRaise(startup_id))) {
         return res.status(403).json({
@@ -74,15 +77,17 @@ export const startEmission = async (req, res) => {
         SELECT id
         FROM documents
         WHERE startup_id=? AND type='BOARD' AND status='LOCKED'
+          AND (? IS NULL OR created_at > ?)
         ORDER BY id DESC LIMIT 1
-      `, [startup_id]);
+      `, [startup_id, legalResetCutoff, legalResetCutoff]);
   
       const [gf] = await pool.query(`
         SELECT id
         FROM documents
         WHERE startup_id=? AND type='GF' AND status='LOCKED'
+          AND (? IS NULL OR created_at > ?)
         ORDER BY id DESC LIMIT 1
-      `, [startup_id]);
+      `, [startup_id, legalResetCutoff, legalResetCutoff]);
   
       if (!board.length || !gf.length) {
         return res.status(403).json({
@@ -95,12 +100,13 @@ export const startEmission = async (req, res) => {
       ========================= */
   
       const [capitalRows] = await pool.query(`
-        SELECT id, approved_amount
+        SELECT id, approved_amount, created_at
         FROM capital_decisions
         WHERE startup_id=?
+          AND (? IS NULL OR created_at > ?)
         ORDER BY id DESC
         LIMIT 1
-      `, [startup_id]);
+      `, [startup_id, legalResetCutoff, legalResetCutoff]);
   
       if (!capitalRows.length) {
         return res.status(400).json({
@@ -115,9 +121,10 @@ export const startEmission = async (req, res) => {
           SELECT amount
           FROM startup_legal_data
           WHERE startup_id=?
+            AND (? IS NULL OR created_at > ?)
           ORDER BY created_at DESC
           LIMIT 1
-        `, [startup_id]);
+        `, [startup_id, legalResetCutoff, legalResetCutoff]);
 
         approvedAmount = Number(legalRows[0]?.amount);
 
@@ -143,20 +150,61 @@ export const startEmission = async (req, res) => {
       /* =========================
          PREVENT DUPLICATE ROUND
       ========================= */
-  
-      const [existing] = await pool.query(`
-        SELECT id, open, closed_reason
+
+      const [latestRounds] = await pool.query(`
+        SELECT id, closed_reason
         FROM emission_rounds
         WHERE startup_id=?
         ORDER BY id DESC
         LIMIT 1
       `, [startup_id]);
+
+      const latestClosedReason = String(latestRounds[0]?.closed_reason || "");
+      if (latestClosedReason && latestClosedReason !== "conversion_downloaded") {
+        return res.status(400).json({
+          message: "Forrige runde må ferdigstilles før ny runde kan opprettes.",
+          emissionId: latestRounds[0].id
+        });
+      }
+  
+      const [existing] = await pool.query(`
+        SELECT
+          e.id,
+          e.open,
+          e.closed_reason,
+          e.created_at,
+          COUNT(a.id) AS agreement_count
+        FROM emission_rounds e
+        LEFT JOIN rc_agreements a ON a.round_id = e.id
+        WHERE e.startup_id=?
+          AND (e.closed_reason IS NULL OR e.closed_reason = '')
+        GROUP BY e.id, e.open, e.closed_reason, e.created_at
+        ORDER BY e.id DESC
+        LIMIT 1
+      `, [startup_id]);
   
       if (existing.length > 0) {
-        return res.status(400).json({
-          message: "Startupen har allerede en runde. I MVP støttes kun én runde før konvertering er håndtert.",
-          emissionId: existing[0].id
-        });
+        const existingRound = existing[0];
+        const existingCreatedAt = existingRound.created_at ? new Date(existingRound.created_at) : null;
+        const decisionCreatedAt = capitalRows[0]?.created_at ? new Date(capitalRows[0].created_at) : null;
+        const hasFresherDecision =
+          existingCreatedAt &&
+          decisionCreatedAt &&
+          Number.isFinite(existingCreatedAt.getTime()) &&
+          Number.isFinite(decisionCreatedAt.getTime()) &&
+          decisionCreatedAt > existingCreatedAt;
+
+        if (Number(existingRound.open || 0) === 0 && Number(existingRound.agreement_count || 0) === 0 && hasFresherDecision) {
+          await pool.query(
+            "DELETE FROM emission_rounds WHERE id = ? AND startup_id = ? AND open = 0",
+            [existingRound.id, startup_id]
+          );
+        } else {
+          return res.status(400).json({
+            message: "Startupen har allerede en runde. Fullfør eller lukk eksisterende runde før ny opprettes.",
+            emissionId: existingRound.id
+          });
+        }
       }
   
       /* =========================
@@ -238,6 +286,112 @@ export const getEmissionById = async (req, res) => {
 };
 
 /* =====================================================
+   GET PREVIOUS EMISSIONS FOR STARTUP
+===================================================== */
+export const getPreviousEmissions = async (req, res) => {
+    try {
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const startupId = startupContext.startupUserId;
+
+        const [rounds] = await pool.query(`
+            SELECT
+                e.id,
+                e.startup_id,
+                e.target_amount,
+                e.amount_raised,
+                e.committed_amount,
+                e.discount_rate,
+                e.valuation_cap,
+                e.conversion_years,
+                e.trigger_period,
+                e.deadline,
+                e.open,
+                e.status,
+                e.closed_at,
+                e.closed_reason,
+                e.created_at,
+                (
+                    SELECT COUNT(*)
+                    FROM rc_agreements a
+                    WHERE a.round_id = e.id
+                ) AS agreement_count,
+                (
+                    SELECT COUNT(*)
+                    FROM rc_agreements a
+                    WHERE a.round_id = e.id AND a.status = 'Active RC'
+                ) AS active_agreement_count,
+                (
+                    SELECT COALESCE(SUM(a.investment_amount), 0)
+                    FROM rc_agreements a
+                    WHERE a.round_id = e.id
+                ) AS total_investment_amount
+            FROM emission_rounds e
+            WHERE e.startup_id = ?
+              AND (
+                (e.closed_reason IS NOT NULL AND e.closed_reason <> '')
+                OR e.closed_at IS NOT NULL
+                OR (
+                    e.open = 0
+                    AND EXISTS (
+                        SELECT 1
+                        FROM rc_agreements historic_a
+                        WHERE historic_a.round_id = e.id
+                    )
+                )
+              )
+            ORDER BY COALESCE(e.closed_at, e.created_at) DESC, e.id DESC
+        `, [startupId]);
+
+        if (!rounds.length) {
+            return res.json({ rounds: [] });
+        }
+
+        const roundIds = rounds.map((round) => round.id);
+        const placeholders = roundIds.map(() => "?").join(",");
+        const [agreements] = await pool.query(`
+            SELECT
+                a.id,
+                a.rc_id,
+                a.round_id,
+                a.investor_id,
+                a.investment_amount,
+                a.status,
+                a.investor_signed_at,
+                a.startup_signed_at,
+                a.activated_at,
+                a.payment_confirmed_by_startup_at,
+                a.created_at,
+                investor.name AS investor_name,
+                investor.email AS investor_email
+            FROM rc_agreements a
+            LEFT JOIN users investor ON investor.id = a.investor_id
+            WHERE a.round_id IN (${placeholders})
+            ORDER BY a.created_at DESC, a.id DESC
+        `, roundIds);
+
+        const agreementsByRound = new Map();
+        agreements.forEach((agreement) => {
+            const current = agreementsByRound.get(agreement.round_id) || [];
+            current.push(agreement);
+            agreementsByRound.set(agreement.round_id, current);
+        });
+
+        res.json({
+            rounds: rounds.map((round) => ({
+                ...round,
+                agreement_count: Number(round.agreement_count || 0),
+                active_agreement_count: Number(round.active_agreement_count || 0),
+                total_investment_amount: Number(round.total_investment_amount || 0),
+                agreements: agreementsByRound.get(round.id) || []
+            }))
+        });
+    } catch (err) {
+        console.error("GET PREVIOUS EMISSIONS ERROR:", err);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+/* =====================================================
    UPDATE EMISSION CONFIG (DRAFT ONLY)
 ===================================================== */
 export const updateEmissionConfig = async (req, res) => {
@@ -298,6 +452,14 @@ export const updateEmissionConfig = async (req, res) => {
           message: "Access denied"
         });
       }
+
+      const deadlineBaseDate = rows[0].created_at ? new Date(rows[0].created_at) : new Date();
+      if (Number.isNaN(deadlineBaseDate.getTime())) {
+        return res.status(400).json({
+          message: "Kunne ikke beregne oppfølgingsdato."
+        });
+      }
+      deadlineBaseDate.setFullYear(deadlineBaseDate.getFullYear() + normalizedTriggerPeriod);
   
       // Lås config hvis det finnes investeringer
       const [investments] = await pool.query(`
@@ -319,6 +481,7 @@ export const updateEmissionConfig = async (req, res) => {
         SET
           conversion_years = ?,
           trigger_period = ?,
+          deadline = ?,
           discount_rate = ?,
           valuation_cap = ?,
           bank_account = ?
@@ -326,6 +489,7 @@ export const updateEmissionConfig = async (req, res) => {
       `, [
         conversion_years,
         normalizedTriggerPeriod,
+        deadlineBaseDate,
         discount_rate,
         valuation_cap,
         bank_account,
@@ -409,6 +573,12 @@ export const activateEmission = async (req, res) => {
           [emissionId, startupId]
       );
 
+      await sendRoundActivatedEmail({
+        startupEmail: req.user.email,
+        startupName: startupContext.company?.company_name || req.user.name || "",
+        roundId: emissionId
+      });
+
       res.json({ success: true });
 
   } catch (err) {
@@ -427,6 +597,8 @@ export const getActiveEmission = async (req, res) => {
           SELECT *
           FROM emission_rounds
           WHERE startup_id = ?
+            AND open = 1
+            AND (closed_reason IS NULL OR closed_reason = '')
           ORDER BY id DESC
           LIMIT 1
       `, [startupId]);
@@ -617,12 +789,20 @@ export const reportEmissionIssue = async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    await pool.query(
+    const [issueResult] = await pool.query(
       `
       INSERT INTO admin_issues (user_id, startup_id, emission_id, source, issue_type, message, status)
       VALUES (?, ?, ?, ?, ?, ?, 'OPEN')
       `,
       [userId, startupId, emissionId, source, issueType, message]
+    );
+
+    await pool.query(
+      `
+      INSERT INTO admin_issue_messages (issue_id, sender_user_id, sender_role, message)
+      VALUES (?, ?, ?, ?)
+      `,
+      [issueResult.insertId, userId, userRole || "user", message]
     );
 
     res.status(201).json({

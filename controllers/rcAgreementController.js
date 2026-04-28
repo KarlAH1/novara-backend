@@ -49,6 +49,27 @@ const formatDateTimeLabel = (value) => {
     });
 };
 
+export const resolveRcPaymentDeadline = (input = {}) => {
+    const explicitDeadline = input.payment_deadline || input.rc_payment_deadline || null;
+    if (explicitDeadline) {
+        return explicitDeadline;
+    }
+
+    const baseDate = new Date(
+        input.investor_signed_at ||
+        input.created_at ||
+        input.document_generated_at ||
+        Date.now()
+    );
+
+    if (Number.isNaN(baseDate.getTime())) {
+        return null;
+    }
+
+    baseDate.setDate(baseDate.getDate() + 7);
+    return baseDate.toISOString();
+};
+
 const getRcDocumentState = (input = {}) => {
     const paymentConfirmed = !!input.payment_confirmed_by_startup_at || input.status === "Active RC";
     const investorSigned = !!input.investor_signed_at || input.status === "Awaiting Payment" || paymentConfirmed;
@@ -66,8 +87,8 @@ const getRcDocumentState = (input = {}) => {
 
     if (investorSigned) {
         return {
-            paymentStatus: "Venter pa betaling til selskapet",
-            finalStatus: "Signert, venter pa betaling",
+            paymentStatus: "Venter på betaling til selskapet",
+            finalStatus: "Signert, venter på betaling",
             startupPreapprovalStatus: startupPreApproved
                 ? "Klargjort ved aktivering av privat runde"
                 : "Venter",
@@ -97,6 +118,7 @@ const getRcDocumentState = (input = {}) => {
 
 export const buildRcTemplateData = (input = {}) => {
     const state = getRcDocumentState(input);
+    const paymentDeadline = resolveRcPaymentDeadline(input);
     const companyName = String(input.company_legal_name || input.startup_name || "-")
         .replace(/\s+AS$/i, "")
         .trim() || "-";
@@ -128,7 +150,7 @@ export const buildRcTemplateData = (input = {}) => {
         "investor.identifier": input.investor_identifier || input.investor_email || "-",
         "investor.address": input.investor_address || "Ikke registrert i systemet",
         "summary.investment_amount": formatNOK(input.investment_amount),
-        "summary.payment_deadline": formatDateLabel(input.deadline),
+        "summary.payment_deadline": formatDateLabel(paymentDeadline),
         "summary.discount_rate": `${input.discount_rate || 0}%`,
         "summary.valuation_cap": input.valuation_cap ? formatNOK(input.valuation_cap) : "Ingen",
         "summary.conversion_years": `${input.conversion_years || 0} år`,
@@ -138,7 +160,7 @@ export const buildRcTemplateData = (input = {}) => {
         "signature.company_signer.role": input.company_signer_role || "Rundeansvarlig for selskapet",
         "signature.company_signer.email": input.company_signer_email || input.startup_email || "-",
         "signature.company_signer.signed_at": formatDateTimeLabel(input.round_activated_at || input.round_created_at || input.created_at),
-        "signature.company_signer.method": input.company_signer_method || "Klargjoring i Raisium software",
+        "signature.company_signer.method": input.company_signer_method || "Klargjøring i Raisium software",
         "signature.investor_signer.status": state.investorStatus,
         "signature.investor_signer.name": investorName,
         "signature.investor_signer.email": input.investor_email || "-",
@@ -152,7 +174,7 @@ export const buildRcTemplateData = (input = {}) => {
         "document.generated_at": formatDateTimeLabel(generatedAt),
         "document.locked_at": formatDateTimeLabel(input.document_locked_at),
         "attachment.snapshot.round_status": input.round_open === 1 ? "Privat runde aktiv" : "Utkast",
-        "attachment.snapshot.deadline": formatDateLabel(input.deadline),
+        "attachment.snapshot.deadline": formatDateLabel(paymentDeadline),
         "attachment.snapshot.round_target": formatNOK(input.target_amount),
         "attachment.snapshot.round_raised": formatNOK(input.amount_raised || 0),
         "attachment.snapshot.discount_rate": `${input.discount_rate || 0}%`,
@@ -164,11 +186,11 @@ export const buildRcTemplateData = (input = {}) => {
         "attachment.snapshot.generated_at": formatDateTimeLabel(generatedAt),
         "attachment.snapshot.locked_at": formatDateTimeLabel(input.document_locked_at),
         "attachment.calc.model": input.valuation_cap ? "Cap / discount-modell" : "Discount-modell",
-        "attachment.calc.pool_note": "Dersom runden senere gjennomfores med pool-modell, beregnes avtalepartens forholdsmessige andel ut fra samlet signert og finansiert RC-volum.",
+        "attachment.calc.pool_note": "Dersom runden senere gjennomføres med pool-modell, beregnes avtalepartens forholdsmessige andel ut fra samlet signert og finansiert RC-volum.",
         "attachment.calc.discount": `${input.discount_rate || 0}%`,
         "attachment.calc.cap": input.valuation_cap ? formatNOK(input.valuation_cap) : "Ingen",
-        "attachment.calc.par_value_note": "Eventuelt nødvendig paribeløp innbetales ved tegning av konverteringsaksjer.",
-        "attachment.calc.trigger_note": "Vedlegg 2 er grunnlag for beregning ved Trigger Event og skal suppleres med runde- og transaksjonsdata når konvertering eller oppgjor faktisk gjennomfores."
+        "attachment.calc.par_value_note": "Paribeløpet innbetales kontant ved tegning av konverteringsaksjer, mens resterende tegningsbeløp forutsettes gjort opp ved motregning av investorens rentefrie krav.",
+        "attachment.calc.trigger_note": "Vedlegg 2 er grunnlag for beregning ved Trigger Event og skal suppleres med runde- og transaksjonsdata når konvertering eller oppgjør faktisk gjennomføres."
     };
 };
 
@@ -331,6 +353,12 @@ export const investViaInvite = async (req, res) => {
             (document_id, user_id, email, role, status)
             VALUES (?, ?, ?, 'Investor', 'ACCEPTED')
         `, [documentId, investorId, investorRows[0].email]);
+
+        await connection.query(`
+            INSERT INTO document_signers
+            (document_id, user_id, email, role, status, signed_at)
+            VALUES (?, ?, ?, 'Startup', 'SIGNED', ?)
+        `, [documentId, round.startup_id, round.startup_email, new Date()]);
 
         await connection.query(
             "INSERT INTO notifications (user_id, message) VALUES (?, ?)",

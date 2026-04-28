@@ -1,4 +1,46 @@
 import pool from "../config/db.js";
+import { lockDocumentWithSignatures } from "../utils/documentSigning.js";
+
+const REVIEW_ROLES = ["admin"];
+
+async function attachIssueMessages(issues = []) {
+    if (!Array.isArray(issues) || issues.length === 0) {
+        return issues;
+    }
+
+    const issueIds = issues.map((issue) => Number(issue.id)).filter(Boolean);
+    const [messages] = await pool.query(
+        `
+        SELECT
+            m.id,
+            m.issue_id,
+            m.sender_user_id,
+            m.sender_role,
+            m.message,
+            m.created_at,
+            u.name AS sender_name,
+            u.email AS sender_email
+        FROM admin_issue_messages m
+        LEFT JOIN users u ON u.id = m.sender_user_id
+        WHERE m.issue_id IN (?)
+        ORDER BY m.created_at ASC, m.id ASC
+        `,
+        [issueIds]
+    );
+
+    const byIssueId = new Map();
+    messages.forEach((message) => {
+        const key = Number(message.issue_id);
+        const bucket = byIssueId.get(key) || [];
+        bucket.push(message);
+        byIssueId.set(key, bucket);
+    });
+
+    return issues.map((issue) => ({
+        ...issue,
+        messages: byIssueId.get(Number(issue.id)) || []
+    }));
+}
 
 function getNextAnnualExpiry() {
     const next = new Date();
@@ -23,13 +65,128 @@ export const adminChangeRole = async (req, res) => {
     const { id } = req.params;
     const role = String(req.body.role || "").trim().toLowerCase();
 
-    if (!["admin", "startup", "investor"].includes(role)) {
+    if (!["admin", "startup", "investor", "partner"].includes(role)) {
         return res.status(400).json({ error: "Invalid role" });
     }
 
     await pool.query("UPDATE users SET role=? WHERE id=?", [role, id]);
 
     res.json({ message: "Role updated" });
+};
+
+export const adminGetConversionReviews = async (req, res) => {
+    const [rows] = await pool.query(
+        `
+        SELECT
+            ce.id,
+            ce.status,
+            ce.trigger_type,
+            ce.third_party_name,
+            ce.third_party_email,
+            ce.third_party_confirmed_at,
+            ce.capital_confirmation_document_id,
+            d.status AS document_status,
+            d.locked_at AS document_locked_at,
+            COALESCE(c.company_name, sp.company_name, u.name) AS company_name,
+            c.orgnr,
+            er.id AS round_id
+        FROM conversion_events ce
+        JOIN emission_rounds er ON er.id = ce.round_id
+        JOIN users u ON u.id = ce.startup_id
+        LEFT JOIN company_memberships cm ON cm.user_id = u.id
+        LEFT JOIN companies c ON c.id = cm.company_id
+        LEFT JOIN startup_profiles sp ON sp.user_id = ce.startup_id
+        LEFT JOIN documents d ON d.id = ce.capital_confirmation_document_id
+        WHERE ce.capital_confirmation_document_id IS NOT NULL
+        ORDER BY COALESCE(d.locked_at, ce.updated_at, ce.created_at) DESC, ce.id DESC
+        `
+    );
+
+    res.json(rows);
+};
+
+export const adminApproveConversionReview = async (req, res) => {
+    if (!REVIEW_ROLES.includes(String(req.user?.role || "").toLowerCase())) {
+        return res.status(403).json({ error: "Ingen tilgang." });
+    }
+
+    const connection = await pool.getConnection();
+
+    try {
+        const conversionId = Number(req.params.id || 0);
+        if (!conversionId) {
+            return res.status(400).json({ error: "Ugyldig bekreftelse." });
+        }
+
+        const [rows] = await connection.query(
+            `
+            SELECT ce.id, ce.capital_confirmation_document_id
+            FROM conversion_events ce
+            WHERE ce.id = ?
+            LIMIT 1
+            `,
+            [conversionId]
+        );
+
+        const conversion = rows[0];
+        if (!conversion?.capital_confirmation_document_id) {
+            return res.status(404).json({ error: "Fant ikke bekreftelsesdokumentet." });
+        }
+
+        const [signerRows] = await connection.query(
+            `
+            SELECT id
+            FROM document_signers
+            WHERE document_id = ?
+              AND role = 'Revisor'
+            LIMIT 1
+            `,
+            [conversion.capital_confirmation_document_id]
+        );
+
+        if (signerRows.length) {
+            await connection.query(
+                `
+                UPDATE document_signers
+                SET signed_at = NOW(),
+                    user_id = ?,
+                    email = ?,
+                    status = 'SIGNED'
+                WHERE id = ?
+                `,
+                [req.user.id, req.user.email, signerRows[0].id]
+            );
+        } else {
+            await connection.query(
+                `
+                INSERT INTO document_signers (document_id, email, user_id, role, status, signed_at)
+                VALUES (?, ?, ?, 'Revisor', 'SIGNED', NOW())
+                `,
+                [conversion.capital_confirmation_document_id, req.user.email, req.user.id]
+            );
+        }
+
+        await lockDocumentWithSignatures(connection, conversion.capital_confirmation_document_id);
+
+        await connection.query(
+            `
+            UPDATE conversion_events
+            SET third_party_confirmed_at = NOW(),
+                status = 'third_party_confirmed',
+                third_party_name = COALESCE(third_party_name, ?),
+                third_party_email = COALESCE(third_party_email, ?)
+            WHERE id = ?
+            `,
+            [req.user.name || req.user.email, req.user.email, conversionId]
+        );
+
+        res.json({ message: "Bekreftelsen er godkjent og dokumentet er låst." });
+    } catch (err) {
+        console.error("Admin approve conversion review error:", err);
+        res.status(500).json({ error: "Internal server error" });
+    } finally {
+        connection.release();
+    }
 };
 
 //
@@ -333,13 +490,40 @@ export const adminGetIssues = async (req, res) => {
         params
     );
 
-    res.json(rows);
+    res.json(await attachIssueMessages(rows));
+};
+
+export const adminGetMyIssues = async (req, res) => {
+    const userId = req.user.id;
+    const [rows] = await pool.query(
+        `
+        SELECT
+            ai.id,
+            ai.user_id,
+            ai.startup_id,
+            ai.emission_id,
+            ai.source,
+            ai.issue_type,
+            ai.message,
+            ai.status,
+            ai.created_at,
+            ai.updated_at,
+            sp.company_name AS startup_name
+        FROM admin_issues ai
+        LEFT JOIN startup_profiles sp ON sp.user_id = ai.startup_id
+        WHERE ai.user_id = ?
+          AND UPPER(COALESCE(ai.status, 'OPEN')) <> 'RESOLVED'
+        ORDER BY ai.updated_at DESC, ai.id DESC
+        `,
+        [userId]
+    );
+
+    res.json(await attachIssueMessages(rows));
 };
 
 export const adminUpdateIssue = async (req, res) => {
     const issueId = Number(req.params.id);
     const status = String(req.body.status || "").trim().toUpperCase();
-    const adminResponse = String(req.body.adminResponse || "").trim();
 
     if (!issueId) {
         return res.status(400).json({ error: "Ugyldig id" });
@@ -351,11 +535,6 @@ export const adminUpdateIssue = async (req, res) => {
 
     const updates = [];
     const params = [];
-
-    if (adminResponse !== "") {
-        updates.push("admin_response = ?");
-        params.push(adminResponse);
-    }
 
     if (status) {
         updates.push("status = ?");
@@ -378,4 +557,107 @@ export const adminUpdateIssue = async (req, res) => {
     );
 
     res.json({ message: "Oppdatert" });
+};
+
+export const adminDeleteIssue = async (req, res) => {
+    const issueId = Number(req.params.id);
+
+    if (!issueId) {
+        return res.status(400).json({ error: "Ugyldig id" });
+    }
+
+    await pool.query("DELETE FROM admin_issue_messages WHERE issue_id = ?", [issueId]);
+    await pool.query("DELETE FROM admin_issues WHERE id = ?", [issueId]);
+
+    res.json({ message: "Saken er slettet." });
+};
+
+export const adminReplyIssue = async (req, res) => {
+    const issueId = Number(req.params.id);
+    const message = String(req.body.message || "").trim();
+
+    if (!issueId || !message) {
+        return res.status(400).json({ error: "Melding mangler." });
+    }
+
+    const [rows] = await pool.query(
+        `SELECT id FROM admin_issues WHERE id = ? LIMIT 1`,
+        [issueId]
+    );
+
+    if (!rows.length) {
+        return res.status(404).json({ error: "Fant ikke saken." });
+    }
+
+    await pool.query(
+        `
+        INSERT INTO admin_issue_messages (issue_id, sender_user_id, sender_role, message)
+        VALUES (?, ?, ?, ?)
+        `,
+        [issueId, req.user.id, req.user.role || "admin", message]
+    );
+
+    await pool.query(
+        `
+        UPDATE admin_issues
+        SET status = 'OPEN',
+            updated_at = NOW()
+        WHERE id = ?
+        `,
+        [issueId]
+    );
+
+    res.json({ message: "Svar sendt." });
+};
+
+export const replyToOwnIssue = async (req, res) => {
+    const issueId = Number(req.params.id);
+    const message = String(req.body.message || "").trim();
+
+    if (!issueId || !message) {
+        return res.status(400).json({ error: "Melding mangler." });
+    }
+
+    const [rows] = await pool.query(
+        `
+        SELECT id, user_id, status
+        FROM admin_issues
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [issueId]
+    );
+
+    const issue = rows[0];
+    if (!issue) {
+        return res.status(404).json({ error: "Fant ikke saken." });
+    }
+
+    if (Number(issue.user_id) !== Number(req.user.id)) {
+        return res.status(403).json({ error: "Ingen tilgang." });
+    }
+
+    if (String(issue.status || "").toUpperCase() === "RESOLVED") {
+        return res.status(400).json({ error: "Saken er løst." });
+    }
+
+    await pool.query(
+        `
+        INSERT INTO admin_issue_messages (issue_id, sender_user_id, sender_role, message)
+        VALUES (?, ?, ?, ?)
+        `,
+        [issueId, req.user.id, req.user.role || "user", message]
+    );
+
+    await pool.query(
+        `
+        UPDATE admin_issues
+        SET status = 'OPEN',
+            updated_at = NOW()
+        WHERE id = ?
+        `,
+        [issueId]
+    );
+
+    res.json({ message: "Melding sendt." });
 };

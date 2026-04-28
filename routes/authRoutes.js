@@ -2,6 +2,7 @@ import express from "express";
 import { auth as authMiddleware } from "../middleware/authMiddleware.js";
 import {
     register,
+    completeStartupRegistration,
     login,
     companyRoleCheck,
     getMe,
@@ -14,8 +15,20 @@ import {
     vippsStart,
     vippsCallback
 } from "../controllers/authController.js";
+import { createRateLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
+const publicAuthLimiter = createRateLimiter({
+    keyPrefix: "auth-public",
+    windowMs: 10 * 60 * 1000,
+    maxRequests: 40
+});
+const loginLimiter = createRateLimiter({
+    keyPrefix: "auth-login",
+    windowMs: 10 * 60 * 1000,
+    maxRequests: 8,
+    message: "For mange innloggingsforsøk. Vent litt før du prøver igjen."
+});
 
 /* =========================================
    HEALTH CHECK
@@ -57,7 +70,7 @@ router.put("/change-password", authMiddleware, async (req, res, next) => {
 /* =========================================
    REGISTER
 ========================================= */
-router.post("/register", async (req, res, next) => {
+router.post("/register", publicAuthLimiter, async (req, res, next) => {
     try {
         await register(req, res);
     } catch (err) {
@@ -65,7 +78,15 @@ router.post("/register", async (req, res, next) => {
     }
 });
 
-router.post("/company-role-check", async (req, res, next) => {
+router.post("/startup/complete", authMiddleware, publicAuthLimiter, async (req, res, next) => {
+    try {
+        await completeStartupRegistration(req, res);
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post("/company-role-check", publicAuthLimiter, async (req, res, next) => {
     try {
         await companyRoleCheck(req, res);
     } catch (err) {
@@ -76,7 +97,7 @@ router.post("/company-role-check", async (req, res, next) => {
 /* =========================================
    LOGIN
 ========================================= */
-router.post("/login", async (req, res, next) => {
+router.post("/login", loginLimiter, async (req, res, next) => {
     try {
         await login(req, res);
     } catch (err) {
@@ -84,7 +105,7 @@ router.post("/login", async (req, res, next) => {
     }
 });
 
-router.get("/vipps/start", async (req, res, next) => {
+router.get("/vipps/start", publicAuthLimiter, async (req, res, next) => {
     try {
         await vippsStart(req, res);
     } catch (err) {
@@ -92,7 +113,7 @@ router.get("/vipps/start", async (req, res, next) => {
     }
 });
 
-router.get("/vipps/callback", async (req, res, next) => {
+router.get("/vipps/callback", publicAuthLimiter, async (req, res, next) => {
     try {
         await vippsCallback(req, res);
     } catch (err) {
@@ -100,7 +121,7 @@ router.get("/vipps/callback", async (req, res, next) => {
     }
 });
 
-router.post("/forgot-password", async (req, res, next) => {
+router.post("/forgot-password", publicAuthLimiter, async (req, res, next) => {
     try {
         await forgotPassword(req, res);
     } catch (err) {
@@ -108,7 +129,7 @@ router.post("/forgot-password", async (req, res, next) => {
     }
 });
 
-router.post("/reset-password", async (req, res, next) => {
+router.post("/reset-password", publicAuthLimiter, async (req, res, next) => {
     try {
         await resetPassword(req, res);
     } catch (err) {
@@ -116,7 +137,7 @@ router.post("/reset-password", async (req, res, next) => {
     }
 });
 
-router.post("/verify-email", async (req, res, next) => {
+router.post("/verify-email", publicAuthLimiter, async (req, res, next) => {
     try {
         await verifyEmail(req, res);
     } catch (err) {
@@ -124,7 +145,7 @@ router.post("/verify-email", async (req, res, next) => {
     }
 });
 
-router.post("/resend-verification", async (req, res, next) => {
+router.post("/resend-verification", publicAuthLimiter, async (req, res, next) => {
     try {
         await resendVerification(req, res);
     } catch (err) {

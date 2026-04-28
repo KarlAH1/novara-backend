@@ -10,6 +10,7 @@ import { ensureConversionSchema } from "./utils/conversionSchema.js";
 import { ensureDocumentSchema } from "./utils/documentSchema.js";
 import { ensureEmissionRoundSchema } from "./utils/emissionRoundSchema.js";
 import { ensureStartupDocumentSchema } from "./utils/startupDocumentSchema.js";
+import { ensureInvestorLegalProfileSchema } from "./utils/investorLegalProfileSchema.js";
 import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
 import { ensureStartupProfileSchema } from "./utils/startupProfileSchema.js";
 
@@ -96,6 +97,7 @@ await ensureAdminIssueSchema();
 await ensureConversionSchema();
 await ensureDocumentSchema();
 await ensureEmissionRoundSchema();
+await ensureInvestorLegalProfileSchema();
 await ensureStartupDocumentSchema();
 await ensureStartupPlanSchema();
 await ensureStartupProfileSchema();
@@ -120,7 +122,7 @@ app.use(
 
       return callback(new Error("CORS origin not allowed"));
     },
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true
   })

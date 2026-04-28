@@ -7,6 +7,8 @@ import {
 } from "../utils/startupContext.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
+import { lockDocumentWithSignatures } from "../utils/documentSigning.js";
+import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 
 const router = express.Router();
 
@@ -26,6 +28,47 @@ const normalizePersonName = (value) =>
         .toLowerCase()
         .replace(/\s+/g, " ");
 
+const ensureRcStartupSigner = async (connection, documentId, agreementId) => {
+    const [existingRows] = await connection.query(
+        `
+        SELECT id
+        FROM document_signers
+        WHERE document_id = ?
+          AND role = 'Startup'
+        LIMIT 1
+        `,
+        [documentId]
+    );
+
+    if (existingRows.length > 0) {
+        return;
+    }
+
+    const [agreementRows] = await connection.query(
+        `
+        SELECT a.startup_id, a.created_at, u.email
+        FROM rc_agreements a
+        JOIN users u ON u.id = a.startup_id
+        WHERE a.id = ?
+        LIMIT 1
+        `,
+        [agreementId]
+    );
+
+    const agreement = agreementRows[0];
+    if (!agreement?.startup_id) {
+        return;
+    }
+
+    await connection.query(
+        `
+        INSERT INTO document_signers (document_id, user_id, email, role, status, signed_at)
+        VALUES (?, ?, ?, 'Startup', 'SIGNED', ?)
+        `,
+        [documentId, agreement.startup_id, agreement.email, agreement.created_at || new Date()]
+    );
+};
+
 const syncRcAgreementSignatures = async (connection, documentId, htmlContent, documentHash) => {
     const agreementMatch = htmlContent.match(/rc_agreement_id:(\d+)/i);
 
@@ -34,6 +77,8 @@ const syncRcAgreementSignatures = async (connection, documentId, htmlContent, do
     }
 
     const agreementId = Number(agreementMatch[1]);
+
+    await ensureRcStartupSigner(connection, documentId, agreementId);
 
     const [signerRows] = await connection.query(
         `SELECT role, signed_at
@@ -49,7 +94,7 @@ const syncRcAgreementSignatures = async (connection, documentId, htmlContent, do
 
     const rcAgreementColumns = await getRcAgreementColumns(connection);
     const agreementStatus =
-        investorSignedAt
+        investorSignedAt && startupSignedAt
             ? "Awaiting Payment"
             : "Pending Signatures";
 
@@ -140,6 +185,7 @@ router.get("/legal-status", auth, async (req, res) => {
     try {
         const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
         const startupId = startupContext.startupUserId;
+        const legalResetCutoff = await getLegalResetCutoff(pool, startupId);
 
         /* =========================
            BOARD
@@ -150,9 +196,10 @@ router.get("/legal-status", auth, async (req, res) => {
              FROM documents
              WHERE startup_id = ?
              AND type = 'BOARD'
+             AND (? IS NULL OR created_at > ?)
              ORDER BY id DESC
              LIMIT 1`,
-            [startupId]
+            [startupId, legalResetCutoff, legalResetCutoff]
         );
 
         let board = {
@@ -178,9 +225,10 @@ router.get("/legal-status", auth, async (req, res) => {
              FROM documents
              WHERE startup_id = ?
              AND type = 'GF'
+             AND (? IS NULL OR created_at > ?)
              ORDER BY id DESC
              LIMIT 1`,
-            [startupId]
+            [startupId, legalResetCutoff, legalResetCutoff]
         );
 
         let gf = {
@@ -221,10 +269,11 @@ router.get("/legal-status", auth, async (req, res) => {
                         SELECT secretary_name
                         FROM startup_legal_data
                         WHERE startup_id = ?
+                          AND (? IS NULL OR created_at > ?)
                         ORDER BY created_at DESC
                         LIMIT 1
                         `,
-                        [startupId]
+                        [startupId, legalResetCutoff, legalResetCutoff]
                     )
                 ]);
 
@@ -381,7 +430,7 @@ router.get("/startup/list", auth, async (req, res) => {
                 {
                     key: "conversion_capital_confirmation",
                     category: "Konverteringsdokumenter",
-                    title: "Bekreftelse for innskudd",
+                    title: "Revisorbekreftelse for paribeløp og motregning",
                     status: conversion?.capital_confirmation_document_id ? "klar" : "ikke klar"
                 },
                 {
@@ -552,37 +601,12 @@ router.post("/:id/sign", auth, async (req, res) => {
             [documentId]
         );
         let documentHash = null;
-        let updatedHtml = doc.html_content;
+        let updatedHtml = null;
 
         if (remaining.length === 0) {
-            const signedDate = new Date().toLocaleDateString("no-NO", {
-                year: "numeric",
-                month: "long",
-                day: "numeric"
-            });
-            const signedLine = `Signerte digitalt gjennom Raisium ${signedDate}`;
-
-            updatedHtml = updatedHtml.replace(
-                /<!--\s*digital_signature_line\s*-->/gi,
-                `<p style="margin: 10px 0 0; font-size: 13px;">${signedLine}</p>`
-            );
-
-            const crypto = await import("crypto");
-
-            documentHash = crypto.default
-                .createHash("sha256")
-                .update(updatedHtml)
-                .digest("hex");
-
-            await connection.query(
-                `UPDATE documents
-                 SET status='LOCKED',
-                     document_hash=?,
-                     locked_at=NOW(),
-                     html_content=?
-                 WHERE id=?`,
-                [documentHash, updatedHtml, documentId]
-            );
+            const locked = await lockDocumentWithSignatures(connection, documentId);
+            documentHash = locked.documentHash;
+            updatedHtml = locked.htmlContent;
         }
 
         if (doc.type === "RC") {
@@ -644,13 +668,15 @@ router.post("/:id/sign", auth, async (req, res) => {
         ===================================================== */
 
         if (remaining.length === 0 && doc.type === "GF") {
+            const legalResetCutoff = await getLegalResetCutoff(connection, doc.startup_id);
             const [legalRows] = await connection.query(
                 `SELECT amount
                  FROM startup_legal_data
                  WHERE startup_id=?
+                 AND (? IS NULL OR created_at > ?)
                  ORDER BY created_at DESC
                  LIMIT 1`,
-                [doc.startup_id]
+                [doc.startup_id, legalResetCutoff, legalResetCutoff]
             );
 
             const [boardRows] = await connection.query(
@@ -659,9 +685,10 @@ router.post("/:id/sign", auth, async (req, res) => {
                  WHERE startup_id=?
                  AND type='BOARD'
                  AND status='LOCKED'
+                 AND (? IS NULL OR created_at > ?)
                  ORDER BY id DESC
                  LIMIT 1`,
-                [doc.startup_id]
+                [doc.startup_id, legalResetCutoff, legalResetCutoff]
             );
 
             if (!legalRows.length || !boardRows.length) {
@@ -676,9 +703,10 @@ router.post("/:id/sign", auth, async (req, res) => {
                         `SELECT id
                          FROM capital_decisions
                          WHERE startup_id=?
+                         AND (? IS NULL OR created_at > ?)
                          ORDER BY id DESC
                          LIMIT 1`,
-                        [doc.startup_id]
+                        [doc.startup_id, legalResetCutoff, legalResetCutoff]
                     );
 
                     if (existing.length === 0) {

@@ -3,6 +3,7 @@ import { auth } from "../middleware/authMiddleware.js";
 import {
     startEmission,
     getEmissionById,
+    getPreviousEmissions,
     updateEmissionConfig,
     getActiveEmission,
     activateEmission,
@@ -18,6 +19,8 @@ const router = express.Router();
 router.post("/start", auth, startEmission);
 
 router.get("/active", auth, getActiveEmission);
+
+router.get("/history", auth, getPreviousEmissions);
 
 // Get emission
 router.get("/:id", auth, getEmissionById);

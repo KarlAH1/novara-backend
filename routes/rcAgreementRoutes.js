@@ -1,15 +1,83 @@
 import express from "express";
 import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
-import { buildRcDocumentHtml, buildRcTemplateData, investViaInvite } from "../controllers/rcAgreementController.js";
+import {
+  buildRcDocumentHtml,
+  buildRcTemplateData,
+  investViaInvite,
+  resolveRcPaymentDeadline
+} from "../controllers/rcAgreementController.js";
 import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
+import { applySignatureBlockToHtml } from "../utils/documentSigning.js";
+import { sendRcPaymentConfirmedEmail } from "../utils/notificationEmailFlow.js";
 
 const router = express.Router();
 
 const getRcPaymentColumns = async (connection) => {
   const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
   return new Set(columnRows.map((column) => column.Field));
+};
+
+const formatDateOnly = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+};
+
+const getInvestorLegalProfile = async (connection, userId, fallback = {}) => {
+  const [rows] = await connection.query(
+    `
+    SELECT full_name, birth_date, digital_address, residential_address, postal_code, city, country, completed_at
+    FROM investor_legal_profiles
+    WHERE user_id = ?
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  const row = rows[0] || {};
+  const profile = {
+    full_name: row.full_name || fallback.name || "",
+    birth_date: formatDateOnly(row.birth_date),
+    digital_address: row.digital_address || fallback.email || "",
+    residential_address: row.residential_address || "",
+    postal_code: row.postal_code || "",
+    city: row.city || "",
+    country: row.country || "Norge"
+  };
+
+  const complete = Boolean(
+    profile.full_name &&
+    profile.birth_date &&
+    profile.digital_address &&
+    profile.residential_address &&
+    profile.postal_code &&
+    profile.city &&
+    profile.country
+  );
+
+  return {
+    ...profile,
+    complete,
+    completed_at: row.completed_at || null
+  };
+};
+
+const getDocumentSigners = async (connection, documentId) => {
+  if (!documentId) return [];
+  const [rows] = await connection.query(
+    `
+    SELECT ds.role, ds.email, ds.signed_at, COALESCE(u.name, ds.email) AS signer_name
+    FROM document_signers ds
+    LEFT JOIN users u ON u.id = ds.user_id
+    WHERE ds.document_id = ?
+    ORDER BY ds.id ASC
+    `,
+    [documentId]
+  );
+  return rows;
 };
 
 let rcAgreementColumnsPromise;
@@ -54,18 +122,18 @@ const getRcAgreementViewState = (agreement = {}) => {
 
   if (investorSigned) {
     return {
-      flow_status: "Signert / venter pa betaling",
-      flow_message: "Avtaleparten har signert. Avtalen blir endelig og nedlastbar nar betaling er bekreftet av selskapet.",
-      final_document_status: "Signert, venter pa betaling",
+      flow_status: "Signert / venter på betaling",
+      flow_message: "Avtaleparten har signert. Avtalen blir endelig og nedlastbar når betaling er bekreftet av selskapet.",
+      final_document_status: "Signert, venter på betaling",
       is_downloadable: false,
-      payment_status: "Venter pa betaling til selskapet"
+      payment_status: "Venter på betaling til selskapet"
     };
   }
 
   if (startupPreApproved) {
     return {
       flow_status: "Klargjort av selskapet",
-      flow_message: "Selskapet har klargjort standardavtalen i sin private rundeportal. Avtaleparten ma signere for a ga videre.",
+      flow_message: "Selskapet har klargjort standardavtalen i sin private rundeportal. Avtaleparten må signere for å gå videre.",
       final_document_status: "Klargjort av selskapet",
       is_downloadable: false,
       payment_status: "Ikke startet"
@@ -128,6 +196,7 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         investor.name AS investor_name,
         investor.email AS investor_email,
         pr.par_value_amount,
+        pr.reference AS par_value_reference,
         pr.due_date AS par_value_due_date,
         pr.status AS par_value_status,
         d.id AS document_id,
@@ -166,8 +235,15 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
+    const investorLegalProfile = await getInvestorLegalProfile(pool, agreement.investor_id, {
+      name: agreement.investor_name,
+      email: agreement.investor_email
+    });
+
     res.json({
       ...agreement,
+      investor_legal_profile: investorLegalProfile,
+      payment_deadline: resolveRcPaymentDeadline(agreement),
       round_status: availability?.status || null,
       round_closed_reason: availability?.closedReason || null,
       round_remaining_capacity: availability?.remainingCapacity ?? null,
@@ -178,6 +254,138 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
   } catch (err) {
     console.error("Get agreement error:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/:id(\\d+)/shareholder-profile", auth, async (req, res) => {
+  try {
+    const agreementId = Number(req.params.id || 0);
+    const userId = req.user.id;
+
+    const [rows] = await pool.query(
+      `
+      SELECT a.id, a.investor_id, a.startup_id, a.status, investor.name AS investor_name, investor.email AS investor_email
+      FROM rc_agreements a
+      JOIN users investor ON investor.id = a.investor_id
+      WHERE a.id = ?
+      LIMIT 1
+      `,
+      [agreementId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Agreement not found" });
+    }
+
+    const agreement = rows[0];
+    if (agreement.investor_id !== userId && agreement.startup_id !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const profile = await getInvestorLegalProfile(pool, agreement.investor_id, {
+      name: agreement.investor_name,
+      email: agreement.investor_email
+    });
+
+    res.json(profile);
+  } catch (err) {
+    console.error("Get shareholder profile error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/:id(\\d+)/shareholder-profile", auth, requireRole(["investor"]), async (req, res) => {
+  const connection = await pool.getConnection();
+
+  try {
+    const agreementId = Number(req.params.id || 0);
+    const userId = req.user.id;
+
+    const [rows] = await connection.query(
+      `
+      SELECT a.id, a.investor_id, a.status, u.name AS investor_name, u.email AS investor_email
+      FROM rc_agreements a
+      JOIN users u ON u.id = a.investor_id
+      WHERE a.id = ?
+      LIMIT 1
+      `,
+      [agreementId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Agreement not found" });
+    }
+
+    const agreement = rows[0];
+    if (agreement.investor_id !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const agreementStatus = String(agreement.status || "");
+    if (!["Awaiting Payment", "Active RC"].includes(agreementStatus)) {
+      return res.status(400).json({ error: "Opplysningene kan fylles inn etter at avtalen er signert." });
+    }
+
+    const payload = {
+      full_name: String(req.body.full_name || "").trim(),
+      birth_date: String(req.body.birth_date || "").trim(),
+      digital_address: String(req.body.digital_address || "").trim(),
+      residential_address: String(req.body.residential_address || "").trim(),
+      postal_code: String(req.body.postal_code || "").trim(),
+      city: String(req.body.city || "").trim(),
+      country: String(req.body.country || "").trim() || "Norge"
+    };
+
+    if (!payload.full_name || !payload.birth_date || !payload.digital_address || !payload.residential_address || !payload.postal_code || !payload.city || !payload.country) {
+      return res.status(400).json({ error: "Fyll inn alle opplysninger som kreves for aksjeeierboken." });
+    }
+
+    const birthDate = new Date(payload.birth_date);
+    if (Number.isNaN(birthDate.getTime())) {
+      return res.status(400).json({ error: "Ugyldig fødselsdato." });
+    }
+
+    await connection.query(
+      `
+      INSERT INTO investor_legal_profiles (
+        user_id, full_name, birth_date, digital_address, residential_address, postal_code, city, country, completed_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        full_name = VALUES(full_name),
+        birth_date = VALUES(birth_date),
+        digital_address = VALUES(digital_address),
+        residential_address = VALUES(residential_address),
+        postal_code = VALUES(postal_code),
+        city = VALUES(city),
+        country = VALUES(country),
+        completed_at = NOW()
+      `,
+      [
+        userId,
+        payload.full_name,
+        payload.birth_date,
+        payload.digital_address,
+        payload.residential_address,
+        payload.postal_code,
+        payload.city,
+        payload.country
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: "Opplysninger for aksjeeierboken er lagret.",
+      profile: {
+        ...payload,
+        complete: true
+      }
+    });
+  } catch (err) {
+    console.error("Save shareholder profile error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
   }
 });
 
@@ -261,7 +469,7 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
       });
     }
 
-    const htmlContent = buildRcDocumentHtml(buildRcTemplateData({
+    const baseHtml = document.html_content || buildRcDocumentHtml(buildRcTemplateData({
       agreement_id: agreementId,
       rc_id: document.rc_id,
       round_id: document.round_id,
@@ -280,6 +488,7 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
       conversion_years: document.conversion_years,
       bank_account: document.bank_account,
       deadline: document.deadline,
+      payment_deadline: resolveRcPaymentDeadline(document),
       round_open: document.round_open,
       round_created_at: document.round_created_at,
       created_at: document.created_at,
@@ -294,6 +503,8 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
       document_final_status: viewState.final_document_status,
       status: document.agreement_status
     }));
+    const signers = await getDocumentSigners(pool, document.id);
+    const htmlContent = applySignatureBlockToHtml(baseHtml, signers);
 
     res.json({
       id: document.id,
@@ -301,6 +512,7 @@ router.get("/:id(\\d+)/document", auth, async (req, res) => {
       type: document.type,
       status: viewState.final_document_status,
       document_hash: document.document_hash,
+      payment_deadline: resolveRcPaymentDeadline(document),
       locked_at: document.locked_at,
       html_content: htmlContent
     });
@@ -390,7 +602,7 @@ router.get("/:id(\\d+)/document/pdf", auth, async (req, res) => {
       });
     }
 
-    const htmlContent = buildRcDocumentHtml(buildRcTemplateData({
+    const baseHtml = document.html_content || buildRcDocumentHtml(buildRcTemplateData({
       agreement_id: agreementId,
       rc_id: document.rc_id,
       round_id: document.round_id,
@@ -423,6 +635,8 @@ router.get("/:id(\\d+)/document/pdf", auth, async (req, res) => {
       document_final_status: viewState.final_document_status,
       status: document.agreement_status
     }));
+    const signers = await getDocumentSigners(pool, document.id);
+    const htmlContent = applySignatureBlockToHtml(baseHtml, signers);
 
     const pdfBuffer = await renderHtmlToPdfBuffer(htmlContent || "");
     const safeTitle = String(document.title || `rc-avtale-${agreementId}`)
@@ -575,9 +789,10 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT a.*, e.amount_raised
+      SELECT a.*, e.amount_raised, investor.email AS investor_email, COALESCE(investor.name, investor.email) AS investor_name
       FROM rc_agreements a
       JOIN emission_rounds e ON a.round_id = e.id
+      LEFT JOIN users investor ON investor.id = a.investor_id
       WHERE a.id=? AND a.startup_id=?
       FOR UPDATE
       `,
@@ -688,6 +903,13 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
 
     await connection.commit();
 
+    sendRcPaymentConfirmedEmail({
+      investorEmail: agreement.investor_email,
+      startupName: req.user.name || "selskapet",
+      amount: agreement.investment_amount,
+      agreementId
+    });
+
     res.json({
       success: true,
       newStatus: "Active RC"
@@ -736,12 +958,23 @@ router.get(
             e.open AS round_open,
             e.closed_at AS round_closed_at,
             e.closed_reason AS round_closed_reason,
+            pr.reference AS par_value_reference,
+            pr.due_date AS par_value_due_date,
+            pr.status AS par_value_status,
             COALESCE(c.company_name, sp.company_name, u.name) AS startup_name,
             d.id AS document_id,
             d.status AS document_status
           FROM rc_agreements a
           JOIN emission_rounds e ON a.round_id = e.id
           JOIN users u ON a.startup_id = u.id
+          LEFT JOIN conversion_par_value_requests pr
+            ON pr.id = (
+              SELECT req.id
+              FROM conversion_par_value_requests req
+              WHERE req.agreement_id = a.id
+              ORDER BY req.id DESC
+              LIMIT 1
+            )
           LEFT JOIN company_memberships cm ON cm.user_id = u.id
           LEFT JOIN companies c ON c.id = cm.company_id
           LEFT JOIN startup_profiles sp ON sp.user_id = a.startup_id
@@ -754,6 +987,7 @@ router.get(
   
         res.json(rows.map((row) => ({
           ...row,
+          payment_deadline: resolveRcPaymentDeadline(row),
           ...getRcAgreementViewState(row)
         })));
   
@@ -795,11 +1029,13 @@ router.get(
           e.amount_raised,
           e.committed_amount,
           e.closed_reason,
+          rp.reference AS payment_reference,
           d.id AS document_id,
           d.status AS document_status
         FROM rc_agreements a
         JOIN users u ON a.investor_id = u.id
         JOIN emission_rounds e ON a.round_id = e.id
+        LEFT JOIN rc_payments rp ON rp.agreement_id = a.id
         ${rcDocumentJoin}
         WHERE a.startup_id = ?
         ORDER BY
@@ -815,6 +1051,7 @@ router.get(
 
       res.json(rows.map((row) => ({
         ...row,
+        payment_deadline: resolveRcPaymentDeadline(row),
         ...getRcAgreementViewState(row)
       })));
 

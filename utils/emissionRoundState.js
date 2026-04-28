@@ -1,6 +1,7 @@
 const STATUS_REASON_MAP = {
   target_reached: "TARGET_REACHED",
   manually_closed: "CLOSED",
+  conversion_downloaded: "CLOSED",
   expired: "EXPIRED",
   cancelled: "CANCELLED"
 };
@@ -8,6 +9,7 @@ const STATUS_REASON_MAP = {
 const CLOSED_MESSAGE_MAP = {
   target_reached: "Målbeløpet er nådd. Det er ikke lenger mulig å investere i denne runden.",
   manually_closed: "Runden er avsluttet.",
+  conversion_downloaded: "Runden er avsluttet etter at dokumentpakken ble lastet ned.",
   expired: "Runden er utløpt.",
   cancelled: "Runden er kansellert."
 };
@@ -15,6 +17,7 @@ const CLOSED_MESSAGE_MAP = {
 const SAFE_CLOSED_REASONS = new Set([
   "target_reached",
   "manually_closed",
+  "conversion_downloaded",
   "expired",
   "cancelled"
 ]);
@@ -35,6 +38,7 @@ export function buildRoundAvailability(round = {}) {
   const targetReached = targetAmount > 0 && committedAmount >= targetAmount;
   const isClosed = closedReason === "target_reached"
     || closedReason === "manually_closed"
+    || closedReason === "conversion_downloaded"
     || closedReason === "expired"
     || closedReason === "cancelled";
   const canInvest = !isClosed && Number(round.open) === 1 && remainingCapacity > 0;
@@ -160,7 +164,11 @@ export async function syncEmissionRoundAvailability(connection, roundId, options
   const targetReached = normalizeAmount(round.target_amount) > 0
     && normalizeAmount(round.committed_amount) >= normalizeAmount(round.target_amount);
 
-  if (round.closed_reason !== "cancelled" && round.closed_reason !== "manually_closed") {
+  if (
+    round.closed_reason !== "cancelled" &&
+    round.closed_reason !== "manually_closed" &&
+    round.closed_reason !== "conversion_downloaded"
+  ) {
     if (targetReached && round.closed_reason !== "target_reached") {
       await updateRoundClosure(connection, roundId, "target_reached", columns);
     } else if (!targetReached && round.closed_reason === "target_reached") {

@@ -5,16 +5,21 @@ import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
 import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
 import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
+import { sendDocumentSigningRequestEmail } from "../utils/notificationEmailFlow.js";
+import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 
 const router = express.Router();
 const MAX_EMISSION_AMOUNT = 2147483647;
+const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
 
 async function canRestartLegalFlow(startupId) {
+  const legalResetCutoff = await getLegalResetCutoff(pool, startupId);
   const [emissionRows] = await pool.query(
     `
     SELECT id
     FROM emission_rounds
     WHERE startup_id = ?
+      AND (closed_reason IS NULL OR closed_reason = '')
     LIMIT 1
     `,
     [startupId]
@@ -30,9 +35,14 @@ async function canRestartLegalFlow(startupId) {
     FROM rc_agreements a
     JOIN emission_rounds e ON e.id = a.round_id
     WHERE e.startup_id = ?
+      AND (
+        e.closed_reason IS NULL
+        OR e.closed_reason = ''
+        OR (? IS NOT NULL AND e.created_at > ?)
+      )
     LIMIT 1
     `,
-    [startupId]
+    [startupId, legalResetCutoff, legalResetCutoff]
   );
 
   return agreementRows.length === 0;
@@ -49,8 +59,9 @@ router.post(
     try {
       const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
       const startupId = startupContext.startupUserId;
+      const legalResetCutoff = await getLegalResetCutoff(pool, startupId);
 
-      if (!(await canStartupCreateRaise(req.user.id))) {
+      if (!(await canStartupCreateRaise(startupId))) {
         return res.status(403).json({
           error: "Du må ha en aktiv startup-plan for å opprette dokumentgrunnlaget."
         });
@@ -90,9 +101,10 @@ router.post(
         WHERE startup_id = ?
           AND type IN ('BOARD', 'GF')
           AND status IN ('SIGNED', 'LOCKED')
+          AND (? IS NULL OR created_at > ?)
         LIMIT 1
         `,
-        [startupId]
+        [startupId, legalResetCutoff, legalResetCutoff]
       );
 
       if (existingLockedDocs.length > 0) {
@@ -169,6 +181,14 @@ router.post(
          VALUES (?, ?, ?, 'Styreleder', 'ACCEPTED')`,
         [documentId, chairEmail, req.user.id]
       );
+
+      sendDocumentSigningRequestEmail({
+        to: chairEmail,
+        companyName,
+        roleLabel: "Styreleder",
+        documentTitle: `Styrets forslag – ${companyName}`,
+        signUrl: `${frontendBase}/sign.html?type=board&id=${documentId}`
+      });
 
       res.status(201).json({
         success: true,

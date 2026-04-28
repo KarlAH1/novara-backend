@@ -14,11 +14,17 @@ import {
 import { ensureStartupArticlesParsed } from "../utils/startupArticlesBasis.js";
 import { buildUpdatedArticlesDraft } from "../utils/updatedArticlesBuilder.js";
 import { sendEmail } from "../utils/emailService.js";
+import {
+  sendConversionStartedEmail,
+  sendDocumentSigningRequestEmail,
+  sendRoundClosedEmail
+} from "../utils/notificationEmailFlow.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const templatesDir = path.resolve(__dirname, "../templates");
+const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
 
 function getTriggerLabel(triggerType) {
   if (triggerType === "new_round" || triggerType === "new_priced_round") return "Ny emisjon";
@@ -107,10 +113,16 @@ function parseRequestedDate(value) {
   return date;
 }
 
+function buildParValueReference(agreementId, conversionId) {
+  const safeAgreementId = String(agreementId || "").trim() || "0";
+  const safeConversionId = String(conversionId || "").trim() || "0";
+  return `PARI-${safeConversionId}-${safeAgreementId}`;
+}
+
 async function getLatestRoundForStartup(connection, startupId) {
   const [rows] = await connection.query(
     `
-    SELECT id, startup_id, target_amount, amount_raised, committed_amount, conversion_years, trigger_period, discount_rate, valuation_cap, deadline, closed_reason
+    SELECT id, startup_id, target_amount, amount_raised, committed_amount, conversion_years, trigger_period, discount_rate, valuation_cap, deadline, closed_reason, bank_account
     FROM emission_rounds
     WHERE startup_id = ?
     ORDER BY id DESC
@@ -163,6 +175,8 @@ async function getCurrentConversionEvent(connection, startupId, roundId) {
 
 function resolveConversionTimeline(round, triggerType, requestedDate) {
   const normalizedTriggerType = normalizeTriggerType(triggerType);
+  const noticeBaseDate = new Date();
+  const defaultParValueDueDate = addDays(noticeBaseDate, 7);
 
   if (normalizedTriggerType === "time_elapsed") {
     const deadline = parseRequestedDate(round?.deadline);
@@ -172,7 +186,7 @@ function resolveConversionTimeline(round, triggerType, requestedDate) {
 
     return {
       conversionDate: deadline,
-      parValueDueDate: subtractDays(deadline, 3)
+      parValueDueDate: defaultParValueDueDate
     };
   }
 
@@ -181,7 +195,7 @@ function resolveConversionTimeline(round, triggerType, requestedDate) {
 
   return {
     conversionDate,
-    parValueDueDate: subtractDays(conversionDate, 3)
+    parValueDueDate: defaultParValueDueDate
   };
 }
 
@@ -205,6 +219,8 @@ async function ensureAutoTimeElapsedConversion(connection, startupId, round) {
     return existing;
   }
 
+  const parValueDueDate = addDays(new Date(), 7);
+
   const [result] = await connection.query(
     `
     INSERT INTO conversion_events (
@@ -216,7 +232,7 @@ async function ensureAutoTimeElapsedConversion(connection, startupId, round) {
       startupId,
       round.id,
       toMysqlDateTime(deadline),
-      toMysqlDateTime(preparationStart)
+      toMysqlDateTime(parValueDueDate)
     ]
   );
 
@@ -227,7 +243,7 @@ async function ensureAutoTimeElapsedConversion(connection, startupId, round) {
     trigger_type: "time_elapsed",
     status: "triggered",
     conversion_date: toMysqlDateTime(deadline),
-    par_value_due_date: toMysqlDateTime(preparationStart),
+    par_value_due_date: toMysqlDateTime(parValueDueDate),
     started_automatically: 1
   };
 }
@@ -351,34 +367,67 @@ function buildShareholderRegisterRows(existingShareholders, currentShareCount, i
       allocatedShares += shareCount;
       rows.push({
         shareholder_name: holder.shareholder_name,
-        share_count: shareCount
+        identifier_value: "",
+        digital_address: "",
+        residential_address: "",
+        share_class: "A",
+        share_count: shareCount,
+        entry_date: ""
       });
     });
   }
 
   (investors || []).forEach((investor) => {
+    const profile = investor.legal_profile || {};
     rows.push({
-      shareholder_name: investor.investor_name || investor.investor_email || `Investor ${investor.agreement_id}`,
-      share_count: Number(investor.conversion_share_count || 0)
+      shareholder_name: profile.full_name || investor.investor_name || investor.investor_email || `Investor ${investor.agreement_id}`,
+      identifier_value: profile.birth_date || "",
+      digital_address: profile.digital_address || investor.investor_email || "",
+      residential_address: [profile.residential_address, profile.postal_code, profile.city, profile.country]
+        .filter(Boolean)
+        .join(", "),
+      share_class: "A",
+      share_count: Number(investor.conversion_share_count || 0),
+      entry_date: investor.entry_date || ""
     });
   });
 
   const totalShares = rows.reduce((sum, row) => sum + Number(row.share_count || 0), 0);
+  let currentNumber = 1;
 
-  return rows.map((row) => ({
-    ...row,
-    ownership_percent: totalShares > 0 ? ((Number(row.share_count || 0) / totalShares) * 100) : 0
-  }));
+  return rows.map((row) => {
+    const shareCount = Number(row.share_count || 0);
+    const rangeStart = shareCount > 0 ? currentNumber : null;
+    const rangeEnd = shareCount > 0 ? currentNumber + shareCount - 1 : null;
+
+    if (shareCount > 0) {
+      currentNumber = rangeEnd + 1;
+    }
+
+    return {
+      ...row,
+      ownership_percent: totalShares > 0 ? ((shareCount / totalShares) * 100) : 0,
+      share_range_label: rangeStart && rangeEnd
+        ? `${rangeStart.toLocaleString("no-NO")}–${rangeEnd.toLocaleString("no-NO")}`
+        : "",
+      entry_date_display: row.entry_date ? formatDateLabel(row.entry_date) : ""
+    };
+  });
 }
 
-function buildShareholderRegisterHtml({ companyName, orgnr, date, rows }) {
+function buildShareholderRegisterHtml({ companyName, orgnr, date, totalShareCapital, totalShareCount, nominalValue, shareClass, rows }) {
   const templatePath = path.join(templatesDir, "eierregister-template.html");
   let template = fs.readFileSync(templatePath, "utf8");
   const htmlRows = rows.map((row) => `
         <tr>
           <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0;">${escapeHtml(row.shareholder_name)}</td>
+          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0;">${escapeHtml(row.identifier_value)}</td>
+          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0;">${escapeHtml(row.digital_address)}</td>
+          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0;">${escapeHtml(row.residential_address)}</td>
+          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0; text-align:center;">${escapeHtml(row.share_class || "A")}</td>
           <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0; text-align:right;">${escapeHtml(Number(row.share_count || 0).toLocaleString("no-NO"))}</td>
-          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0; text-align:right;">${escapeHtml(Number(row.ownership_percent || 0).toLocaleString("no-NO", { maximumFractionDigits: 2 }))}%</td>
+          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0;">${escapeHtml(row.share_range_label)}</td>
+          <td style="padding: 12px 14px; border-top: 1px solid #e6ddd0;">${escapeHtml(row.entry_date_display)}</td>
         </tr>
   `).join("");
 
@@ -386,6 +435,10 @@ function buildShareholderRegisterHtml({ companyName, orgnr, date, rows }) {
     .replace(/{{company_name}}/g, escapeHtml(companyName))
     .replace(/{{orgnr}}/g, escapeHtml(orgnr))
     .replace(/{{date}}/g, escapeHtml(date))
+    .replace(/{{share_capital}}/g, escapeHtml(formatCurrency(totalShareCapital)))
+    .replace(/{{share_count}}/g, escapeHtml(Number(totalShareCount || 0).toLocaleString("no-NO")))
+    .replace(/{{nominal_value}}/g, escapeHtml(formatCurrency(nominalValue)))
+    .replace(/{{share_class}}/g, escapeHtml(shareClass || "A"))
     .replace(/{{rows}}/g, htmlRows);
 }
 
@@ -415,6 +468,33 @@ async function createDocument(connection, { type, startupId, title, html, signer
   }
 
   return docResult.insertId;
+}
+
+function buildSignUrl(documentType, documentId) {
+  if (!documentId || !frontendBase) return "";
+  if (["SFC", "GFC", "CONVERSION_CAPITAL_CONFIRMATION"].includes(documentType)) {
+    return `${frontendBase}/sign.html?type=conversion&id=${documentId}`;
+  }
+  return "";
+}
+
+async function notifyDocumentSigners({ type, documentId, title, companyName, signers = [] }) {
+  const signUrl = buildSignUrl(type, documentId);
+  if (!signUrl || !Array.isArray(signers) || !signers.length) return;
+
+  await Promise.all(
+    signers
+      .filter((signer) => signer?.email)
+      .map((signer) =>
+        sendDocumentSigningRequestEmail({
+          to: signer.email,
+          companyName,
+          roleLabel: signer.role,
+          documentTitle: title,
+          signUrl
+        })
+      )
+  );
 }
 
 async function findUserByEmail(connection, email) {
@@ -489,14 +569,16 @@ async function syncParValueRequests(connection, conversion, calculations) {
         investor_name,
         investor_email,
         par_value_amount,
+        reference,
         due_date,
         status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_notice')
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_notice')
       ON DUPLICATE KEY UPDATE
         investor_name = VALUES(investor_name),
         investor_email = VALUES(investor_email),
         par_value_amount = VALUES(par_value_amount),
+        reference = COALESCE(conversion_par_value_requests.reference, VALUES(reference)),
         due_date = VALUES(due_date)
       `,
       [
@@ -506,6 +588,7 @@ async function syncParValueRequests(connection, conversion, calculations) {
         item.investor_name || null,
         item.investor_email || null,
         Number(item.nominal_amount || 0),
+        buildParValueReference(item.agreement_id, conversion.id),
         toMysqlDateTime(conversion.par_value_due_date)
       ]
     );
@@ -527,6 +610,9 @@ async function syncParValueRequests(connection, conversion, calculations) {
 async function sendParValueNotices(connection, startupContext, conversion, requests) {
   const frontendBase = String(process.env.FRONTEND_URL || "").replace(/\/$/, "");
   const companyName = startupContext.company?.company_name || "selskapet";
+  const noticeDueDate = addDays(new Date(), 7);
+  const noticeDueDateSql = toMysqlDateTime(noticeDueDate);
+  const bankAccount = startupContext.bank_account || "Legges inn av selskapet";
 
   for (const request of requests) {
     if (request.notice_sent_at || !request.investor_email) {
@@ -534,18 +620,20 @@ async function sendParValueNotices(connection, startupContext, conversion, reque
     }
 
     const detailUrl = `${frontendBase}/rc-detail.html?agreement=${encodeURIComponent(request.agreement_id)}`;
-    const dueDateLabel = formatDateLabel(request.due_date);
+    const dueDateLabel = formatDateLabel(noticeDueDate);
     const amountLabel = formatCurrency(request.par_value_amount);
+    const referenceLabel = request.reference || buildParValueReference(request.agreement_id, conversion?.id);
 
     try {
       await sendEmail({
         to: request.investor_email,
         subject: `Paribeløp før konvertering hos ${companyName}`,
-        text: `Hei,\n\nKonverteringsprosessen er startet hos ${companyName}. Du må innbetale paribeløpet på ${amountLabel} senest ${dueDateLabel}, slik at konverteringen kan gjennomføres.\n\nSe avtalen her: ${detailUrl}`,
+        text: `Hei,\n\nKonverteringsprosessen er startet hos ${companyName}. Du må innbetale paribeløpet på ${amountLabel} senest ${dueDateLabel}.\n\nKontonummer: ${bankAccount}\nReferanse: ${referenceLabel}\n\nSe avtalen her: ${detailUrl}`,
         html: `
           <p>Hei,</p>
           <p>Konverteringsprosessen er startet hos <strong>${escapeHtml(companyName)}</strong>.</p>
-          <p>Du må innbetale paribeløpet på <strong>${escapeHtml(amountLabel)}</strong> senest <strong>${escapeHtml(dueDateLabel)}</strong>, slik at konverteringen kan gjennomføres.</p>
+          <p>Du må innbetale paribeløpet på <strong>${escapeHtml(amountLabel)}</strong> senest <strong>${escapeHtml(dueDateLabel)}</strong>.</p>
+          <p><strong>Kontonummer:</strong> ${escapeHtml(bankAccount)}<br><strong>Referanse:</strong> ${escapeHtml(referenceLabel)}</p>
           <p><a href="${detailUrl}">Åpne avtalen og status</a></p>
         `
       });
@@ -553,14 +641,25 @@ async function sendParValueNotices(connection, startupContext, conversion, reque
       await connection.query(
         `
         UPDATE conversion_par_value_requests
-        SET notice_sent_at = NOW(), status = 'notice_sent'
+        SET notice_sent_at = NOW(), status = 'notice_sent', due_date = ?
         WHERE id = ?
         `,
-        [request.id]
+        [noticeDueDateSql, request.id]
       );
     } catch (error) {
       console.error("Par value notice send failed:", error);
     }
+  }
+
+  if (conversion?.id) {
+    await connection.query(
+      `
+      UPDATE conversion_events
+      SET par_value_due_date = ?
+      WHERE id = ?
+      `,
+      [noticeDueDateSql, conversion.id]
+    );
   }
 }
 
@@ -594,17 +693,27 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       .replace(/{{date}}/g, today)
       .replace(/{{chair_name}}/g, user.name || "Styreleder");
 
+    const boardSigners = [{
+      email: user.email,
+      user_id: user.id,
+      role: "Styreleder",
+      status: "ACCEPTED"
+    }];
+
     const boardId = await createDocument(connection, {
       type: "SFC",
       startupId: startupContext.startupUserId,
       title: `SFC – ${companyName}`,
       html: boardHtml,
-      signers: [{
-        email: user.email,
-        user_id: user.id,
-        role: "Styreleder",
-        status: "ACCEPTED"
-      }]
+      signers: boardSigners
+    });
+
+    await notifyDocumentSigners({
+      type: "SFC",
+      documentId: boardId,
+      title: `SFC – ${companyName}`,
+      companyName,
+      signers: boardSigners
     });
 
     await connection.query(
@@ -690,25 +799,35 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
         `${Number(round.committed_amount ?? round.amount_raised ?? 0).toLocaleString("no-NO")} NOK`
       );
 
+    const gfSigners = [
+      {
+        email: user.email,
+        user_id: user.id,
+        role: "Møteleder",
+        status: "ACCEPTED"
+      },
+      {
+        email: secretaryEmail || user.email,
+        user_id: secretaryUser?.id || null,
+        role: "Protokollunderskriver",
+        status: secretaryUser ? "ACCEPTED" : "INVITED"
+      }
+    ];
+
     const gfId = await createDocument(connection, {
       type: "GFC",
       startupId: startupContext.startupUserId,
       title: `GFC – ${companyName}`,
       html: gfHtml,
-      signers: [
-        {
-          email: user.email,
-          user_id: user.id,
-          role: "Møteleder",
-          status: "ACCEPTED"
-        },
-        {
-          email: secretaryEmail || user.email,
-          user_id: secretaryUser?.id || null,
-          role: "Protokollunderskriver",
-          status: secretaryUser ? "ACCEPTED" : "INVITED"
-        }
-      ]
+      signers: gfSigners
+    });
+
+    await notifyDocumentSigners({
+      type: "GFC",
+      documentId: gfId,
+      title: `GFC – ${companyName}`,
+      companyName,
+      signers: gfSigners
     });
 
     await connection.query(
@@ -724,6 +843,12 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const updatedArticles = await buildUpdatedArticlesDraft({
       templatePath: path.join(templatesDir, "vedtekter-template.html"),
       currentArticles: basis.articles_document.parsed_fields,
+      fallbackData: {
+        company_name: companyName,
+        orgnr,
+        municipality: "Ikke satt",
+        business_purpose: "Selskapets virksomhet følger det som er registrert for selskapet."
+      },
       nextCapitalData: {
         share_capital_amount: nextCapitalAmount,
         share_count: nextShareCount,
@@ -756,17 +881,52 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       `,
       [round.id]
     );
+    const investorIds = calculations.investors
+      .map((item) => Number(item.investor_id || 0))
+      .filter(Boolean);
+    const [investorLegalRows] = investorIds.length
+      ? await connection.query(
+          `
+          SELECT user_id, full_name, birth_date, digital_address, residential_address, postal_code, city, country
+          FROM investor_legal_profiles
+          WHERE user_id IN (?)
+          `,
+          [investorIds]
+        )
+      : [[]];
+    const investorLegalProfiles = new Map(
+      investorLegalRows.map((row) => [
+        Number(row.user_id),
+        {
+          full_name: row.full_name || "",
+          birth_date: row.birth_date ? formatDateLabel(row.birth_date) : "",
+          digital_address: row.digital_address || "",
+          residential_address: row.residential_address || "",
+          postal_code: row.postal_code || "",
+          city: row.city || "",
+          country: row.country || ""
+        }
+      ])
+    );
 
     const shareholderRegisterRows = buildShareholderRegisterRows(
       shareholderRows,
       basis.current_share_count,
-      calculations.investors
+      calculations.investors.map((investor) => ({
+        ...investor,
+        legal_profile: investorLegalProfiles.get(Number(investor.investor_id)) || null,
+        entry_date: freshConversion.conversion_date || new Date().toISOString()
+      }))
     );
 
     const shareholderRegisterHtml = buildShareholderRegisterHtml({
       companyName,
       orgnr,
       date: today,
+      totalShareCapital: (Number(basis.current_share_count || 0) + Number(calculations.totals?.total_conversion_share_count || 0)) * Number(basis.nominal_value_per_share || 0),
+      totalShareCount: Number(basis.current_share_count || 0) + Number(calculations.totals?.total_conversion_share_count || 0),
+      nominalValue: Number(basis.nominal_value_per_share || 0),
+      shareClass: "A",
       rows: shareholderRegisterRows
     });
 
@@ -784,16 +944,18 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     freshConversion.shareholder_register_document_id = registerId;
   }
 
-  if (!freshConversion.capital_confirmation_document_id && freshConversion.third_party_email) {
-    const thirdPartyUser = await findUserByEmail(connection, freshConversion.third_party_email);
+  if (!freshConversion.capital_confirmation_document_id) {
+    const thirdPartyUser = freshConversion.third_party_email
+      ? await findUserByEmail(connection, freshConversion.third_party_email)
+      : null;
     const templatePath = path.join(templatesDir, "conversion-capital-confirmation-template.html");
     let confirmationHtml = fs.readFileSync(templatePath, "utf8");
     confirmationHtml = confirmationHtml
       .replace(/{{company_name}}/g, companyName)
       .replace(/{{orgnr}}/g, orgnr)
       .replace(/{{date}}/g, today)
-      .replace(/{{third_party_name}}/g, freshConversion.third_party_name || "Ikke satt")
-      .replace(/{{third_party_email}}/g, freshConversion.third_party_email || "Ikke satt")
+      .replace(/{{third_party_name}}/g, freshConversion.third_party_name || "Revisor registreres før innsending")
+      .replace(/{{third_party_email}}/g, freshConversion.third_party_email || "Registreres før innsending")
       .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
       .replace(/{{conversion_date}}/g, formatDateLabel(freshConversion.conversion_date))
       .replace(/{{par_value_due_date}}/g, formatDateLabel(freshConversion.par_value_due_date))
@@ -801,17 +963,27 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       .replace(/{{total_nominal_amount}}/g, escapeHtml(formatCurrency(calculations.totals?.total_nominal_amount || 0)))
       .replace(/{{total_share_premium}}/g, escapeHtml(formatCurrency(calculations.totals?.total_share_premium || 0)));
 
+    const confirmationSigners = freshConversion.third_party_email ? [{
+      email: freshConversion.third_party_email,
+      user_id: thirdPartyUser?.id || null,
+      role: "Revisor",
+      status: thirdPartyUser ? "ACCEPTED" : "INVITED"
+    }] : [];
+
     const confirmationId = await createDocument(connection, {
       type: "CONVERSION_CAPITAL_CONFIRMATION",
       startupId: startupContext.startupUserId,
-      title: `Bekreftelse for innskudd – ${companyName}`,
+      title: `Revisorbekreftelse – ${companyName}`,
       html: confirmationHtml,
-      signers: [{
-        email: freshConversion.third_party_email,
-        user_id: thirdPartyUser?.id || null,
-        role: "Bekreftende tredjepart",
-        status: thirdPartyUser ? "ACCEPTED" : "INVITED"
-      }]
+      signers: confirmationSigners
+    });
+
+    await notifyDocumentSigners({
+      type: "CONVERSION_CAPITAL_CONFIRMATION",
+      documentId: confirmationId,
+      title: `Revisorbekreftelse – ${companyName}`,
+      companyName,
+      signers: confirmationSigners
     });
 
     await connection.query(
@@ -829,7 +1001,8 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
     !conversion.board_document_id ||
     !conversion.gf_document_id ||
     !conversion.updated_articles_document_id ||
-    !conversion.shareholder_register_document_id
+    !conversion.shareholder_register_document_id ||
+    !conversion.capital_confirmation_document_id
   ) {
     return;
   }
@@ -838,13 +1011,14 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
     `
     SELECT id, type, status
     FROM documents
-    WHERE id IN (?, ?, ?, ?, ?)
+    WHERE id IN (?, ?, ?, ?, ?, ?)
     `,
     [
       conversion.board_document_id,
       conversion.gf_document_id,
       conversion.updated_articles_document_id || 0,
       conversion.shareholder_register_document_id || 0,
+      conversion.capital_confirmation_document_id || 0,
       conversion.altinn_package_document_id || 0
     ]
   );
@@ -852,8 +1026,9 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
   const byId = Object.fromEntries(docs.map((doc) => [doc.id, doc]));
   const boardLocked = byId[conversion.board_document_id]?.status === "LOCKED";
   const gfLocked = byId[conversion.gf_document_id]?.status === "LOCKED";
+  const confirmationLocked = byId[conversion.capital_confirmation_document_id]?.status === "LOCKED";
 
-  if (!boardLocked || !gfLocked) {
+  if (!boardLocked || !gfLocked || !confirmationLocked) {
     return;
   }
 
@@ -891,6 +1066,10 @@ async function buildConversionState(connection, startupContext, user) {
     return null;
   }
 
+  if (String(round.closed_reason || "") === "conversion_downloaded") {
+    return null;
+  }
+
   let conversion = await getCurrentConversionEvent(connection, startupId, round.id);
   if (!conversion) {
     conversion = await ensureAutoTimeElapsedConversion(connection, startupId, round);
@@ -908,7 +1087,7 @@ async function buildConversionState(connection, startupContext, user) {
     );
 
     const requests = await syncParValueRequests(connection, conversion, conversionData.calculations);
-    await sendParValueNotices(connection, startupContext, conversion, requests);
+    await sendParValueNotices(connection, { ...startupContext, bank_account: round.bank_account || null }, conversion, requests);
     await ensureConversionArtifacts(connection, startupContext, user, round, conversion, conversionData.basis, conversionData.calculations);
 
     const [updatedConversionRows] = await connection.query(
@@ -950,7 +1129,7 @@ async function buildConversionState(connection, startupContext, user) {
   const [parValueRequests] = conversion?.id
     ? await connection.query(
         `
-        SELECT id, agreement_id, investor_id, investor_name, investor_email, par_value_amount, due_date, notice_sent_at, paid_confirmed_at, status
+        SELECT id, agreement_id, investor_id, investor_name, investor_email, par_value_amount, reference, due_date, notice_sent_at, paid_confirmed_at, status
         FROM conversion_par_value_requests
         WHERE conversion_event_id = ?
         ORDER BY id ASC
@@ -1012,7 +1191,7 @@ async function persistConversionContext(connection, conversionId, payload = {}) 
     updates.push("conversion_date = ?");
     params.push(parsed ? toMysqlDateTime(parsed) : null);
     updates.push("par_value_due_date = ?");
-    params.push(parsed ? toMysqlDateTime(subtractDays(parsed, 3)) : null);
+    params.push(parsed ? toMysqlDateTime(addDays(new Date(), 7)) : null);
   }
 
   if (payload.thirdPartyName !== undefined) {
@@ -1105,6 +1284,11 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
     }
 
     const state = await buildConversionState(connection, startupContext, req.user);
+    await sendConversionStartedEmail({
+      startupEmail: req.user.email,
+      startupName: startupContext.company?.company_name || req.user.name || "",
+      triggerLabel: getTriggerLabel(triggerType)
+    });
     res.status(201).json(state);
   } catch (err) {
     console.error("Start conversion error:", err);
@@ -1285,6 +1469,7 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
       conversion.gf_document_id,
       conversion.updated_articles_document_id,
       conversion.shareholder_register_document_id,
+      conversion.capital_confirmation_document_id,
       conversion.altinn_package_document_id
     ].filter(Boolean);
 
@@ -1303,11 +1488,12 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
 
     const docsById = Object.fromEntries(docs.map((doc) => [doc.id, doc]));
     const orderedDocs = [
-      { id: conversion.board_document_id, prefix: "01", fallback: "styrets-forslag" },
-      { id: conversion.gf_document_id, prefix: "02", fallback: "generalforsamling" },
-      { id: conversion.updated_articles_document_id, prefix: "03", fallback: "oppdaterte-vedtekter" },
-      { id: conversion.shareholder_register_document_id, prefix: "04", fallback: "aksjeeierbok" },
-      { id: conversion.altinn_package_document_id, prefix: "05", fallback: "altinn-pakke" }
+      { id: conversion.altinn_package_document_id, prefix: "01", fallback: "altinnpakke-raisium" },
+      { id: conversion.board_document_id, prefix: "02", fallback: "styrets-forslag" },
+      { id: conversion.gf_document_id, prefix: "03", fallback: "generalforsamling" },
+      { id: conversion.updated_articles_document_id, prefix: "04", fallback: "oppdaterte-vedtekter" },
+      { id: conversion.shareholder_register_document_id, prefix: "05", fallback: "aksjeeierbok" },
+      { id: conversion.capital_confirmation_document_id, prefix: "06", fallback: "revisorbekreftelse" }
     ].filter((item) => item.id && docsById[item.id]);
 
     const companyName = startupContext.company?.company_name || "startup";
@@ -1319,9 +1505,19 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     await connection.query(
       `UPDATE emission_rounds
        SET open = 0, closed_at = NOW(), closed_reason = 'conversion_downloaded'
-       WHERE id = ? AND open = 1`,
+       WHERE id = ?`,
       [round.id]
     );
+
+    await connection.query(
+      "UPDATE startup_profiles SET is_raising = 0 WHERE user_id = ?",
+      [startupId]
+    );
+
+    await sendRoundClosedEmail({
+      startupEmail: req.user.email,
+      startupName: startupContext.company?.company_name || req.user.name || ""
+    });
 
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);

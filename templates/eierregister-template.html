@@ -2,23 +2,29 @@
   <style>
     .doc-template, .doc-template * { color: #000 !important; }
   </style>
-  <header style="margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1px solid #d9d3c7;">
-    <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b6255;">Aksjeeierbok</p>
-    <h1 style="margin: 0; font-size: 28px; line-height: 1.2;">Aksjeeierbok etter konvertering</h1>
-    <p style="margin: 8px 0 0; color: #3f3a31;">Oppdatert oversikt over aksjeeiere og aksjefordeling.</p>
+  <header style="margin-bottom: 22px;">
+    <h1 style="margin: 0 0 18px; font-size: 28px; line-height: 1.2;">AKSJEEIERBOK</h1>
+    <h2 style="margin: 0 0 18px; font-size: 20px; line-height: 1.3;">Aksjeeierbok – {{company_name}}</h2>
+    <div>
+      <div><strong>Org.nr:</strong> {{orgnr}}</div>
+      <div><strong>Aksjekapital:</strong> {{share_capital}}</div>
+      <div><strong>Antall aksjer:</strong> {{share_count}}</div>
+      <div><strong>Pålydende:</strong> {{nominal_value}}</div>
+      <div><strong>Aksjeklasse:</strong> {{share_class}}</div>
+    </div>
   </header>
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; margin-bottom: 18px;">
-    <div><strong>Selskap:</strong> {{company_name}}</div>
-    <div style="text-align:right;"><strong>Dato:</strong> {{date}}</div>
-    <div><strong>Org.nr.:</strong> {{orgnr}}</div>
-  </div>
-  <div style="margin-top: 10px; overflow: hidden; border-radius: 12px; border: 1px solid #d9d3c7;">
+  <div style="margin-top: 24px; overflow: hidden; border: 1px solid #1f2937;">
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; background: #fffdf8;">
       <thead>
         <tr style="background: #f1ece3;">
-          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Aksjeeier</th>
-          <th style="padding: 12px 14px; text-align:right; font-weight: 600;">Aksjer</th>
-          <th style="padding: 12px 14px; text-align:right; font-weight: 600;">Eierandel</th>
+          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Aksjonær</th>
+          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Fødselsdato / org.nr.</th>
+          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Digital adresse</th>
+          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Bostedsadresse</th>
+          <th style="padding: 12px 14px; text-align:center; font-weight: 600;">Aksjeklasse</th>
+          <th style="padding: 12px 14px; text-align:right; font-weight: 600;">Antall aksjer</th>
+          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Aksjenr.</th>
+          <th style="padding: 12px 14px; text-align:left; font-weight: 600;">Dato</th>
         </tr>
       </thead>
       <tbody>
@@ -26,5 +32,10 @@
       </tbody>
     </table>
   </div>
+  <section style="margin-top: 34px;">
+    <h3 style="margin: 0 0 10px; font-size: 18px;">Historikk</h3>
+    <p style="margin: 0;">Oppdatert per {{date}}.</p>
+  </section>
+  <p style="margin: 34px 0 0;">Ført i henhold til aksjeloven §§ 4-5 og 4-6</p>
   <!-- digital_signature_line -->
 </section>

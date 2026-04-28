@@ -93,6 +93,7 @@ export async function ensureConversionSchema() {
           investor_name VARCHAR(255) NULL,
           investor_email VARCHAR(255) NULL,
           par_value_amount DECIMAL(12,2) NOT NULL,
+          reference VARCHAR(128) NULL,
           due_date DATETIME NOT NULL,
           notice_sent_at DATETIME NULL,
           paid_confirmed_at DATETIME NULL,
@@ -103,6 +104,8 @@ export async function ensureConversionSchema() {
           INDEX idx_conversion_par_value_event (conversion_event_id)
         )
       `);
+    } else if (!(await columnExists(connection, "conversion_par_value_requests", "reference"))) {
+      await connection.query("ALTER TABLE conversion_par_value_requests ADD COLUMN reference VARCHAR(128) NULL AFTER par_value_amount");
     }
   } finally {
     connection.release();

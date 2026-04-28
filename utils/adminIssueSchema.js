@@ -71,6 +71,22 @@ export async function ensureAdminIssueSchema() {
         await connection.query("ALTER TABLE admin_issues ADD COLUMN resolved_at DATETIME NULL");
       }
     }
+
+    const messagesTableExists = await tableExists(connection, "admin_issue_messages");
+    if (!messagesTableExists) {
+      await connection.query(`
+        CREATE TABLE admin_issue_messages (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          issue_id INT NOT NULL,
+          sender_user_id INT NOT NULL,
+          sender_role VARCHAR(32) NOT NULL,
+          message TEXT NOT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_admin_issue_messages_issue_id (issue_id),
+          INDEX idx_admin_issue_messages_created_at (created_at)
+        )
+      `);
+    }
   } finally {
     connection.release();
   }
