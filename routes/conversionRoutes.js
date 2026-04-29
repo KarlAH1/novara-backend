@@ -28,6 +28,37 @@ const __dirname = path.dirname(__filename);
 const templatesDir = path.resolve(__dirname, "../templates");
 const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
 
+async function tableExists(connection, tableName) {
+  const [rows] = await connection.query(
+    `
+    SELECT 1
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+    LIMIT 1
+    `,
+    [tableName]
+  );
+
+  return rows.length > 0;
+}
+
+async function columnExists(connection, tableName, columnName) {
+  const [rows] = await connection.query(
+    `
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+    LIMIT 1
+    `,
+    [tableName, columnName]
+  );
+
+  return rows.length > 0;
+}
+
 function getTriggerLabel(triggerType) {
   if (triggerType === "new_round" || triggerType === "new_priced_round") return "Ny emisjon";
   if (triggerType === "ownership_change") return "Ny eierstruktur";
@@ -366,17 +397,31 @@ async function getConversionBasis(connection, startupId) {
     [startupId]
   );
 
-  const [articlesRows] = await connection.query(
-    `
-    SELECT id, filename, url, mime_type, parse_status, parsed_fields_json, extracted_text, uploaded_at
-    FROM startup_documents
-    WHERE startup_id = ?
-      AND document_type = 'current_articles_of_association'
-    ORDER BY uploaded_at DESC, id DESC
-    LIMIT 1
-    `,
-    [startupId]
-  );
+  let articlesRows = [[]];
+  if (await tableExists(connection, "startup_documents")) {
+    const hasDocumentType = await columnExists(connection, "startup_documents", "document_type");
+    const hasMimeType = await columnExists(connection, "startup_documents", "mime_type");
+    const hasParseStatus = await columnExists(connection, "startup_documents", "parse_status");
+    const hasParsedFields = await columnExists(connection, "startup_documents", "parsed_fields_json");
+    const hasExtractedText = await columnExists(connection, "startup_documents", "extracted_text");
+
+    articlesRows = await connection.query(
+      `
+      SELECT id, filename, url,
+             ${hasMimeType ? "mime_type" : "NULL AS mime_type"},
+             ${hasParseStatus ? "parse_status" : "'not_started' AS parse_status"},
+             ${hasParsedFields ? "parsed_fields_json" : "NULL AS parsed_fields_json"},
+             ${hasExtractedText ? "extracted_text" : "NULL AS extracted_text"},
+             uploaded_at
+      FROM startup_documents
+      WHERE startup_id = ?
+        ${hasDocumentType ? "AND document_type = 'current_articles_of_association'" : ""}
+      ORDER BY uploaded_at DESC, id DESC
+      LIMIT 1
+      `,
+      [startupId]
+    );
+  }
 
   const profileBasis = profileRows[0] || null;
   const rawArticles = articlesRows[0] || null;
@@ -530,6 +575,14 @@ function buildExistingShareholderSeedRows(existingShareholders, currentShareCoun
 
 async function ensureExistingShareholderTaskRows(connection, conversionId, roundId, currentShareCount) {
   if (!conversionId || !roundId) {
+    return [];
+  }
+
+  if (!(await tableExists(connection, "conversion_existing_shareholders"))) {
+    return [];
+  }
+
+  if (!(await tableExists(connection, "emission_shareholders"))) {
     return [];
   }
 
@@ -1276,6 +1329,38 @@ export async function buildConversionState(connection, startupContext, user) {
     return null;
   }
 
+  const hasConversionEventsTable = await tableExists(connection, "conversion_events");
+  const hasParValueRequestsTable = await tableExists(connection, "conversion_par_value_requests");
+  const hasConversionExistingShareholdersTable = await tableExists(connection, "conversion_existing_shareholders");
+
+  if (!hasConversionEventsTable) {
+    return {
+      round,
+      approval_gate: {
+        required_before_start: false,
+        target_reached_at: null,
+        blocked_until: null,
+        reason: null
+      },
+      conversion_basis: await getConversionBasis(connection, startupId),
+      articles_basis: null,
+      conversion: null,
+      calculations: null,
+      calculation_error: null,
+      par_value_requests: [],
+      steps: {
+        trigger: { status: "pending" },
+        par_value: { status: "pending", requests: [] },
+        board: { status: "pending", document: null },
+        gf: { status: "pending", document: null },
+        articles: { status: "pending", document: null },
+        shareholder_register: { status: "pending", document: null },
+        third_party_confirmation: { status: "pending", document: null },
+        package: { status: "pending", document: null }
+      }
+    };
+  }
+
   let conversion = await getCurrentConversionEvent(connection, startupId, round.id);
   if (!conversion) {
     conversion = await ensureAutoTimeElapsedConversion(connection, startupId, round);
@@ -1298,9 +1383,15 @@ export async function buildConversionState(connection, startupContext, user) {
       [JSON.stringify(conversionData.calculations), conversion.id]
     );
 
-    const requests = await syncParValueRequests(connection, conversion, conversionData.calculations);
-    await sendParValueNotices(connection, { ...startupContext, bank_account: round.bank_account || null }, conversion, requests);
-    await ensureConversionArtifacts(connection, startupContext, user, round, conversion, conversionData.basis, conversionData.calculations);
+    const requests = hasParValueRequestsTable
+      ? await syncParValueRequests(connection, conversion, conversionData.calculations)
+      : [];
+    if (hasParValueRequestsTable) {
+      await sendParValueNotices(connection, { ...startupContext, bank_account: round.bank_account || null }, conversion, requests);
+    }
+    if (hasConversionExistingShareholdersTable) {
+      await ensureConversionArtifacts(connection, startupContext, user, round, conversion, conversionData.basis, conversionData.calculations);
+    }
 
     const [updatedConversionRows] = await connection.query(
       "SELECT * FROM conversion_events WHERE id = ? LIMIT 1",
@@ -1308,12 +1399,14 @@ export async function buildConversionState(connection, startupContext, user) {
     );
     conversion = updatedConversionRows[0];
 
-    await ensureAltinnPackageIfReady(connection, startupContext, round, conversion, conversionData.calculations);
-    const [finalConversionRows] = await connection.query(
-      "SELECT * FROM conversion_events WHERE id = ? LIMIT 1",
-      [conversion.id]
-    );
-    conversion = finalConversionRows[0];
+    if (hasConversionExistingShareholdersTable) {
+      await ensureAltinnPackageIfReady(connection, startupContext, round, conversion, conversionData.calculations);
+      const [finalConversionRows] = await connection.query(
+        "SELECT * FROM conversion_events WHERE id = ? LIMIT 1",
+        [conversion.id]
+      );
+      conversion = finalConversionRows[0];
+    }
   }
 
   const documentIds = [
@@ -1338,7 +1431,7 @@ export async function buildConversionState(connection, startupContext, user) {
     documentsById = Object.fromEntries(docs.map((doc) => [doc.id, doc]));
   }
 
-  const [parValueRequests] = conversion?.id
+  const [parValueRequests] = (conversion?.id && hasParValueRequestsTable)
     ? await connection.query(
         `
         SELECT id, agreement_id, investor_id, investor_name, investor_email, par_value_amount, reference, due_date, notice_sent_at, paid_confirmed_at, status
