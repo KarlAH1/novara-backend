@@ -483,91 +483,120 @@ router.get("/startup/list", auth, async (req, res) => {
     try {
         const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
         const startupId = startupContext.startupUserId;
-        const conversionState = await buildConversionState(pool, startupContext, req.user);
+        let conversionState = null;
+        try {
+            conversionState = await buildConversionState(pool, startupContext, req.user);
+        } catch (error) {
+            console.error("Document room conversion state fallback:", error);
+            conversionState = null;
+        }
 
-        const [documents] = await pool.query(
-            `
-            SELECT
-              d.id,
-              d.type,
-              d.title,
-              d.status,
-              d.created_at,
-              d.locked_at,
-              COALESCE(
-                d.locked_at,
-                (
-                  SELECT MAX(ds.signed_at)
-                  FROM document_signers ds
-                  WHERE ds.document_id = d.id
-                )
-              ) AS signed_at
-            FROM documents
-            WHERE d.startup_id = ?
-            ORDER BY d.created_at DESC, d.id DESC
-            `,
-            [startupId]
-        );
-
-        let startupDocuments = [];
-        if (await tableExists(pool, "startup_documents")) {
-            const hasDocumentType = await columnExists(pool, "startup_documents", "document_type");
-            const hasMimeType = await columnExists(pool, "startup_documents", "mime_type");
-            const hasStatus = await columnExists(pool, "startup_documents", "status");
-            const hasParseStatus = await columnExists(pool, "startup_documents", "parse_status");
-            const hasParsedFields = await columnExists(pool, "startup_documents", "parsed_fields_json");
-            const hasVisibleInRoom = await columnExists(pool, "startup_documents", "visible_in_document_room");
-
+        let documents = [];
+        try {
             const [rows] = await pool.query(
                 `
                 SELECT
-                  id,
-                  ${hasDocumentType ? "document_type" : "'pitch_deck' AS document_type"},
-                  filename,
-                  url,
-                  ${hasMimeType ? "mime_type" : "NULL AS mime_type"},
-                  ${hasStatus ? "status" : "'uploaded' AS status"},
-                  ${hasParseStatus ? "parse_status" : "'not_started' AS parse_status"},
-                  ${hasParsedFields ? "parsed_fields_json" : "NULL AS parsed_fields_json"},
-                  uploaded_at
-                FROM startup_documents
-                WHERE startup_id = ?
-                  ${hasVisibleInRoom ? "AND visible_in_document_room = 1" : ""}
-                ORDER BY uploaded_at DESC, id DESC
+                  d.id,
+                  d.type,
+                  d.title,
+                  d.status,
+                  d.created_at,
+                  d.locked_at,
+                  COALESCE(
+                    d.locked_at,
+                    (
+                      SELECT MAX(ds.signed_at)
+                      FROM document_signers ds
+                      WHERE ds.document_id = d.id
+                    )
+                  ) AS signed_at
+                FROM documents
+                WHERE d.startup_id = ?
+                ORDER BY d.created_at DESC, d.id DESC
                 `,
                 [startupId]
             );
-            startupDocuments = rows;
+            documents = rows;
+        } catch (error) {
+            console.error("Document room documents fallback:", error);
+            documents = [];
+        }
+
+        let startupDocuments = [];
+        try {
+            if (await tableExists(pool, "startup_documents")) {
+                const hasDocumentType = await columnExists(pool, "startup_documents", "document_type");
+                const hasMimeType = await columnExists(pool, "startup_documents", "mime_type");
+                const hasStatus = await columnExists(pool, "startup_documents", "status");
+                const hasParseStatus = await columnExists(pool, "startup_documents", "parse_status");
+                const hasParsedFields = await columnExists(pool, "startup_documents", "parsed_fields_json");
+                const hasVisibleInRoom = await columnExists(pool, "startup_documents", "visible_in_document_room");
+
+                const [rows] = await pool.query(
+                    `
+                    SELECT
+                      id,
+                      ${hasDocumentType ? "document_type" : "'pitch_deck' AS document_type"},
+                      filename,
+                      url,
+                      ${hasMimeType ? "mime_type" : "NULL AS mime_type"},
+                      ${hasStatus ? "status" : "'uploaded' AS status"},
+                      ${hasParseStatus ? "parse_status" : "'not_started' AS parse_status"},
+                      ${hasParsedFields ? "parsed_fields_json" : "NULL AS parsed_fields_json"},
+                      uploaded_at
+                    FROM startup_documents
+                    WHERE startup_id = ?
+                      ${hasVisibleInRoom ? "AND visible_in_document_room = 1" : ""}
+                    ORDER BY uploaded_at DESC, id DESC
+                    `,
+                    [startupId]
+                );
+                startupDocuments = rows;
+            }
+        } catch (error) {
+            console.error("Document room startup documents fallback:", error);
+            startupDocuments = [];
         }
 
         let conversionRows = [];
-        if (await tableExists(pool, "conversion_events")) {
-            const hasUpdatedArticles = await columnExists(pool, "conversion_events", "updated_articles_document_id");
-            const hasShareholderRegister = await columnExists(pool, "conversion_events", "shareholder_register_document_id");
-            const hasCapitalConfirmation = await columnExists(pool, "conversion_events", "capital_confirmation_document_id");
-            const hasAltinnPackage = await columnExists(pool, "conversion_events", "altinn_package_document_id");
+        try {
+            if (await tableExists(pool, "conversion_events")) {
+                const hasUpdatedArticles = await columnExists(pool, "conversion_events", "updated_articles_document_id");
+                const hasShareholderRegister = await columnExists(pool, "conversion_events", "shareholder_register_document_id");
+                const hasCapitalConfirmation = await columnExists(pool, "conversion_events", "capital_confirmation_document_id");
+                const hasAltinnPackage = await columnExists(pool, "conversion_events", "altinn_package_document_id");
 
-            const [rows] = await pool.query(
-                `
-                SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
-                       , ${hasUpdatedArticles ? "updated_articles_document_id" : "NULL AS updated_articles_document_id"}
-                       , ${hasShareholderRegister ? "shareholder_register_document_id" : "NULL AS shareholder_register_document_id"}
-                       , ${hasCapitalConfirmation ? "capital_confirmation_document_id" : "NULL AS capital_confirmation_document_id"}
-                       , ${hasAltinnPackage ? "altinn_package_document_id" : "NULL AS altinn_package_document_id"}
-                FROM conversion_events
-                WHERE startup_id = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
-                `,
-                [startupId]
-            );
-            conversionRows = rows;
+                const [rows] = await pool.query(
+                    `
+                    SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
+                           , ${hasUpdatedArticles ? "updated_articles_document_id" : "NULL AS updated_articles_document_id"}
+                           , ${hasShareholderRegister ? "shareholder_register_document_id" : "NULL AS shareholder_register_document_id"}
+                           , ${hasCapitalConfirmation ? "capital_confirmation_document_id" : "NULL AS capital_confirmation_document_id"}
+                           , ${hasAltinnPackage ? "altinn_package_document_id" : "NULL AS altinn_package_document_id"}
+                    FROM conversion_events
+                    WHERE startup_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    `,
+                    [startupId]
+                );
+                conversionRows = rows;
+            }
+        } catch (error) {
+            console.error("Document room conversion rows fallback:", error);
+            conversionRows = [];
         }
 
         const conversion = conversionRows[0] || null;
-        const existingShareholdersTask = conversion
-            ? await getOrCreateExistingShareholderTask(pool, startupId)
-            : null;
+        let existingShareholdersTask = null;
+        try {
+            existingShareholdersTask = conversion
+                ? await getOrCreateExistingShareholderTask(pool, startupId)
+                : null;
+        } catch (error) {
+            console.error("Document room existing shareholders fallback:", error);
+            existingShareholdersTask = null;
+        }
         const existingShareholdersTaskComplete = Boolean(
             existingShareholdersTask &&
             Number(existingShareholdersTask.total || 0) > 0 &&
