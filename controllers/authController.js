@@ -116,7 +116,13 @@ export const sendStartupRegistrationCode = async (req, res) => {
       expiresAt
     });
   } catch (error) {
-    console.error("Send startup registration code error:", error);
+    console.error("Send startup registration code error:", {
+      message: error?.message || String(error),
+      email: String(req.body?.email || "").trim().toLowerCase(),
+      hasResendKey: Boolean(String(process.env.RESEND_API_KEY || process.env.RESEND_KEY || "").trim()),
+      hasEmailFrom: Boolean(String(process.env.EMAIL_FROM || process.env.RESEND_FROM || process.env.FROM_EMAIL || process.env.MAIL_FROM || "").trim()),
+      environment: process.env.NODE_ENV || "development"
+    });
     res.status(500).json({ success: false, error: "Kunne ikke sende kode akkurat nå." });
   } finally {
     connection.release();

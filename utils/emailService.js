@@ -2,9 +2,17 @@ function isProduction() {
   return String(process.env.NODE_ENV || "").toLowerCase() === "production";
 }
 
+function firstNonEmptyEnv(...keys) {
+  for (const key of keys) {
+    const value = String(process.env[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
 export async function sendEmail({ to, subject, html, text }) {
-  const resendApiKey = process.env.RESEND_API_KEY;
-  const fromEmail = process.env.EMAIL_FROM;
+  const resendApiKey = firstNonEmptyEnv("RESEND_API_KEY", "RESEND_KEY");
+  const fromEmail = firstNonEmptyEnv("EMAIL_FROM", "RESEND_FROM", "FROM_EMAIL", "MAIL_FROM");
 
   if (!to || !subject) {
     throw new Error("Email requires recipient and subject");
@@ -35,7 +43,7 @@ export async function sendEmail({ to, subject, html, text }) {
   }
 
   if (isProduction()) {
-    throw new Error("Email provider is not configured. Set RESEND_API_KEY and EMAIL_FROM.");
+    throw new Error("Email provider is not configured. Set RESEND_API_KEY and EMAIL_FROM (or RESEND_FROM).");
   }
 
   console.log("=== AUTH EMAIL PREVIEW ===");

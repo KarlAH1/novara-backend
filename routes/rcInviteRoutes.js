@@ -260,7 +260,13 @@ router.post("/access-code/send/:token", async (req, res) => {
       expiresAt
     });
   } catch (err) {
-    console.error("Send investor invite access code failed:", err);
+    console.error("Send investor invite access code failed:", {
+      message: err?.message || String(err),
+      email: String(req.body?.email || "").trim().toLowerCase(),
+      hasResendKey: Boolean(String(process.env.RESEND_API_KEY || process.env.RESEND_KEY || "").trim()),
+      hasEmailFrom: Boolean(String(process.env.EMAIL_FROM || process.env.RESEND_FROM || process.env.FROM_EMAIL || process.env.MAIL_FROM || "").trim()),
+      environment: process.env.NODE_ENV || "development"
+    });
     res.status(500).json({ error: "Kunne ikke sende kode akkurat nå." });
   } finally {
     connection.release();
