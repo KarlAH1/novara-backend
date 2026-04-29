@@ -16,6 +16,28 @@ function cleanClauseText(value) {
   return normalizeText(String(value || "").replace(/^§\s*\d+[^\n]*\n?/i, ""));
 }
 
+function extractMunicipality(sectionText) {
+  const section = normalizeText(sectionText);
+  if (!section) return null;
+
+  const normalizedLine = section.replace(/\n+/g, " ");
+  const patterns = [
+    /forretningskommune(?:n)?(?: er)?\s+([^.]+?)(?:\.)?$/i,
+    /forretningskontor(?:et)?(?: er)?\s+(?:i\s+)?([^.]+?)(?:\.)?$/i,
+    /har\s+(?:sin\s+)?forretningsadresse\s+i\s+([^.]+?)(?:\.)?$/i,
+    /(?:i|på)\s+([A-ZÆØÅa-zæøå \-]+ kommune)(?:\.)?$/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedLine.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return cleanClauseText(section) || null;
+}
+
 function normalizeNumber(value) {
   const digits = String(value || "").replace(/[^\d]/g, "");
   return digits ? Number(digits) : null;
@@ -102,7 +124,6 @@ export function parseArticlesText(rawText) {
   const titleMatch = text.match(/VEDTEKTER\s+([^\n]+)/i);
   const orgMatch = text.match(/Org\.?\s*nr\.?:?\s*([0-9 ]{9,})/i);
   const amendedMatch = text.match(/Sist endret:?\s*([^\n]+)/i);
-  const municipalityMatch = section2.match(/forretningskommune(?:n)?(?: er)?\s+([^.]+)\.?/i);
   const purposeMatch = section3.match(/virksomhet(?:en)?(?: er)?\s+([\s\S]+)$/i);
   const shareCapitalMatch = section4.match(/aksjekapital(?:en)?(?: er)?\s*NOK\s*([\d .]+)/i);
   const shareCountMatch = section4.match(/fordelt på\s*([\d .]+)\s*aksjer/i);
@@ -112,7 +133,7 @@ export function parseArticlesText(rawText) {
     company_name: titleMatch?.[1]?.trim() || null,
     organization_number: orgMatch ? orgMatch[1].replace(/\s+/g, "") : null,
     last_amended_date: amendedMatch?.[1]?.trim() || null,
-    municipality: municipalityMatch?.[1]?.trim() || null,
+    municipality: extractMunicipality(section2),
     business_purpose: purposeMatch ? cleanClauseText(purposeMatch[1]) : (section3 ? cleanClauseText(section3) : null),
     share_capital_amount: normalizeNumber(shareCapitalMatch?.[1]),
     share_count: normalizeNumber(shareCountMatch?.[1]),

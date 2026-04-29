@@ -10,6 +10,7 @@ import {
   sendVerificationEmail
 } from "../utils/authEmailFlow.js";
 import { createExpiry, createRawToken, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
+import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import {
   buildVippsAuthorizationUrl,
   createVippsState,
@@ -313,6 +314,14 @@ export const register = async (req, res) => {
       role
     };
     const token = createAuthToken(user);
+
+    await sendTelegramAdminAlert("Ny startup registrert", [
+      `Navn: ${name}`,
+      `E-post: ${email}`,
+      `Selskap: ${company.name || "-"}`,
+      `Orgnr: ${company.orgnr || "-"}`,
+      `Rollematch: ${roleCheckStatus === "matched" ? "Automatisk" : "Manuell vurdering"}`
+    ]);
 
     res.status(201).json({
       success: true,

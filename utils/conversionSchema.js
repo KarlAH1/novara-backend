@@ -112,6 +112,48 @@ export async function ensureConversionSchema() {
     } else if (!(await columnExists(connection, "conversion_par_value_requests", "reference"))) {
       await connection.query("ALTER TABLE conversion_par_value_requests ADD COLUMN reference VARCHAR(128) NULL AFTER par_value_amount");
     }
+
+    const existingShareholdersExists = await tableExists(connection, "conversion_existing_shareholders");
+    if (!existingShareholdersExists) {
+      await connection.query(`
+        CREATE TABLE conversion_existing_shareholders (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          conversion_event_id INT NOT NULL,
+          emission_shareholder_id INT NULL,
+          shareholder_name VARCHAR(255) NOT NULL,
+          birth_date DATE NULL,
+          digital_address VARCHAR(255) NULL,
+          residential_address VARCHAR(255) NULL,
+          share_count INT NULL,
+          share_numbers VARCHAR(255) NULL,
+          share_class VARCHAR(32) NULL,
+          display_order INT NOT NULL DEFAULT 0,
+          completed_at DATETIME NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_conversion_existing_shareholders_event (conversion_event_id),
+          UNIQUE KEY uniq_conversion_existing_shareholder (conversion_event_id, emission_shareholder_id)
+        )
+      `);
+    } else {
+      const additions = [
+        ["emission_shareholder_id", "ALTER TABLE conversion_existing_shareholders ADD COLUMN emission_shareholder_id INT NULL AFTER conversion_event_id"],
+        ["birth_date", "ALTER TABLE conversion_existing_shareholders ADD COLUMN birth_date DATE NULL AFTER shareholder_name"],
+        ["digital_address", "ALTER TABLE conversion_existing_shareholders ADD COLUMN digital_address VARCHAR(255) NULL AFTER birth_date"],
+        ["residential_address", "ALTER TABLE conversion_existing_shareholders ADD COLUMN residential_address VARCHAR(255) NULL AFTER digital_address"],
+        ["share_count", "ALTER TABLE conversion_existing_shareholders ADD COLUMN share_count INT NULL AFTER residential_address"],
+        ["share_numbers", "ALTER TABLE conversion_existing_shareholders ADD COLUMN share_numbers VARCHAR(255) NULL AFTER share_count"],
+        ["share_class", "ALTER TABLE conversion_existing_shareholders ADD COLUMN share_class VARCHAR(32) NULL AFTER share_numbers"],
+        ["display_order", "ALTER TABLE conversion_existing_shareholders ADD COLUMN display_order INT NOT NULL DEFAULT 0 AFTER share_class"],
+        ["completed_at", "ALTER TABLE conversion_existing_shareholders ADD COLUMN completed_at DATETIME NULL AFTER display_order"]
+      ];
+
+      for (const [columnName, sql] of additions) {
+        if (!(await columnExists(connection, "conversion_existing_shareholders", columnName))) {
+          await connection.query(sql);
+        }
+      }
+    }
   } finally {
     connection.release();
   }

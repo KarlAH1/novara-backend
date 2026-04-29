@@ -11,6 +11,7 @@ export const STARTUP_PLAN_DEFINITIONS = {
       "Dokumentlagring",
       "Dokumentproduksjon",
       "Konverteringspakke",
+      "Revisorbekreftelse til Altinn",
       "Oppfolging av status og dokumentflyt",
       "Assistanse ved spørsmål"
     ],

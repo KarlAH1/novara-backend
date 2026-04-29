@@ -1,5 +1,4 @@
 const STATUS_REASON_MAP = {
-  target_reached: "TARGET_REACHED",
   manually_closed: "CLOSED",
   conversion_downloaded: "CLOSED",
   expired: "EXPIRED",
@@ -7,7 +6,6 @@ const STATUS_REASON_MAP = {
 };
 
 const CLOSED_MESSAGE_MAP = {
-  target_reached: "Målbeløpet er nådd. Det er ikke lenger mulig å investere i denne runden.",
   manually_closed: "Runden er avsluttet.",
   conversion_downloaded: "Runden er avsluttet etter at dokumentpakken ble lastet ned.",
   expired: "Runden er utløpt.",
@@ -15,7 +13,6 @@ const CLOSED_MESSAGE_MAP = {
 };
 
 const SAFE_CLOSED_REASONS = new Set([
-  "target_reached",
   "manually_closed",
   "conversion_downloaded",
   "expired",
@@ -36,12 +33,11 @@ export function buildRoundAvailability(round = {}) {
     : null;
   const remainingCapacity = Math.max(targetAmount - committedAmount, 0);
   const targetReached = targetAmount > 0 && committedAmount >= targetAmount;
-  const isClosed = closedReason === "target_reached"
-    || closedReason === "manually_closed"
+  const isClosed = closedReason === "manually_closed"
     || closedReason === "conversion_downloaded"
     || closedReason === "expired"
     || closedReason === "cancelled";
-  const canInvest = !isClosed && Number(round.open) === 1 && remainingCapacity > 0;
+  const canInvest = !isClosed && !targetReached && Number(round.open) === 1 && remainingCapacity > 0;
 
   return {
     targetAmount,
@@ -54,10 +50,10 @@ export function buildRoundAvailability(round = {}) {
     canInvest,
     status: isClosed
       ? (STATUS_REASON_MAP[closedReason] || "CLOSED")
-      : (Number(round.open) === 1 ? "LIVE" : "DRAFT"),
+      : (targetReached ? "TARGET_REACHED" : (Number(round.open) === 1 ? "LIVE" : "DRAFT")),
     message: isClosed
       ? (CLOSED_MESSAGE_MAP[closedReason] || "Runden er avsluttet.")
-      : null
+      : (targetReached ? "Målbeløpet er nådd. Runden er klar for trigger event og videre konverteringsflyt." : null)
   };
 }
 
@@ -169,30 +165,16 @@ export async function syncEmissionRoundAvailability(connection, roundId, options
     round.closed_reason !== "manually_closed" &&
     round.closed_reason !== "conversion_downloaded"
   ) {
-    if (targetReached && round.closed_reason !== "target_reached") {
-      await updateRoundClosure(connection, roundId, "target_reached", columns);
-    } else if (!targetReached && round.closed_reason === "target_reached") {
-      await reopenRoundAfterCapacityDrop(connection, roundId, columns);
-    } else if (!targetReached && expired && round.closed_reason !== "expired") {
+    if (!targetReached && expired && round.closed_reason !== "expired") {
       await updateRoundClosure(connection, roundId, "expired", columns);
     }
   }
 
   if (
-    (targetReached && round.closed_reason !== "target_reached") ||
-    (!targetReached && round.closed_reason === "target_reached") ||
     (!targetReached && expired && round.closed_reason !== "expired")
   ) {
     const [updatedRows] = await connection.query(select, [roundId]);
     round = updatedRows[0];
-  }
-
-  if (!round.closed_reason) {
-    if (targetReached) {
-      round.closed_reason = "target_reached";
-    } else if (expired && Number(round.open) === 0) {
-      round.closed_reason = "expired";
-    }
   }
 
   return {

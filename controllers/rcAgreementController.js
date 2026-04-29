@@ -186,7 +186,6 @@ export const buildRcTemplateData = (input = {}) => {
         "attachment.snapshot.generated_at": formatDateTimeLabel(generatedAt),
         "attachment.snapshot.locked_at": formatDateTimeLabel(input.document_locked_at),
         "attachment.calc.model": input.valuation_cap ? "Cap / discount-modell" : "Discount-modell",
-        "attachment.calc.pool_note": "Dersom runden senere gjennomføres med pool-modell, beregnes avtalepartens forholdsmessige andel ut fra samlet signert og finansiert RC-volum.",
         "attachment.calc.discount": `${input.discount_rate || 0}%`,
         "attachment.calc.cap": input.valuation_cap ? formatNOK(input.valuation_cap) : "Ingen",
         "attachment.calc.par_value_note": "Paribeløpet innbetales kontant ved tegning av konverteringsaksjer, mens resterende tegningsbeløp forutsettes gjort opp ved motregning av investorens rentefrie krav.",

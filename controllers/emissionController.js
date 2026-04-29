@@ -7,6 +7,7 @@ import {
 } from "../utils/startupContext.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { sendRoundActivatedEmail } from "../utils/notificationEmailFlow.js";
+import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
@@ -56,6 +57,77 @@ const normalizeShareholders = (rawShareholders) => {
       ownership_percent: Number(item?.ownership_percent)
     }))
     .filter((item) => item.name && Number.isFinite(item.ownership_percent) && item.ownership_percent > 0);
+};
+
+let rcAgreementColumnsPromise;
+
+const getRcAgreementColumns = async () => {
+  if (!rcAgreementColumnsPromise) {
+    rcAgreementColumnsPromise = pool
+      .query("SHOW COLUMNS FROM rc_agreements")
+      .then(([columnRows]) => new Set(columnRows.map((column) => column.Field)));
+  }
+
+  return rcAgreementColumnsPromise;
+};
+
+const shouldReopenDownloadedConversionRound = async (connection, startupId, roundId) => {
+  if (!roundId) return false;
+
+  const [conversionRows] = await connection.query(
+    `
+    SELECT id, board_document_id, gf_document_id, capital_confirmation_document_id, altinn_package_document_id
+    FROM conversion_events
+    WHERE startup_id = ? AND round_id = ?
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [startupId, roundId]
+  );
+
+  const conversion = conversionRows[0];
+  if (!conversion?.id) {
+    return false;
+  }
+
+  const [parValueRows] = await connection.query(
+    `
+    SELECT COUNT(*) AS total_requests,
+           SUM(CASE WHEN paid_confirmed_at IS NOT NULL THEN 1 ELSE 0 END) AS paid_requests
+    FROM conversion_par_value_requests
+    WHERE conversion_event_id = ?
+    `,
+    [conversion.id]
+  );
+
+  const totalRequests = Number(parValueRows[0]?.total_requests || 0);
+  const paidRequests = Number(parValueRows[0]?.paid_requests || 0);
+  if (totalRequests === 0 || paidRequests < totalRequests) {
+    return true;
+  }
+
+  const requiredDocIds = [
+    conversion.board_document_id,
+    conversion.gf_document_id,
+    conversion.capital_confirmation_document_id,
+    conversion.altinn_package_document_id
+  ].filter(Boolean);
+
+  if (requiredDocIds.length < 4) {
+    return true;
+  }
+
+  const [docRows] = await connection.query(
+    `
+    SELECT id, status
+    FROM documents
+    WHERE id IN (?)
+    `,
+    [requiredDocIds]
+  );
+
+  const lockedCount = docRows.filter((row) => String(row.status || "").toUpperCase() === "LOCKED").length;
+  return lockedCount < requiredDocIds.length;
 };
 export const startEmission = async (req, res) => {
     try {
@@ -306,7 +378,6 @@ export const getPreviousEmissions = async (req, res) => {
                 e.trigger_period,
                 e.deadline,
                 e.open,
-                e.status,
                 e.closed_at,
                 e.closed_reason,
                 e.created_at,
@@ -348,6 +419,18 @@ export const getPreviousEmissions = async (req, res) => {
 
         const roundIds = rounds.map((round) => round.id);
         const placeholders = roundIds.map(() => "?").join(",");
+        const rcAgreementColumns = await getRcAgreementColumns();
+        const investorSignedAtSelect = rcAgreementColumns.has("investor_signed_at")
+            ? "a.investor_signed_at"
+            : rcAgreementColumns.has("signed_at")
+                ? "a.signed_at AS investor_signed_at"
+                : "NULL AS investor_signed_at";
+        const startupSignedAtSelect = rcAgreementColumns.has("startup_signed_at")
+            ? "a.startup_signed_at"
+            : "NULL AS startup_signed_at";
+        const paymentConfirmedAtSelect = rcAgreementColumns.has("payment_confirmed_by_startup_at")
+            ? "a.payment_confirmed_by_startup_at"
+            : "NULL AS payment_confirmed_by_startup_at";
         const [agreements] = await pool.query(`
             SELECT
                 a.id,
@@ -356,10 +439,10 @@ export const getPreviousEmissions = async (req, res) => {
                 a.investor_id,
                 a.investment_amount,
                 a.status,
-                a.investor_signed_at,
-                a.startup_signed_at,
+                ${investorSignedAtSelect},
+                ${startupSignedAtSelect},
                 a.activated_at,
-                a.payment_confirmed_by_startup_at,
+                ${paymentConfirmedAtSelect},
                 a.created_at,
                 investor.name AS investor_name,
                 investor.email AS investor_email
@@ -585,6 +668,12 @@ export const activateEmission = async (req, res) => {
         roundId: emissionId
       });
 
+      await sendTelegramAdminAlert("Startup har startet runde", [
+        `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
+        `Orgnr: ${startupContext.company?.orgnr || "-"}`,
+        `Runde-ID: ${emissionId}`
+      ]);
+
       res.json({ success: true });
 
   } catch (err) {
@@ -610,7 +699,48 @@ export const getActiveEmission = async (req, res) => {
       `, [startupId]);
 
       if (!rows.length) {
-          return res.json(null);
+          const [fallbackRows] = await pool.query(`
+              SELECT *
+              FROM emission_rounds
+              WHERE startup_id = ?
+                AND closed_reason = 'conversion_downloaded'
+              ORDER BY id DESC
+              LIMIT 1
+          `, [startupId]);
+
+          if (!fallbackRows.length) {
+              return res.json(null);
+          }
+
+          const fallbackRound = fallbackRows[0];
+          const shouldReopen = await shouldReopenDownloadedConversionRound(pool, startupId, fallbackRound.id);
+
+          if (!shouldReopen) {
+              return res.json(null);
+          }
+
+          await pool.query(
+            `
+            UPDATE emission_rounds
+            SET open = 1, closed_at = NULL, closed_reason = NULL
+            WHERE id = ? AND startup_id = ?
+            `,
+            [fallbackRound.id, startupId]
+          );
+
+          await pool.query(
+            "UPDATE startup_profiles SET is_raising = 1 WHERE user_id = ?",
+            [startupId]
+          ).catch(() => {});
+
+          let reopenedEmission = null;
+          try {
+            reopenedEmission = await syncEmissionRoundAvailability(pool, fallbackRound.id);
+          } catch (availabilityError) {
+            console.error("Reopened emission availability sync error:", availabilityError);
+          }
+
+          return res.json(reopenedEmission || { ...fallbackRound, open: 1, closed_reason: null, closed_at: null });
       }
 
       let emission = null;

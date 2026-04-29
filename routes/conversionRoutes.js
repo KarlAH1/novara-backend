@@ -19,6 +19,8 @@ import {
   sendDocumentSigningRequestEmail,
   sendRoundClosedEmail
 } from "../utils/notificationEmailFlow.js";
+import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
+import { getEmissionRoundColumns } from "../utils/emissionRoundState.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -498,6 +500,107 @@ function buildShareholderRegisterRows(existingShareholders, currentShareCount, i
   });
 }
 
+function buildExistingShareholderSeedRows(existingShareholders, currentShareCount) {
+  const normalizedCurrentShareCount = Number(currentShareCount || 0);
+  if (!Array.isArray(existingShareholders) || !existingShareholders.length || normalizedCurrentShareCount <= 0) {
+    return [];
+  }
+
+  let allocatedShares = 0;
+
+  return existingShareholders.map((holder, index) => {
+    const isLast = index === existingShareholders.length - 1;
+    const percentage = Number(holder.ownership_percent || 0);
+    let shareCount = Math.floor((normalizedCurrentShareCount * percentage) / 100);
+
+    if (isLast) {
+      shareCount = Math.max(normalizedCurrentShareCount - allocatedShares, 0);
+    }
+
+    allocatedShares += shareCount;
+
+    return {
+      emission_shareholder_id: Number(holder.id || 0) || null,
+      shareholder_name: holder.shareholder_name || holder.name || `Aksjonær ${index + 1}`,
+      share_count: shareCount,
+      display_order: index + 1
+    };
+  });
+}
+
+async function ensureExistingShareholderTaskRows(connection, conversionId, roundId, currentShareCount) {
+  if (!conversionId || !roundId) {
+    return [];
+  }
+
+  const [existingTaskRows] = await connection.query(
+    `
+    SELECT id, conversion_event_id, emission_shareholder_id, shareholder_name, birth_date,
+           digital_address, residential_address, share_count, share_numbers, share_class,
+           display_order, completed_at
+    FROM conversion_existing_shareholders
+    WHERE conversion_event_id = ?
+    ORDER BY display_order ASC, id ASC
+    `,
+    [conversionId]
+  );
+
+  if (existingTaskRows.length) {
+    return existingTaskRows;
+  }
+
+  const [shareholderRows] = await connection.query(
+    `
+    SELECT id, shareholder_name, ownership_percent
+    FROM emission_shareholders
+    WHERE emission_id = ?
+    ORDER BY id ASC
+    `,
+    [roundId]
+  );
+
+  const seedRows = buildExistingShareholderSeedRows(shareholderRows, currentShareCount);
+  for (const row of seedRows) {
+    await connection.query(
+      `
+      INSERT INTO conversion_existing_shareholders
+      (conversion_event_id, emission_shareholder_id, shareholder_name, share_count, share_class, display_order)
+      VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [conversionId, row.emission_shareholder_id, row.shareholder_name, row.share_count, "A", row.display_order]
+    );
+  }
+
+  const [createdRows] = await connection.query(
+    `
+    SELECT id, conversion_event_id, emission_shareholder_id, shareholder_name, birth_date,
+           digital_address, residential_address, share_count, share_numbers, share_class,
+           display_order, completed_at
+    FROM conversion_existing_shareholders
+    WHERE conversion_event_id = ?
+    ORDER BY display_order ASC, id ASC
+    `,
+    [conversionId]
+  );
+
+  return createdRows;
+}
+
+function isExistingShareholderTaskComplete(rows = []) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return true;
+  }
+
+  return rows.every((row) =>
+    String(row.shareholder_name || "").trim() &&
+    String(row.birth_date || "").trim() &&
+    String(row.digital_address || "").trim() &&
+    String(row.residential_address || "").trim() &&
+    Number(row.share_count || 0) > 0 &&
+    String(row.share_class || "").trim()
+  );
+}
+
 function buildShareholderRegisterHtml({ companyName, orgnr, date, totalShareCapital, totalShareCount, nominalValue, shareClass, rows }) {
   const templatePath = path.join(templatesDir, "eierregister-template.html");
   let template = fs.readFileSync(templatePath, "utf8");
@@ -809,7 +912,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
   if (!freshConversion.gf_document_id) {
     const [legalRows] = await connection.query(
       `
-      SELECT secretary_name, secretary_email
+      SELECT chair_name, secretary_name, secretary_email
       FROM startup_legal_data
       WHERE startup_id = ?
       ORDER BY created_at DESC
@@ -819,6 +922,15 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     );
 
     const legalData = legalRows[0] || {};
+    const chairNameCandidate = String(legalData.chair_name || "").trim();
+    const resolvedChairName = (() => {
+      if (!chairNameCandidate) return user.name || "Møteleder";
+      const normalized = chairNameCandidate.toLowerCase();
+      if (normalized === "møteleder" || normalized === "moteleder") {
+        return user.name || chairNameCandidate;
+      }
+      return chairNameCandidate;
+    })();
     const secretaryName = String(legalData.secretary_name || "").trim() || "Protokollunderskriver";
     const secretaryEmail = String(legalData.secretary_email || "").trim().toLowerCase();
     const secretaryUser = await findUserByEmail(connection, secretaryEmail);
@@ -861,7 +973,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
       .replace(/{{round_id}}/g, String(round.id))
       .replace(/{{date}}/g, today)
-      .replace(/{{chair_name}}/g, user.name || "Møteleder")
+      .replace(/{{chair_name}}/g, resolvedChairName)
       .replace(/{{secretary_name}}/g, secretaryName)
       .replace(/{{pre_capital_amount}}/g, formatCurrency(preCapitalAmount))
       .replace(/{{pre_share_count}}/g, preShareCount.toLocaleString("no-NO"))
@@ -929,7 +1041,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       fallbackData: {
         company_name: companyName,
         orgnr,
-        municipality: "Ikke satt",
+        municipality: basis.articles_document?.parsed_fields?.municipality || "",
         business_purpose: "Selskapets virksomhet følger det som er registrert for selskapet."
       },
       nextCapitalData: {
@@ -954,16 +1066,15 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     freshConversion.updated_articles_document_id = articlesId;
   }
 
-  if (!freshConversion.shareholder_register_document_id) {
-    const [shareholderRows] = await connection.query(
-      `
-      SELECT shareholder_name, ownership_percent
-      FROM emission_shareholders
-      WHERE emission_id = ?
-      ORDER BY id ASC
-      `,
-      [round.id]
-    );
+  const existingShareholderTaskRows = await ensureExistingShareholderTaskRows(
+    connection,
+    freshConversion.id,
+    round.id,
+    basis.current_share_count
+  );
+  const existingShareholderTaskComplete = isExistingShareholderTaskComplete(existingShareholderTaskRows);
+
+  if (!freshConversion.shareholder_register_document_id && existingShareholderTaskComplete) {
     const investorIds = calculations.investors
       .map((item) => Number(item.investor_id || 0))
       .filter(Boolean);
@@ -992,15 +1103,27 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       ])
     );
 
-    const shareholderRegisterRows = buildShareholderRegisterRows(
-      shareholderRows,
-      basis.current_share_count,
+    const seededExistingRows = existingShareholderTaskRows.map((row) => ({
+      shareholder_name: row.shareholder_name,
+      identifier_value: row.birth_date ? formatDateLabel(row.birth_date) : "",
+      digital_address: row.digital_address || "",
+      residential_address: row.residential_address || "",
+      share_class: row.share_class || "A",
+      share_count: Number(row.share_count || 0),
+      share_range_label: row.share_numbers || "Fastsettes ved ferdigstillelse",
+      entry_date_display: ""
+    }));
+
+    const investorRows = buildShareholderRegisterRows(
+      [],
+      0,
       calculations.investors.map((investor) => ({
         ...investor,
         legal_profile: investorLegalProfiles.get(Number(investor.investor_id)) || null,
         entry_date: freshConversion.conversion_date || new Date().toISOString()
       }))
     );
+    const shareholderRegisterRows = [...seededExistingRows, ...investorRows];
 
     const shareholderRegisterHtml = buildShareholderRegisterHtml({
       companyName,
@@ -1142,7 +1265,7 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
   );
 }
 
-async function buildConversionState(connection, startupContext, user) {
+export async function buildConversionState(connection, startupContext, user) {
   const startupId = startupContext.startupUserId;
   const round = await getLatestRoundForStartup(connection, startupId);
   if (!round) {
@@ -1233,9 +1356,19 @@ async function buildConversionState(connection, startupContext, user) {
   const shareholderDoc = conversion?.shareholder_register_document_id ? documentsById[conversion.shareholder_register_document_id] || null : null;
   const confirmationDoc = conversion?.capital_confirmation_document_id ? documentsById[conversion.capital_confirmation_document_id] || null : null;
   const packageDoc = conversion?.altinn_package_document_id ? documentsById[conversion.altinn_package_document_id] || null : null;
+  const approvalGate = await evaluateTriggerApproval(connection, round, "new_priced_round");
 
   return {
     round,
+    approval_gate: {
+      required_before_start: Boolean(
+        approvalGate.requiresAdminApproval &&
+        (!conversion?.id || !conversion.admin_approved_at)
+      ),
+      target_reached_at: approvalGate.targetReachedAt ? approvalGate.targetReachedAt.toISOString() : null,
+      blocked_until: approvalGate.approvalBlockedUntil ? approvalGate.approvalBlockedUntil.toISOString() : null,
+      reason: approvalGate.reason || null
+    },
     conversion_basis: conversionData.basis,
     articles_basis: conversionData.basis.articles_document,
     conversion: conversion
@@ -1425,6 +1558,14 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
       startupName: startupContext.company?.company_name || req.user.name || "",
       triggerLabel: getTriggerLabel(triggerType)
     });
+    await sendTelegramAdminAlert("Trigger event registrert", [
+      `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
+      `Orgnr: ${startupContext.company?.orgnr || "-"}`,
+      `Trigger: ${getTriggerLabel(triggerType)}`,
+      triggerApproval.requiresAdminApproval
+        ? `Status: Venter admin-godkjenning`
+        : `Status: Startet`
+    ]);
     res.status(triggerApproval.requiresAdminApproval ? 202 : 201).json({
       ...state,
       adminApproval: {
@@ -1459,12 +1600,23 @@ router.post("/context", auth, requireRole(["startup"]), async (req, res) => {
       return res.status(400).json({ error: "Registrer trigger event først." });
     }
 
+    const previousThirdPartyEmail = String(conversion.third_party_email || "").trim().toLowerCase();
+
     await persistConversionContext(connection, conversion.id, {
       conversionDate: req.body.conversionDate,
       thirdPartyName: req.body.thirdPartyName,
       thirdPartyEmail: req.body.thirdPartyEmail,
       pricedRoundSharePrice: req.body.pricedRoundSharePrice
     });
+
+    const nextThirdPartyEmail = String(req.body.thirdPartyEmail || "").trim().toLowerCase();
+    if (nextThirdPartyEmail && nextThirdPartyEmail !== previousThirdPartyEmail) {
+      await sendTelegramAdminAlert("Revisorbekreftelse venter", [
+        `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
+        `Orgnr: ${startupContext.company?.orgnr || "-"}`,
+        `Revisor e-post: ${nextThirdPartyEmail}`
+      ]);
+    }
 
     const state = await buildConversionState(connection, startupContext, req.user);
     res.json(state);
@@ -1645,24 +1797,6 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     const dateLabel = formatDateLabel(new Date()).replace(/\s+/g, "-").toLowerCase();
     const zipName = `${baseName}-konverteringspakke-${dateLabel}.zip`;
 
-    // Close the round so startup can start a new one
-    await connection.query(
-      `UPDATE emission_rounds
-       SET open = 0, closed_at = NOW(), closed_reason = 'conversion_downloaded'
-       WHERE id = ?`,
-      [round.id]
-    );
-
-    await connection.query(
-      "UPDATE startup_profiles SET is_raising = 0 WHERE user_id = ?",
-      [startupId]
-    );
-
-    await sendRoundClosedEmail({
-      startupEmail: req.user.email,
-      startupName: startupContext.company?.company_name || req.user.name || ""
-    });
-
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
 
@@ -1683,13 +1817,135 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
       const safeTitle = makeSafeFilename(doc?.title, item.fallback);
       const filename = `${item.prefix}-${safeTitle}.pdf`;
       // eslint-disable-next-line no-await-in-loop
-      const pdfBuffer = await renderHtmlToPdfBuffer(doc?.html_content || "");
+      const pdfOptions = doc?.type === "CONVERSION_SHARE_REGISTER"
+        ? {
+            landscape: true,
+            margin: {
+              top: "18px",
+              right: "18px",
+              bottom: "18px",
+              left: "18px"
+            }
+          }
+        : {};
+      const pdfBuffer = await renderHtmlToPdfBuffer(doc?.html_content || "", pdfOptions);
       archive.append(pdfBuffer, { name: filename });
     }
 
     archive.finalize();
   } catch (err) {
     console.error("Download conversion package error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
+
+router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => {
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupId = startupContext.startupUserId;
+    const round = await getLatestRoundForStartup(connection, startupId);
+
+    if (!round) {
+      return res.status(404).json({ error: "Fant ingen runde å lukke." });
+    }
+
+    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    if (!conversion?.altinn_package_document_id) {
+      await connection.rollback();
+      return res.status(400).json({ error: "Runden kan først lukkes etter at konverteringspakken er klargjort." });
+    }
+    const columns = await getEmissionRoundColumns(connection);
+    const roundUpdates = ["open = 0"];
+    const roundParams = [];
+
+    if (columns.has("status")) {
+      roundUpdates.push("status = ?");
+      roundParams.push("CLOSED");
+    }
+
+    if (columns.has("closed_reason")) {
+      roundUpdates.push("closed_reason = ?");
+      roundParams.push("conversion_downloaded");
+    }
+
+    if (columns.has("closed_at")) {
+      roundUpdates.push("closed_at = NOW()");
+    }
+
+    roundParams.push(round.id);
+    await connection.query(
+      `UPDATE emission_rounds SET ${roundUpdates.join(", ")} WHERE id = ?`,
+      roundParams
+    );
+
+    await connection.query(
+      `
+      UPDATE startup_profiles
+      SET is_raising = 0
+      WHERE user_id = ?
+      `,
+      [startupId]
+    );
+
+    const [[updatedRound]] = await connection.query(
+      `
+      SELECT open, closed_reason
+      FROM emission_rounds
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [round.id]
+    );
+
+    const [[updatedProfile]] = await connection.query(
+      `
+      SELECT is_raising
+      FROM startup_profiles
+      WHERE user_id = ?
+      LIMIT 1
+      `,
+      [startupId]
+    );
+
+    if (
+      !updatedRound ||
+      Number(updatedRound.open) !== 0 ||
+      String(updatedRound.closed_reason || "") !== "conversion_downloaded" ||
+      Number(updatedProfile?.is_raising ?? 1) !== 0
+    ) {
+      await connection.rollback();
+      return res.status(500).json({ error: "Runden ble ikke lukket korrekt. Prøv igjen." });
+    }
+
+    await connection.commit();
+
+    try {
+      await sendRoundClosedEmail({
+        startupName: startupContext.company?.company_name || "Startup",
+        startupEmail: req.user.email,
+        amountRaised: Number(round.amount_raised || round.committed_amount || 0),
+        closedReason: "conversion_downloaded"
+      });
+    } catch (mailErr) {
+      console.error("Send close round email error:", mailErr);
+    }
+
+    res.json({
+      success: true,
+      message: "Runden er nå lukket.",
+      closed: true
+    });
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch {}
+    console.error("Close conversion round error:", err);
     res.status(500).json({ error: "Internal server error" });
   } finally {
     connection.release();

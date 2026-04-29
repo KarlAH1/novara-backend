@@ -9,6 +9,7 @@ import {
     getStartupPlanDefinition,
     getStartupPlanSummaryForUser
 } from "../utils/startupPlanAccess.js";
+import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import {
     getCompanyStartupProfile,
     resolveCompanyStartupOwner
@@ -660,6 +661,13 @@ export const startStartupPlanPayment = async (req, res) => {
         );
 
         const summary = await getStartupPlanSummaryForUser(req.user.id);
+
+        await sendTelegramAdminAlert("Startup venter planbetaling", [
+            `Selskap: ${company.company_name || "-"}`,
+            `Orgnr: ${company.orgnr || "-"}`,
+            `Plan: ${openSubscription.plan_code || "normal"}`,
+            `Referanse: ${buildPaymentReference(openSubscription.plan_code, company.company_id)}`
+        ]);
 
         res.json({
             message: "Betalingsinformasjon er klar. Planen aktiveres når Raisium har bekreftet betalingen.",

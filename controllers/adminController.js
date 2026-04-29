@@ -1,4 +1,5 @@
 import pool from "../config/db.js";
+import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { lockDocumentWithSignatures } from "../utils/documentSigning.js";
 
 const REVIEW_ROLES = ["admin"];
@@ -206,9 +207,11 @@ export const adminApproveConversionTrigger = async (req, res) => {
 
     const [rows] = await pool.query(
         `
-        SELECT id, status, requires_admin_approval
-        FROM conversion_events
-        WHERE id = ?
+        SELECT ce.id, ce.status, ce.requires_admin_approval, ce.trigger_type, c.company_name, c.orgnr
+        FROM conversion_events ce
+        LEFT JOIN company_memberships cm ON cm.user_id = ce.startup_id
+        LEFT JOIN companies c ON c.id = cm.company_id
+        WHERE ce.id = ?
         LIMIT 1
         `,
         [conversionId]
@@ -234,6 +237,13 @@ export const adminApproveConversionTrigger = async (req, res) => {
         `,
         [req.user.id, conversionId]
     );
+
+    await sendTelegramAdminAlert("Tidlig trigger godkjent", [
+        `Selskap: ${conversion.company_name || "-"}`,
+        `Orgnr: ${conversion.orgnr || "-"}`,
+        `Trigger: ${conversion.trigger_type || "-"}`,
+        "Status: Godkjent av admin"
+    ]);
 
     res.json({ message: "Trigger event er godkjent. Dokumentflyten kan nå starte." });
 };
@@ -374,6 +384,26 @@ export const adminApprovePlanPayment = async (req, res) => {
         `,
         [getNextAnnualExpiry(), req.user.id, note || null, subscriptionId]
     );
+
+    const [companyRows] = await pool.query(
+        `
+        SELECT c.company_name, c.orgnr, u.email AS startup_email
+        FROM startup_plan_subscriptions s
+        LEFT JOIN companies c ON c.id = s.company_id
+        LEFT JOIN users u ON u.id = s.user_id
+        WHERE s.id = ?
+        LIMIT 1
+        `,
+        [subscriptionId]
+    );
+    const company = companyRows[0] || {};
+
+    await sendTelegramAdminAlert("Planbetaling godkjent", [
+        `Selskap: ${company.company_name || "-"}`,
+        `Orgnr: ${company.orgnr || "-"}`,
+        `E-post: ${company.startup_email || "-"}`,
+        "Status: Aktivert av admin"
+    ]);
 
     res.json({ message: "Betaling godkjent. Startup-planen er aktivert." });
 };
@@ -741,6 +771,20 @@ export const createOwnIssue = async (req, res) => {
         `,
         [issueResult.insertId, userId, userRole, message]
     );
+
+    const [userRows] = await pool.query(
+        "SELECT name, email FROM users WHERE id = ? LIMIT 1",
+        [userId]
+    );
+    const sender = userRows[0] || {};
+
+    await sendTelegramAdminAlert("Ny melding til Raisium", [
+        `Fra: ${sender.name || "-"} (${sender.email || "-"})`,
+        `Rolle: ${userRole || "-"}`,
+        `Kategori: ${issueType}`,
+        `Kilde: ${source}`,
+        `Melding: ${message}`
+    ]);
 
     res.status(201).json({
         success: true,

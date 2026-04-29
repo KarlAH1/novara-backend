@@ -9,6 +9,7 @@ import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 import { lockDocumentWithSignatures } from "../utils/documentSigning.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
+import { buildConversionState } from "./conversionRoutes.js";
 
 const router = express.Router();
 
@@ -21,6 +22,137 @@ const getRcPaymentColumns = async (connection) => {
     const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
     return new Set(columnRows.map((column) => column.Field));
 };
+
+function buildExistingShareholderSeedRows(shareholders, currentShareCount) {
+    const normalizedCurrentShareCount = Number(currentShareCount || 0);
+    if (!Array.isArray(shareholders) || !shareholders.length || normalizedCurrentShareCount <= 0) {
+        return [];
+    }
+
+    let allocatedShares = 0;
+
+    return shareholders.map((holder, index) => {
+        const isLast = index === shareholders.length - 1;
+        const percentage = Number(holder.ownership_percent || 0);
+        let shareCount = Math.floor((normalizedCurrentShareCount * percentage) / 100);
+
+        if (isLast) {
+            shareCount = Math.max(normalizedCurrentShareCount - allocatedShares, 0);
+        }
+
+        allocatedShares += shareCount;
+
+        return {
+            emission_shareholder_id: Number(holder.id || 0) || null,
+            shareholder_name: holder.shareholder_name || `Aksjonær ${index + 1}`,
+            share_count: shareCount,
+            display_order: index + 1
+        };
+    });
+}
+
+function isExistingShareholderTaskComplete(rows = []) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return true;
+    }
+
+    return rows.every((row) =>
+        String(row.shareholder_name || "").trim() &&
+        String(row.birth_date || "").trim() &&
+        String(row.digital_address || "").trim() &&
+        String(row.residential_address || "").trim()
+    );
+}
+
+async function getOrCreateExistingShareholderTask(connection, startupId) {
+    const [conversionRows] = await connection.query(
+        `
+        SELECT id, round_id
+        FROM conversion_events
+        WHERE startup_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        `,
+        [startupId]
+    );
+
+    const conversion = conversionRows[0] || null;
+    if (!conversion?.id || !conversion?.round_id) {
+        return null;
+    }
+
+    const [existingRows] = await connection.query(
+        `
+        SELECT id, emission_shareholder_id, shareholder_name, birth_date, digital_address,
+               residential_address, share_count, share_numbers, share_class, display_order, completed_at
+        FROM conversion_existing_shareholders
+        WHERE conversion_event_id = ?
+        ORDER BY display_order ASC, id ASC
+        `,
+        [conversion.id]
+    );
+
+    let rows = existingRows;
+
+    if (!rows.length) {
+        const [[profileRow]] = await connection.query(
+            `
+            SELECT current_share_count
+            FROM startup_profiles
+            WHERE user_id = ?
+            LIMIT 1
+            `,
+            [startupId]
+        );
+
+        const [shareholderRows] = await connection.query(
+            `
+            SELECT id, shareholder_name, ownership_percent
+            FROM emission_shareholders
+            WHERE emission_id = ?
+            ORDER BY id ASC
+            `,
+            [conversion.round_id]
+        );
+
+        const seedRows = buildExistingShareholderSeedRows(
+            shareholderRows,
+            Number(profileRow?.current_share_count || 0)
+        );
+
+        for (const row of seedRows) {
+            await connection.query(
+                `
+                INSERT INTO conversion_existing_shareholders
+                (conversion_event_id, emission_shareholder_id, shareholder_name, share_count, share_class, display_order)
+                VALUES (?, ?, ?, ?, ?, ?)
+                `,
+                [conversion.id, row.emission_shareholder_id, row.shareholder_name, row.share_count, "A", row.display_order]
+            );
+        }
+
+        const [createdRows] = await connection.query(
+            `
+            SELECT id, emission_shareholder_id, shareholder_name, birth_date, digital_address,
+                   residential_address, share_count, share_numbers, share_class, display_order, completed_at
+            FROM conversion_existing_shareholders
+            WHERE conversion_event_id = ?
+            ORDER BY display_order ASC, id ASC
+            `,
+            [conversion.id]
+        );
+        rows = createdRows;
+    }
+
+    return {
+        conversion_event_id: conversion.id,
+        round_id: conversion.round_id,
+        rows,
+        total: rows.length,
+        completed: rows.filter((row) => row.completed_at).length,
+        is_complete: isExistingShareholderTaskComplete(rows)
+    };
+}
 
 const normalizePersonName = (value) =>
     String(value || "")
@@ -301,13 +433,28 @@ router.get("/startup/list", auth, async (req, res) => {
     try {
         const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
         const startupId = startupContext.startupUserId;
+        const conversionState = await buildConversionState(pool, startupContext, req.user);
 
         const [documents] = await pool.query(
             `
-            SELECT id, type, title, status, created_at, locked_at
+            SELECT
+              d.id,
+              d.type,
+              d.title,
+              d.status,
+              d.created_at,
+              d.locked_at,
+              COALESCE(
+                d.locked_at,
+                (
+                  SELECT MAX(ds.signed_at)
+                  FROM document_signers ds
+                  WHERE ds.document_id = d.id
+                )
+              ) AS signed_at
             FROM documents
-            WHERE startup_id = ?
-            ORDER BY created_at DESC, id DESC
+            WHERE d.startup_id = ?
+            ORDER BY d.created_at DESC, d.id DESC
             `,
             [startupId]
         );
@@ -345,6 +492,14 @@ router.get("/startup/list", auth, async (req, res) => {
         );
 
         const conversion = conversionRows[0] || null;
+        const existingShareholdersTask = conversion
+            ? await getOrCreateExistingShareholderTask(pool, startupId)
+            : null;
+        const existingShareholdersTaskComplete = Boolean(
+            existingShareholdersTask &&
+            Number(existingShareholdersTask.total || 0) > 0 &&
+            Number(existingShareholdersTask.completed || 0) >= Number(existingShareholdersTask.total || 0)
+        );
 
         let rcInvestorByAgreement = new Map();
         const rcDocs = documents.filter((doc) => doc.type === "RC");
@@ -414,12 +569,19 @@ router.get("/startup/list", auth, async (req, res) => {
                 }))
             ],
             conversion,
+            existing_shareholders_task: existingShareholdersTask,
             placeholders: [
                 {
                     key: "conversion_share_register",
                     category: "Konverteringsdokumenter",
                     title: "Eierregister etter konvertering",
-                    status: conversion?.shareholder_register_document_id ? "klar" : "ikke klar"
+                    status: conversionState?.steps?.shareholder_register?.status === "ready"
+                        ? "klar"
+                        : conversion?.shareholder_register_document_id
+                        ? "klar"
+                        : (existingShareholdersTask
+                            ? (existingShareholdersTaskComplete || existingShareholdersTask.is_complete ? "klar" : "venter på startup")
+                            : "ikke klar")
                 },
                 {
                     key: "conversion_articles",
@@ -431,19 +593,133 @@ router.get("/startup/list", auth, async (req, res) => {
                     key: "conversion_capital_confirmation",
                     category: "Konverteringsdokumenter",
                     title: "Revisorbekreftelse for paribeløp og motregning",
-                    status: conversion?.capital_confirmation_document_id ? "klar" : "ikke klar"
+                    status: conversionState?.steps?.third_party_confirmation?.status === "signed"
+                        ? "revisor_bekreftet"
+                        : (conversion?.capital_confirmation_document_id ? "avventer_revisorbekreftelse" : "ikke klar")
                 },
                 {
                     key: "conversion_package",
                     category: "Altinn-pakke",
                     title: "Altinn-pakke for konvertering",
-                    status: conversion?.altinn_package_document_id ? "klar" : "ikke klar"
+                    status: conversionState?.steps?.package?.status === "ready" || conversion?.altinn_package_document_id
+                        ? "klar"
+                        : "ikke klar"
                 }
             ]
         });
     } catch (err) {
         console.error("Startup documents list error:", err);
         res.status(500).json({ error: "Server error" });
+    }
+});
+
+router.get("/conversion/existing-shareholders", auth, async (req, res) => {
+    const connection = await pool.getConnection();
+
+    try {
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const startupId = startupContext.startupUserId;
+        const task = await getOrCreateExistingShareholderTask(connection, startupId);
+
+        if (!task) {
+            return res.json({
+                conversion_event_id: null,
+                rows: [],
+                total: 0,
+                completed: 0,
+                is_complete: true
+            });
+        }
+
+        res.json(task);
+    } catch (err) {
+        console.error("Get existing shareholders task error:", err);
+        res.status(500).json({ error: "Kunne ikke hente aksjonæroppgaven." });
+    } finally {
+        connection.release();
+    }
+});
+
+router.post("/conversion/existing-shareholders/:id(\\d+)", auth, async (req, res) => {
+    const connection = await pool.getConnection();
+
+    try {
+        const rowId = Number(req.params.id || 0);
+        if (!rowId) {
+            return res.status(400).json({ error: "Ugyldig aksjonærvalg." });
+        }
+
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const startupId = startupContext.startupUserId;
+        const task = await getOrCreateExistingShareholderTask(connection, startupId);
+
+        if (!task?.conversion_event_id) {
+            return res.status(404).json({ error: "Fant ikke aktiv konverteringsoppgave." });
+        }
+
+        const [rows] = await connection.query(
+            `
+            SELECT id
+            FROM conversion_existing_shareholders
+            WHERE id = ?
+              AND conversion_event_id = ?
+            LIMIT 1
+            `,
+            [rowId, task.conversion_event_id]
+        );
+
+        if (!rows.length) {
+            return res.status(404).json({ error: "Fant ikke aksjonæren i denne oppgaven." });
+        }
+
+        const payload = {
+            shareholder_name: String(req.body.shareholder_name || "").trim(),
+            birth_date: String(req.body.birth_date || "").trim(),
+            digital_address: String(req.body.digital_address || "").trim(),
+            residential_address: String(req.body.residential_address || "").trim()
+        };
+
+        if (!payload.shareholder_name || !payload.birth_date || !payload.digital_address || !payload.residential_address) {
+            return res.status(400).json({ error: "Fyll inn alle feltene for aksjonæren før du lagrer." });
+        }
+
+        const parsedBirthDate = new Date(payload.birth_date);
+        if (Number.isNaN(parsedBirthDate.getTime())) {
+            return res.status(400).json({ error: "Ugyldig fødselsdato." });
+        }
+
+        await connection.query(
+            `
+            UPDATE conversion_existing_shareholders
+            SET shareholder_name = ?,
+                birth_date = ?,
+                digital_address = ?,
+                residential_address = ?,
+                completed_at = NOW()
+            WHERE id = ?
+              AND conversion_event_id = ?
+            `,
+            [
+                payload.shareholder_name,
+                payload.birth_date,
+                payload.digital_address,
+                payload.residential_address,
+                rowId,
+                task.conversion_event_id
+            ]
+        );
+
+        const refreshedTask = await getOrCreateExistingShareholderTask(connection, startupId);
+        res.json({
+            success: true,
+            message: "Aksjonæropplysningene er lagret.",
+            task: refreshedTask
+        });
+    } catch (err) {
+        console.error("Save existing shareholders task error:", err);
+        res.status(500).json({ error: "Kunne ikke lagre aksjonæropplysningene." });
+    } finally {
+        connection.release();
     }
 });
 
@@ -456,7 +732,7 @@ router.get("/:id/pdf", auth, async (req, res) => {
     try {
         const documentId = req.params.id;
         const [rows] = await pool.query(
-            "SELECT id, title, html_content, startup_id FROM documents WHERE id=?",
+            "SELECT id, type, title, html_content, startup_id FROM documents WHERE id=?",
             [documentId]
         );
 
@@ -486,7 +762,18 @@ router.get("/:id/pdf", auth, async (req, res) => {
             return res.status(403).json({ error: "Access denied" });
         }
 
-        const pdfBuffer = await renderHtmlToPdfBuffer(doc.html_content || "");
+        const pdfOptions = doc.type === "CONVERSION_SHARE_REGISTER"
+            ? {
+                landscape: true,
+                margin: {
+                    top: "18px",
+                    right: "18px",
+                    bottom: "18px",
+                    left: "18px"
+                }
+            }
+            : {};
+        const pdfBuffer = await renderHtmlToPdfBuffer(doc.html_content || "", pdfOptions);
         const safeTitle = String(doc.title || `dokument-${documentId}`)
             .toLowerCase()
             .replace(/[^a-z0-9æøå\-]+/gi, "-")
