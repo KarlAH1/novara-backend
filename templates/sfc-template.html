@@ -1,17 +1,50 @@
 <section class="doc-template" style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: transparent; padding: 32px; border: none; border-radius: 0; line-height: 1.72;">
   <style>
     .doc-template, .doc-template * { color: #000 !important; }
+    .doc-header-table { width: 100%; border-collapse: collapse; }
+    .doc-header-table td { vertical-align: top; }
+    .doc-header-meta-cell { text-align: right; }
+    .doc-header-meta {
+      display: inline-block;
+      min-width: 230px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: #efe7db;
+      border: 1px solid #d8d0c4;
+      text-align: left;
+      box-sizing: border-box;
+    }
+    @media (max-width: 720px) {
+      .doc-header-table,
+      .doc-header-table tbody,
+      .doc-header-table tr,
+      .doc-header-table td {
+        display: block;
+        width: 100% !important;
+      }
+      .doc-header-meta-cell {
+        text-align: left;
+        padding-top: 12px;
+      }
+      .doc-header-meta {
+        display: block;
+        min-width: 0;
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+      }
+    }
   </style>
   <header style="margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #d8d0c4;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+    <table width="100%" cellpadding="0" cellspacing="0" class="doc-header-table">
       <tr>
         <td style="vertical-align: top;">
           <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Styret</p>
           <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Styrets forslag til kapitalforhøyelse ved konvertering</h1>
           <p style="margin: 10px 0 0; color: #374151;">Styrets forslag til kapitalforhøyelse og gjennomføring av konvertering.</p>
         </td>
-        <td style="vertical-align: top; text-align: right;">
-          <div style="display: inline-block; min-width: 230px; padding: 14px 16px; border-radius: 14px; background: #efe7db; border: 1px solid #d8d0c4; text-align: left;">
+        <td class="doc-header-meta-cell">
+          <div class="doc-header-meta">
             <p style="margin: 0 0 6px;"><strong>Selskap:</strong> {{company_name}}</p>
             <p style="margin: 0 0 6px;"><strong>Org.nr.:</strong> {{orgnr}}</p>
             <p style="margin: 0;"><strong>Dato:</strong> {{date}}</p>
