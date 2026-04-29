@@ -710,3 +710,40 @@ export const replyToOwnIssue = async (req, res) => {
 
     res.json({ message: "Melding sendt." });
 };
+
+export const createOwnIssue = async (req, res) => {
+    const userId = Number(req.user?.id || 0);
+    const userRole = String(req.user?.role || "user").toLowerCase();
+    const issueType = String(req.body.issueType || "general").trim().toLowerCase() || "general";
+    const message = String(req.body.message || "").trim();
+    const source = String(req.body.source || "profile").trim().toLowerCase() || "profile";
+
+    if (!userId) {
+        return res.status(401).json({ error: "Ikke autentisert." });
+    }
+
+    if (!message) {
+        return res.status(400).json({ error: "Skriv litt om spørsmålet eller problemet før du sender." });
+    }
+
+    const [issueResult] = await pool.query(
+        `
+        INSERT INTO admin_issues (user_id, startup_id, emission_id, source, issue_type, message, status)
+        VALUES (?, NULL, NULL, ?, ?, ?, 'OPEN')
+        `,
+        [userId, source, issueType, message]
+    );
+
+    await pool.query(
+        `
+        INSERT INTO admin_issue_messages (issue_id, sender_user_id, sender_role, message)
+        VALUES (?, ?, ?, ?)
+        `,
+        [issueResult.insertId, userId, userRole, message]
+    );
+
+    res.status(201).json({
+        success: true,
+        message: "Meldingen er sendt til Raisium."
+    });
+};

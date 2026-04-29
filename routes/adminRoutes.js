@@ -25,7 +25,8 @@ import {
     adminGetMyIssues,
     adminReplyIssue,
     replyToOwnIssue,
-    adminDeleteIssue
+    adminDeleteIssue,
+    createOwnIssue
 } from "../controllers/adminController.js";
 
 const router = express.Router();
@@ -55,6 +56,7 @@ router.patch("/issues/:id", authMiddleware, isAdmin, adminUpdateIssue);
 router.delete("/issues/:id", authMiddleware, isAdmin, adminDeleteIssue);
 router.post("/issues/:id/reply", authMiddleware, isAdmin, adminReplyIssue);
 router.get("/issues/mine", authMiddleware, adminGetMyIssues);
+router.post("/issues", authMiddleware, createOwnIssue);
 router.post("/issues/:id/reply-own", authMiddleware, replyToOwnIssue);
 
 export default router;
