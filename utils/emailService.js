@@ -10,9 +10,19 @@ function firstNonEmptyEnv(...keys) {
   return "";
 }
 
-export async function sendEmail({ to, subject, html, text }) {
+export function getEmailProviderConfig() {
   const resendApiKey = firstNonEmptyEnv("RESEND_API_KEY", "RESEND_KEY");
   const fromEmail = firstNonEmptyEnv("EMAIL_FROM", "RESEND_FROM", "FROM_EMAIL", "MAIL_FROM");
+
+  return {
+    resendApiKey,
+    fromEmail,
+    configured: Boolean(resendApiKey && fromEmail)
+  };
+}
+
+export async function sendEmail({ to, subject, html, text }) {
+  const { resendApiKey, fromEmail } = getEmailProviderConfig();
 
   if (!to || !subject) {
     throw new Error("Email requires recipient and subject");

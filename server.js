@@ -4,6 +4,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { closePool, testConnection } from "./config/db.js";
+import { getEmailProviderConfig } from "./utils/emailService.js";
 import { ensureAuthSchema } from "./utils/authSchema.js";
 import { ensureAdminIssueSchema } from "./utils/adminIssueSchema.js";
 import { ensureConversionSchema } from "./utils/conversionSchema.js";
@@ -36,6 +37,12 @@ if (missingDbVars.length) {
 }
 
 const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
+const emailProviderConfig = getEmailProviderConfig();
+
+if (isProduction && !emailProviderConfig.configured) {
+  console.error("❌ Email provider missing in production. Set RESEND_API_KEY and EMAIL_FROM (or RESEND_FROM).");
+  process.exit(1);
+}
 
 function getAllowedOrigins() {
   const configuredOrigins = String(process.env.FRONTEND_URL || "")
@@ -160,16 +167,24 @@ app.get("/api", (req, res) => {
   res.status(200).json({
     message: "Raisium Backend is running",
     version: "2.1.0",
-    environment: process.env.NODE_ENV || "development"
+    environment: process.env.NODE_ENV || "development",
+    emailConfigured: emailProviderConfig.configured
   });
 });
 
 app.get("/api/ready", async (req, res) => {
   try {
     await testConnection();
+    if (isProduction && !getEmailProviderConfig().configured) {
+      return res.status(503).json({
+        ok: false,
+        error: "Email provider unavailable"
+      });
+    }
     res.status(200).json({
       ok: true,
-      database: "reachable"
+      database: "reachable",
+      email: getEmailProviderConfig().configured ? "configured" : "missing"
     });
   } catch (error) {
     res.status(503).json({
