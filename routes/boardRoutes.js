@@ -108,14 +108,9 @@ router.post(
       );
 
       if (existingLockedDocs.length > 0) {
-        const canRestart = await canRestartLegalFlow(startupId);
-        if (!canRestart) {
-          return res.status(400).json({
-            error: "Dokumentgrunnlaget kan ikke erstattes mens emisjon eller RC-prosess finnes."
-          });
-        }
-
-        await cleanupLegalDocuments(pool, startupId, ["BOARD", "GF"]);
+        return res.status(400).json({
+          error: "Styredokumentet er allerede signert og kan ikke genereres på nytt."
+        });
       }
 
       if (!startupContext.company) {

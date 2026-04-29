@@ -5,11 +5,27 @@ import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { generateInviteToken } from "../utils/inviteToken.js";
 import { getInvite } from "../controllers/rcInviteController.js";
-import { validatePasswordRequirements } from "../utils/authSecurity.js";
-import { isEmailVerificationRequired, sendVerificationEmail } from "../utils/authEmailFlow.js";
+import { createExpiry, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
+import { isEmailVerificationRequired, sendInvestorInviteAccessCodeEmail, sendVerificationEmail } from "../utils/authEmailFlow.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 
 const router = express.Router();
+
+function createAuthToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      role: String(user.role || "").toLowerCase(),
+      email: user.email
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+
+function createSixDigitCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
 
 router.get("/:token", getInvite);
 /* =====================================================
@@ -168,6 +184,224 @@ router.get("/validate/:token", async (req, res) => {
   } catch (err) {
     console.error("Validate invite failed:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/access-code/send/:token", async (req, res) => {
+  const connection = await pool.getConnection();
+
+  try {
+    const token = String(req.params.token || "").trim();
+    const name = String(req.body.name || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: "Navn, e-post og passord er påkrevd." });
+    }
+
+    const passwordError = validatePasswordRequirements(password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const [inviteRows] = await connection.query(
+      `
+      SELECT r.id
+      FROM rc_invites i
+      JOIN emission_rounds r ON i.round_id = r.id
+      WHERE i.token = ?
+      LIMIT 1
+      `,
+      [token]
+    );
+
+    if (!inviteRows.length) {
+      return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
+    }
+
+    const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
+    if (!availability?.canInvest) {
+      return res.status(409).json({
+        error: availability?.message || "Den private runden er avsluttet.",
+        code: availability?.closedReason || "round_closed"
+      });
+    }
+
+    const [userRows] = await connection.query(
+      "SELECT id, role FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+
+    if (userRows.length) {
+      const existingRole = String(userRows[0].role || "").toLowerCase();
+      if (existingRole === "investor") {
+        return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
+      }
+      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten." });
+    }
+
+    const code = createSixDigitCode();
+    const expiresAt = createExpiry(0.25);
+
+    await connection.query(
+      `
+      INSERT INTO startup_email_verifications (email, code_hash, verification_token_hash, expires_at)
+      VALUES (?, ?, NULL, ?)
+      `,
+      [email, hashToken(code), expiresAt]
+    );
+
+    await sendInvestorInviteAccessCodeEmail({ email, code });
+
+    res.json({
+      success: true,
+      message: "Vi har sendt en kode til e-posten din.",
+      expiresAt
+    });
+  } catch (err) {
+    console.error("Send investor invite access code failed:", err);
+    res.status(500).json({ error: "Kunne ikke sende kode akkurat nå." });
+  } finally {
+    connection.release();
+  }
+});
+
+router.post("/access-code/verify/:token", async (req, res) => {
+  const connection = await pool.getConnection();
+  let transactionStarted = false;
+
+  try {
+    const token = String(req.params.token || "").trim();
+    const name = String(req.body.name || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+    const code = String(req.body.code || "").trim();
+
+    if (!name || !email || !password || !code) {
+      return res.status(400).json({ error: "Navn, e-post, passord og kode er påkrevd." });
+    }
+
+    const passwordError = validatePasswordRequirements(password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const [inviteRows] = await connection.query(
+      `
+      SELECT r.id
+      FROM rc_invites i
+      JOIN emission_rounds r ON i.round_id = r.id
+      WHERE i.token = ?
+      LIMIT 1
+      `,
+      [token]
+    );
+
+    if (!inviteRows.length) {
+      return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
+    }
+
+    const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
+    if (!availability?.canInvest) {
+      return res.status(409).json({
+        error: availability?.message || "Den private runden er avsluttet.",
+        code: availability?.closedReason || "round_closed"
+      });
+    }
+
+    const [verificationRows] = await connection.query(
+      `
+      SELECT id, code_hash, expires_at
+      FROM startup_email_verifications
+      WHERE email = ?
+        AND consumed_at IS NULL
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [email]
+    );
+
+    const record = verificationRows[0];
+    if (!record) {
+      return res.status(400).json({ error: "Fant ingen aktiv kode. Be om en ny kode." });
+    }
+
+    const expiresAt = new Date(record.expires_at);
+    if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ error: "Koden har utløpt. Be om en ny kode." });
+    }
+
+    if (hashToken(code) !== record.code_hash) {
+      await connection.query(
+        `
+        UPDATE startup_email_verifications
+        SET attempts = attempts + 1
+        WHERE id = ?
+        `,
+        [record.id]
+      );
+      return res.status(400).json({ error: "Koden er ugyldig." });
+    }
+
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const [userRows] = await connection.query(
+      "SELECT id, role FROM users WHERE email = ? LIMIT 1",
+      [email]
+    );
+
+    if (userRows.length) {
+      await connection.rollback();
+      transactionStarted = false;
+      const existingRole = String(userRows[0].role || "").toLowerCase();
+      if (existingRole === "investor") {
+        return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
+      }
+      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten." });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const [result] = await connection.query(
+      "INSERT INTO users (name, email, password, role, email_verified, email_verification_token, email_verification_expires) VALUES (?, ?, ?, 'investor', 1, NULL, NULL)",
+      [name, email, passwordHash]
+    );
+
+    await connection.query(
+      `
+      UPDATE startup_email_verifications
+      SET verified_at = NOW(),
+          consumed_at = NOW()
+      WHERE id = ?
+      `,
+      [record.id]
+    );
+
+    await connection.commit();
+    transactionStarted = false;
+
+    const user = {
+      id: result.insertId,
+      name,
+      email,
+      role: "investor"
+    };
+
+    res.json({
+      success: true,
+      message: "E-posten er verifisert. Du kan fortsette.",
+      token: createAuthToken(user),
+      user
+    });
+  } catch (err) {
+    if (transactionStarted) {
+      await connection.rollback();
+    }
+    console.error("Verify investor invite access code failed:", err);
+    res.status(500).json({ error: "Kunne ikke verifisere koden." });
+  } finally {
+    connection.release();
   }
 });
 

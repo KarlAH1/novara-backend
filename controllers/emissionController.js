@@ -410,15 +410,21 @@ export const updateEmissionConfig = async (req, res) => {
         shareholders
       } = req.body;
 
-      const normalizedTriggerPeriod = Number(trigger_period || conversion_years || 0) || null;
+      const rawTriggerPeriod = Number(trigger_period || conversion_years || 0);
+      const normalizedTriggerPeriod = Number.isFinite(rawTriggerPeriod) && rawTriggerPeriod >= 1
+        ? Math.max(1, Math.round(rawTriggerPeriod))
+        : 3;
       conversion_years = normalizedTriggerPeriod;
-      discount_rate = discount_rate === "" || discount_rate == null ? 0 : Number(discount_rate);
+      const rawDiscountRate = discount_rate === "" || discount_rate == null ? NaN : Number(discount_rate);
+      discount_rate = Number.isFinite(rawDiscountRate) && rawDiscountRate >= 1
+        ? Math.max(1, rawDiscountRate)
+        : 20;
       valuation_cap = valuation_cap === "" || valuation_cap === undefined ? null : Number(valuation_cap);
       bank_account = String(bank_account || "").trim();
 
-       if (!Number.isFinite(normalizedTriggerPeriod) || normalizedTriggerPeriod <= 0) {
+       if (!Number.isFinite(normalizedTriggerPeriod) || normalizedTriggerPeriod < 1) {
         return res.status(400).json({
-          message: "Triggerperiode må være satt."
+          message: "Triggerperiode må være minst 1 år."
         });
       }
 
@@ -653,7 +659,7 @@ export const generateInvite = async (req, res) => {
         `, [emissionId, token, startupId]);
 
         res.json({
-            inviteLink: `${process.env.FRONTEND_URL}/invite.html?token=${token}`
+            inviteLink: `${process.env.FRONTEND_URL}/invest.html?invite=${token}`
         });
 
     } catch (err) {

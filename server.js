@@ -208,6 +208,7 @@ const frontendPages = [
   "forgot-password.html",
   "reset-password.html",
   "verify-email.html",
+  "invite-verify.html",
   "profile.html",
   "emisjon.html",
   "emisjoner.html",

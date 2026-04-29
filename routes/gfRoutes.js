@@ -79,15 +79,9 @@ router.post(
       );
 
       if (existingLocked.length > 0) {
-        const canRestart = await canRestartLegalFlow(startupId);
-
-        if (!canRestart) {
-          return res.status(400).json({
-            error: "GF er allerede signert og kan ikke genereres på nytt."
-          });
-        }
-
-        await cleanupLegalDocuments(pool, startupId, ["GF"]);
+        return res.status(400).json({
+          error: "GF er allerede signert og kan ikke genereres på nytt."
+        });
       }
 
       /* =====================================================
