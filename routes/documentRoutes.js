@@ -13,6 +13,37 @@ import { buildConversionState } from "./conversionRoutes.js";
 
 const router = express.Router();
 
+const tableExists = async (connection, tableName) => {
+    const [rows] = await connection.query(
+        `
+        SELECT 1
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+        LIMIT 1
+        `,
+        [tableName]
+    );
+
+    return rows.length > 0;
+};
+
+const columnExists = async (connection, tableName, columnName) => {
+    const [rows] = await connection.query(
+        `
+        SELECT 1
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND COLUMN_NAME = ?
+        LIMIT 1
+        `,
+        [tableName, columnName]
+    );
+
+    return rows.length > 0;
+};
+
 const getRcAgreementColumns = async (connection) => {
     const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
     return new Set(columnRows.map((column) => column.Field));
@@ -65,6 +96,10 @@ function isExistingShareholderTaskComplete(rows = []) {
 }
 
 async function getOrCreateExistingShareholderTask(connection, startupId) {
+    if (!(await tableExists(connection, "conversion_events"))) {
+        return null;
+    }
+
     const [conversionRows] = await connection.query(
         `
         SELECT id, round_id
@@ -79,6 +114,21 @@ async function getOrCreateExistingShareholderTask(connection, startupId) {
     const conversion = conversionRows[0] || null;
     if (!conversion?.id || !conversion?.round_id) {
         return null;
+    }
+
+    if (!(await tableExists(connection, "conversion_existing_shareholders"))) {
+        return null;
+    }
+
+    if (!(await tableExists(connection, "emission_shareholders"))) {
+        return {
+            conversion_event_id: conversion.id,
+            round_id: conversion.round_id,
+            rows: [],
+            total: 0,
+            completed: 0,
+            is_complete: true
+        };
     }
 
     const [existingRows] = await connection.query(
@@ -459,37 +509,60 @@ router.get("/startup/list", auth, async (req, res) => {
             [startupId]
         );
 
-        const [startupDocuments] = await pool.query(
-            `
-            SELECT
-              id,
-              document_type,
-              filename,
-              url,
-              mime_type,
-              status,
-              parse_status,
-              parsed_fields_json,
-              uploaded_at
-            FROM startup_documents
-            WHERE startup_id = ?
-              AND visible_in_document_room = 1
-            ORDER BY uploaded_at DESC, id DESC
-            `,
-            [startupId]
-        );
+        let startupDocuments = [];
+        if (await tableExists(pool, "startup_documents")) {
+            const hasDocumentType = await columnExists(pool, "startup_documents", "document_type");
+            const hasMimeType = await columnExists(pool, "startup_documents", "mime_type");
+            const hasStatus = await columnExists(pool, "startup_documents", "status");
+            const hasParseStatus = await columnExists(pool, "startup_documents", "parse_status");
+            const hasParsedFields = await columnExists(pool, "startup_documents", "parsed_fields_json");
+            const hasVisibleInRoom = await columnExists(pool, "startup_documents", "visible_in_document_room");
 
-        const [conversionRows] = await pool.query(
-            `
-            SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
-                   , updated_articles_document_id, shareholder_register_document_id, capital_confirmation_document_id, altinn_package_document_id
-            FROM conversion_events
-            WHERE startup_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            `,
-            [startupId]
-        );
+            const [rows] = await pool.query(
+                `
+                SELECT
+                  id,
+                  ${hasDocumentType ? "document_type" : "'pitch_deck' AS document_type"},
+                  filename,
+                  url,
+                  ${hasMimeType ? "mime_type" : "NULL AS mime_type"},
+                  ${hasStatus ? "status" : "'uploaded' AS status"},
+                  ${hasParseStatus ? "parse_status" : "'not_started' AS parse_status"},
+                  ${hasParsedFields ? "parsed_fields_json" : "NULL AS parsed_fields_json"},
+                  uploaded_at
+                FROM startup_documents
+                WHERE startup_id = ?
+                  ${hasVisibleInRoom ? "AND visible_in_document_room = 1" : ""}
+                ORDER BY uploaded_at DESC, id DESC
+                `,
+                [startupId]
+            );
+            startupDocuments = rows;
+        }
+
+        let conversionRows = [];
+        if (await tableExists(pool, "conversion_events")) {
+            const hasUpdatedArticles = await columnExists(pool, "conversion_events", "updated_articles_document_id");
+            const hasShareholderRegister = await columnExists(pool, "conversion_events", "shareholder_register_document_id");
+            const hasCapitalConfirmation = await columnExists(pool, "conversion_events", "capital_confirmation_document_id");
+            const hasAltinnPackage = await columnExists(pool, "conversion_events", "altinn_package_document_id");
+
+            const [rows] = await pool.query(
+                `
+                SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
+                       , ${hasUpdatedArticles ? "updated_articles_document_id" : "NULL AS updated_articles_document_id"}
+                       , ${hasShareholderRegister ? "shareholder_register_document_id" : "NULL AS shareholder_register_document_id"}
+                       , ${hasCapitalConfirmation ? "capital_confirmation_document_id" : "NULL AS capital_confirmation_document_id"}
+                       , ${hasAltinnPackage ? "altinn_package_document_id" : "NULL AS altinn_package_document_id"}
+                FROM conversion_events
+                WHERE startup_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                `,
+                [startupId]
+            );
+            conversionRows = rows;
+        }
 
         const conversion = conversionRows[0] || null;
         const existingShareholdersTask = conversion
