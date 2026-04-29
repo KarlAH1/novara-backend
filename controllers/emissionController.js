@@ -71,64 +71,6 @@ const getRcAgreementColumns = async () => {
   return rcAgreementColumnsPromise;
 };
 
-const shouldReopenDownloadedConversionRound = async (connection, startupId, roundId) => {
-  if (!roundId) return false;
-
-  const [conversionRows] = await connection.query(
-    `
-    SELECT id, board_document_id, gf_document_id, capital_confirmation_document_id, altinn_package_document_id
-    FROM conversion_events
-    WHERE startup_id = ? AND round_id = ?
-    ORDER BY id DESC
-    LIMIT 1
-    `,
-    [startupId, roundId]
-  );
-
-  const conversion = conversionRows[0];
-  if (!conversion?.id) {
-    return false;
-  }
-
-  const [parValueRows] = await connection.query(
-    `
-    SELECT COUNT(*) AS total_requests,
-           SUM(CASE WHEN paid_confirmed_at IS NOT NULL THEN 1 ELSE 0 END) AS paid_requests
-    FROM conversion_par_value_requests
-    WHERE conversion_event_id = ?
-    `,
-    [conversion.id]
-  );
-
-  const totalRequests = Number(parValueRows[0]?.total_requests || 0);
-  const paidRequests = Number(parValueRows[0]?.paid_requests || 0);
-  if (totalRequests === 0 || paidRequests < totalRequests) {
-    return true;
-  }
-
-  const requiredDocIds = [
-    conversion.board_document_id,
-    conversion.gf_document_id,
-    conversion.capital_confirmation_document_id,
-    conversion.altinn_package_document_id
-  ].filter(Boolean);
-
-  if (requiredDocIds.length < 4) {
-    return true;
-  }
-
-  const [docRows] = await connection.query(
-    `
-    SELECT id, status
-    FROM documents
-    WHERE id IN (?)
-    `,
-    [requiredDocIds]
-  );
-
-  const lockedCount = docRows.filter((row) => String(row.status || "").toUpperCase() === "LOCKED").length;
-  return lockedCount < requiredDocIds.length;
-};
 export const startEmission = async (req, res) => {
     try {
       const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
@@ -699,48 +641,7 @@ export const getActiveEmission = async (req, res) => {
       `, [startupId]);
 
       if (!rows.length) {
-          const [fallbackRows] = await pool.query(`
-              SELECT *
-              FROM emission_rounds
-              WHERE startup_id = ?
-                AND closed_reason = 'conversion_downloaded'
-              ORDER BY id DESC
-              LIMIT 1
-          `, [startupId]);
-
-          if (!fallbackRows.length) {
-              return res.json(null);
-          }
-
-          const fallbackRound = fallbackRows[0];
-          const shouldReopen = await shouldReopenDownloadedConversionRound(pool, startupId, fallbackRound.id);
-
-          if (!shouldReopen) {
-              return res.json(null);
-          }
-
-          await pool.query(
-            `
-            UPDATE emission_rounds
-            SET open = 1, closed_at = NULL, closed_reason = NULL
-            WHERE id = ? AND startup_id = ?
-            `,
-            [fallbackRound.id, startupId]
-          );
-
-          await pool.query(
-            "UPDATE startup_profiles SET is_raising = 1 WHERE user_id = ?",
-            [startupId]
-          ).catch(() => {});
-
-          let reopenedEmission = null;
-          try {
-            reopenedEmission = await syncEmissionRoundAvailability(pool, fallbackRound.id);
-          } catch (availabilityError) {
-            console.error("Reopened emission availability sync error:", availabilityError);
-          }
-
-          return res.json(reopenedEmission || { ...fallbackRound, open: 1, closed_reason: null, closed_at: null });
+          return res.json(null);
       }
 
       let emission = null;
