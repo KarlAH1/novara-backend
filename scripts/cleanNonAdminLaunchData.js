@@ -71,6 +71,13 @@ async function main() {
         nonAdminIds
       );
       await conn.query(
+        `DELETE ds
+         FROM document_signers ds
+         INNER JOIN documents d ON d.id = ds.document_id
+         WHERE d.startup_id IN (${placeholders})`,
+        nonAdminIds
+      );
+      await conn.query(
         `DELETE FROM startup_documents WHERE startup_id IN (${placeholders})`,
         nonAdminIds
       );

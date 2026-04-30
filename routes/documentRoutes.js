@@ -7,7 +7,7 @@ import {
 } from "../utils/startupContext.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
-import { lockDocumentWithSignatures } from "../utils/documentSigning.js";
+import { lockDocumentWithSignatures, applySignatureBlockToHtml } from "../utils/documentSigning.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 import { buildConversionState } from "./conversionRoutes.js";
 
@@ -892,7 +892,6 @@ router.get("/:id/pdf", auth, async (req, res) => {
 });
 
 router.get("/:id", auth, async (req, res) => {
-
     const [rows] = await pool.query(
         "SELECT * FROM documents WHERE id=?",
         [req.params.id]
@@ -902,7 +901,46 @@ router.get("/:id", auth, async (req, res) => {
         return res.status(404).json({ error: "Document not found" });
     }
 
-    res.json(rows[0]);
+    const document = rows[0];
+    const [signers] = await pool.query(
+        `
+        SELECT
+            ds.id,
+            ds.role,
+            ds.email,
+            ds.user_id,
+            ds.signed_at,
+            COALESCE(u.name, ds.email) AS signer_name
+        FROM document_signers ds
+        LEFT JOIN users u ON u.id = ds.user_id
+        WHERE ds.document_id = ?
+        ORDER BY ds.id ASC
+        `,
+        [req.params.id]
+    );
+
+    const signedCount = signers.filter((signer) => !!signer.signed_at).length;
+    const totalSigners = signers.length;
+    const currentSigner = signers.find(
+        (signer) => Number(signer.user_id) === Number(req.user.id)
+            || String(signer.email || "").toLowerCase() === String(req.user.email || "").toLowerCase()
+    );
+    const currentUserSigned = !!currentSigner?.signed_at;
+    const previewHtml = signedCount > 0 && document.status !== "LOCKED"
+        ? applySignatureBlockToHtml(document.html_content || "", signers.filter((signer) => signer.signed_at))
+        : document.html_content;
+
+    res.json({
+        ...document,
+        html_content: previewHtml,
+        signing_progress: {
+            signed_count: signedCount,
+            total_signers: totalSigners,
+            current_user_signed: currentUserSigned,
+            is_partially_signed: signedCount > 0 && signedCount < totalSigners,
+            all_signed: totalSigners > 0 && signedCount === totalSigners
+        }
+    });
 });
 
 
