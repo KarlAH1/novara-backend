@@ -689,8 +689,9 @@ export const generateInvite = async (req, res) => {
             VALUES (?, ?, ?)
         `, [emissionId, token, startupId]);
 
+        const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
         res.json({
-            inviteLink: `${process.env.FRONTEND_URL}/invest.html?invite=${token}`
+            inviteLink: `${frontendBase}/invest.html?invite=${token}`
         });
 
     } catch (err) {

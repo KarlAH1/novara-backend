@@ -188,4 +188,38 @@ router.get("/validate", authMiddleware, (req, res) => {
     });
 });
 
+router.get("/pending-signatures", authMiddleware, async (req, res) => {
+    let connection;
+    try {
+        const { default: pool } = await import("../config/db.js");
+        connection = await pool.getConnection();
+        const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+
+        const [rows] = await connection.query(
+            `SELECT ds.id AS signer_id, ds.document_id, ds.role, d.title, d.type
+             FROM document_signers ds
+             JOIN documents d ON d.id = ds.document_id
+             WHERE ds.user_id = ? AND ds.signed_at IS NULL AND d.status != 'LOCKED'
+             ORDER BY ds.id DESC`,
+            [req.user.id]
+        );
+
+        res.json({
+            pending: rows.map((row) => ({
+                signer_id: row.signer_id,
+                document_id: row.document_id,
+                document_title: row.title,
+                document_type: row.type,
+                role: row.role,
+                sign_url: `${frontendBase}/sign.html?type=conversion&id=${row.document_id}`
+            }))
+        });
+    } catch (err) {
+        console.error("Pending signatures error:", err);
+        res.status(500).json({ error: "Intern feil." });
+    } finally {
+        connection?.release();
+    }
+});
+
 export default router;

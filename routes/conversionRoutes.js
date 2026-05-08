@@ -847,7 +847,7 @@ async function syncParValueRequests(connection, conversion, calculations) {
 }
 
 async function sendParValueNotices(connection, startupContext, conversion, requests) {
-  const frontendBase = String(process.env.FRONTEND_URL || "").replace(/\/$/, "");
+  const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
   const companyName = startupContext.company?.company_name || "selskapet";
   const noticeDueDate = addDays(new Date(), 7);
   const noticeDueDateSql = toMysqlDateTime(noticeDueDate);
@@ -1203,10 +1203,8 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     freshConversion.shareholder_register_document_id = registerId;
   }
 
-  if (!freshConversion.capital_confirmation_document_id) {
-    const thirdPartyUser = freshConversion.third_party_email
-      ? await findUserByEmail(connection, freshConversion.third_party_email)
-      : null;
+  if (!freshConversion.capital_confirmation_document_id && freshConversion.third_party_email) {
+    const thirdPartyUser = await findUserByEmail(connection, freshConversion.third_party_email);
     const templatePath = path.join(templatesDir, "conversion-capital-confirmation-template.html");
     let confirmationHtml = fs.readFileSync(templatePath, "utf8");
     confirmationHtml = confirmationHtml
@@ -1286,8 +1284,10 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
   const boardLocked = byId[conversion.board_document_id]?.status === "LOCKED";
   const gfLocked = byId[conversion.gf_document_id]?.status === "LOCKED";
   const confirmationLocked = byId[conversion.capital_confirmation_document_id]?.status === "LOCKED";
+  const articlesLocked = byId[conversion.updated_articles_document_id]?.status === "LOCKED";
+  const registerLocked = byId[conversion.shareholder_register_document_id]?.status === "LOCKED";
 
-  if (!boardLocked || !gfLocked || !confirmationLocked) {
+  if (!boardLocked || !gfLocked || !confirmationLocked || !articlesLocked || !registerLocked) {
     return;
   }
 
@@ -1445,11 +1445,20 @@ export async function buildConversionState(connection, startupContext, user) {
 
   const boardDoc = conversion?.board_document_id ? documentsById[conversion.board_document_id] || null : null;
   const gfDoc = conversion?.gf_document_id ? documentsById[conversion.gf_document_id] || null : null;
+
+  let gfSigners = [];
+  if (gfDoc?.id) {
+    const [signerRows] = await connection.query(
+      `SELECT email, role, signed_at FROM document_signers WHERE document_id = ? ORDER BY id ASC`,
+      [gfDoc.id]
+    );
+    gfSigners = signerRows.map((s) => ({ email: s.email, role: s.role, signed: Boolean(s.signed_at) }));
+  }
   const articlesDoc = conversion?.updated_articles_document_id ? documentsById[conversion.updated_articles_document_id] || null : null;
   const shareholderDoc = conversion?.shareholder_register_document_id ? documentsById[conversion.shareholder_register_document_id] || null : null;
   const confirmationDoc = conversion?.capital_confirmation_document_id ? documentsById[conversion.capital_confirmation_document_id] || null : null;
   const packageDoc = conversion?.altinn_package_document_id ? documentsById[conversion.altinn_package_document_id] || null : null;
-  const approvalGate = await evaluateTriggerApproval(connection, round, "new_priced_round");
+  const approvalGate = await evaluateTriggerApproval(connection, round, conversion?.trigger_type || "new_priced_round");
 
   return {
     round,
@@ -1487,7 +1496,7 @@ export async function buildConversionState(connection, startupContext, user) {
         requests: parValueRequests
       },
       board: { status: boardDoc?.status === "LOCKED" ? "signed" : (boardDoc ? "ready" : "pending"), document: boardDoc },
-      gf: { status: gfDoc?.status === "LOCKED" ? "signed" : (gfDoc ? "ready" : "pending"), document: gfDoc },
+      gf: { status: gfDoc?.status === "LOCKED" ? "signed" : (gfDoc ? "ready" : "pending"), document: gfDoc, signers: gfSigners },
       articles: { status: articlesDoc ? "ready" : "pending", document: articlesDoc },
       shareholder_register: { status: shareholderDoc ? "ready" : "pending", document: shareholderDoc },
       third_party_confirmation: {
@@ -1836,6 +1845,62 @@ router.post("/gf/generate", auth, requireRole(["startup"]), async (req, res) => 
   }
 });
 
+router.post("/gf/resend-sign-link", auth, requireRole(["startup"]), async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupId = startupContext.startupUserId;
+    const round = await getLatestRoundForStartup(connection, startupId);
+    if (!round) return res.status(404).json({ error: "Fant ingen runde." });
+
+    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    if (!conversion?.gf_document_id) {
+      return res.status(400).json({ error: "GF-dokument er ikke generert ennå." });
+    }
+
+    const [docRows] = await connection.query("SELECT status FROM documents WHERE id = ?", [conversion.gf_document_id]);
+    if (docRows[0]?.status === "LOCKED") {
+      return res.status(400).json({ error: "Dokumentet er allerede signert og låst." });
+    }
+
+    const [unsignedSigners] = await connection.query(
+      `SELECT email, role FROM document_signers WHERE document_id = ? AND signed_at IS NULL`,
+      [conversion.gf_document_id]
+    );
+
+    const [legalRows] = await connection.query(
+      `SELECT secretary_email FROM startup_legal_data WHERE user_id = ? LIMIT 1`,
+      [startupId]
+    );
+    const secretaryEmail = String(legalRows[0]?.secretary_email || "").trim().toLowerCase();
+
+    const protocolSigner = unsignedSigners.find(
+      (s) => (secretaryEmail && s.email?.toLowerCase() === secretaryEmail) ||
+              String(s.role || "").toLowerCase().includes("protokoll")
+    );
+
+    if (!protocolSigner) {
+      return res.status(400).json({ error: "Protokollunderskriver er allerede ferdig eller ikke registrert på dokumentet." });
+    }
+
+    const signUrl = buildSignUrl("conversion", conversion.gf_document_id);
+    await sendDocumentSigningRequestEmail({
+      to: protocolSigner.email,
+      companyName: startupContext.company?.company_name || "Selskapet",
+      roleLabel: protocolSigner.role || "Protokollunderskriver",
+      documentTitle: "Generalforsamlingsprotokoll",
+      signUrl
+    });
+
+    res.json({ success: true, sign_url: signUrl, email: protocolSigner.email });
+  } catch (err) {
+    console.error("Resend GF sign link error:", err);
+    res.status(500).json({ error: "Intern feil ved utsending." });
+  } finally {
+    connection.release();
+  }
+});
+
 router.get("/package/download", auth, requireRole(["startup"]), async (req, res) => {
   const connection = await pool.getConnection();
 
@@ -1851,6 +1916,61 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
     if (!conversion || !conversion.altinn_package_document_id) {
       return res.status(400).json({ error: "Konverteringspakken er ikke klar ennå." });
+    }
+
+    // Gate 1: all par value payments must be confirmed
+    const [unpaidPar] = await connection.query(
+      `SELECT id, investor_name FROM conversion_par_value_requests
+       WHERE conversion_id = ? AND (paid_confirmed_at IS NULL OR paid_confirmed_at = '')`,
+      [conversion.id]
+    );
+    if (unpaidPar.length > 0) {
+      return res.status(400).json({
+        error: `Paribeløpet er ikke bekreftet betalt for alle investorer (${unpaidPar.length} gjenstår). Bekreft betaling for alle investorer før pakken lastes ned.`
+      });
+    }
+
+    // Gate 2: all investors must have complete legal profiles
+    const [parRequests] = await connection.query(
+      `SELECT DISTINCT investor_user_id FROM conversion_par_value_requests WHERE conversion_id = ? AND investor_user_id IS NOT NULL`,
+      [conversion.id]
+    );
+    const investorIds = parRequests.map((r) => r.investor_user_id);
+    if (investorIds.length > 0) {
+      const [incompleteProfiles] = await connection.query(
+        `SELECT user_id FROM investor_legal_profiles
+         WHERE user_id IN (?) AND (full_name IS NULL OR full_name = '' OR birth_date IS NULL OR birth_date = '' OR digital_address IS NULL OR digital_address = '' OR residential_address IS NULL OR residential_address = '')`,
+        [investorIds]
+      );
+      const [existingProfiles] = await connection.query(
+        `SELECT user_id FROM investor_legal_profiles WHERE user_id IN (?)`,
+        [investorIds]
+      );
+      const existingIds = new Set(existingProfiles.map((p) => p.user_id));
+      const missingProfiles = investorIds.filter((id) => !existingIds.has(id));
+      if (incompleteProfiles.length > 0 || missingProfiles.length > 0) {
+        return res.status(400).json({
+          error: "Én eller flere investorer mangler juridisk informasjon (navn, fødselsdato, adresse) som kreves i aksjeeierbok. Be investor logge inn og fylle ut sin profil."
+        });
+      }
+    }
+
+    // Gate 3: all existing shareholders must be complete
+    const [incompleteExisting] = await connection.query(
+      `SELECT id FROM conversion_existing_shareholders
+       WHERE conversion_id = ? AND (
+         shareholder_name IS NULL OR shareholder_name = '' OR
+         birth_date IS NULL OR birth_date = '' OR
+         digital_address IS NULL OR digital_address = '' OR
+         residential_address IS NULL OR residential_address = '' OR
+         share_count IS NULL OR share_count <= 0
+       )`,
+      [conversion.id]
+    );
+    if (incompleteExisting.length > 0) {
+      return res.status(400).json({
+        error: `${incompleteExisting.length} eksisterende aksjonær(er) mangler informasjon i aksjeeierbok (navn, fødselsdato, adresse, aksjer). Fyll ut alle felter under «Eksisterende aksjonærer» før pakken lastes ned.`
+      });
     }
 
     const docIds = [

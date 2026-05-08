@@ -243,6 +243,12 @@ frontendPages.forEach((page) => {
   app.get(`/${page}`, (req, res) => {
     res.sendFile(path.join(frontendDir, page));
   });
+  const cleanPath = `/${page.replace(/\.html$/, "")}`;
+  if (cleanPath !== "/index") {
+    app.get(cleanPath, (req, res) => {
+      res.sendFile(path.join(frontendDir, page));
+    });
+  }
 });
 
 /* =========================================

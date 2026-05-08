@@ -376,7 +376,7 @@ export const uploadStartupPitchDeck = async (req, res) => {
         const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
         const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
         const absolutePath = path.join(frontendUploadsDir, storedFileName);
-        const publicPath = `uploads/startup-documents/${storedFileName}`;
+        const publicPath = `/uploads/startup-documents/${storedFileName}`;
 
         await fs.mkdir(frontendUploadsDir, { recursive: true });
         await fs.writeFile(absolutePath, Buffer.from(match[1], "base64"));
@@ -426,7 +426,7 @@ export const uploadStartupArticlesOfAssociation = async (req, res) => {
         const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
         const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
         const absolutePath = path.join(frontendUploadsDir, storedFileName);
-        const publicPath = `uploads/startup-documents/${storedFileName}`;
+        const publicPath = `/uploads/startup-documents/${storedFileName}`;
 
         await fs.mkdir(frontendUploadsDir, { recursive: true });
         await fs.writeFile(absolutePath, Buffer.from(match[1], "base64"));
