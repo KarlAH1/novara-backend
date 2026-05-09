@@ -13,6 +13,7 @@ import {
 } from "../utils/rcConversionCalculator.js";
 import { ensureStartupArticlesParsed } from "../utils/startupArticlesBasis.js";
 import { buildUpdatedArticlesDraft } from "../utils/updatedArticlesBuilder.js";
+import { fetchBrregCompany } from "../utils/brreg.js";
 import { sendEmail } from "../utils/emailService.js";
 import {
   sendConversionStartedEmail,
@@ -1088,13 +1089,20 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
   if (!freshConversion.updated_articles_document_id && basis.articles_document?.parsed_fields) {
     const nextShareCount = Number(basis.current_share_count || 0) + Number(calculations.totals?.total_conversion_share_count || 0);
     const nextCapitalAmount = Number(basis.current_share_capital_amount || 0) + Number(calculations.totals?.total_nominal_amount || 0);
+    let brregMunicipality = basis.articles_document?.parsed_fields?.municipality || "";
+    if (!brregMunicipality && orgnr) {
+      try {
+        const brregData = await fetchBrregCompany(orgnr);
+        brregMunicipality = brregData.municipality || "";
+      } catch (_) { /* silent fallback */ }
+    }
     const updatedArticles = await buildUpdatedArticlesDraft({
       templatePath: path.join(templatesDir, "vedtekter-template.html"),
       currentArticles: basis.articles_document.parsed_fields,
       fallbackData: {
         company_name: companyName,
         orgnr,
-        municipality: basis.articles_document?.parsed_fields?.municipality || "",
+        municipality: brregMunicipality,
         business_purpose: "Selskapets virksomhet følger det som er registrert for selskapet."
       },
       nextCapitalData: {
@@ -1156,27 +1164,45 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       ])
     );
 
-    const seededExistingRows = existingShareholderTaskRows.map((row) => ({
+    const conversionDateLabel = formatDateLabel(freshConversion.conversion_date || new Date());
+    const rawExistingRows = existingShareholderTaskRows.map((row) => ({
       shareholder_name: row.shareholder_name,
       identifier_value: row.birth_date ? formatDateLabel(row.birth_date) : "",
       digital_address: row.digital_address || "",
       residential_address: row.residential_address || "",
       share_class: row.share_class || "A",
       share_count: Number(row.share_count || 0),
-      share_range_label: row.share_numbers || "Fastsettes ved ferdigstillelse",
-      entry_date_display: ""
+      entry_date: freshConversion.conversion_date || new Date().toISOString()
     }));
 
-    const investorRows = buildShareholderRegisterRows(
-      [],
-      0,
-      calculations.investors.map((investor) => ({
-        ...investor,
-        legal_profile: investorLegalProfiles.get(Number(investor.investor_id)) || null,
+    const rawInvestorRows = (calculations.investors || []).map((investor) => {
+      const profile = investorLegalProfiles.get(Number(investor.investor_id)) || {};
+      return {
+        shareholder_name: profile.full_name || investor.investor_name || investor.investor_email || `Investor ${investor.agreement_id}`,
+        identifier_value: profile.birth_date || "",
+        digital_address: profile.digital_address || investor.investor_email || "",
+        residential_address: [profile.residential_address, profile.postal_code, profile.city, profile.country].filter(Boolean).join(", "),
+        share_class: "A",
+        share_count: Number(investor.conversion_share_count || 0),
         entry_date: freshConversion.conversion_date || new Date().toISOString()
-      }))
-    );
-    const shareholderRegisterRows = [...seededExistingRows, ...investorRows];
+      };
+    });
+
+    const allRawRows = [...rawExistingRows, ...rawInvestorRows];
+    const totalShares = allRawRows.reduce((sum, r) => sum + Number(r.share_count || 0), 0);
+    let currentNumber = 1;
+    const shareholderRegisterRows = allRawRows.map((row) => {
+      const shareCount = Number(row.share_count || 0);
+      const rangeStart = shareCount > 0 ? currentNumber : null;
+      const rangeEnd = shareCount > 0 ? currentNumber + shareCount - 1 : null;
+      if (shareCount > 0) currentNumber = rangeEnd + 1;
+      return {
+        ...row,
+        ownership_percent: totalShares > 0 ? ((shareCount / totalShares) * 100) : 0,
+        share_range_label: rangeStart && rangeEnd ? `${rangeStart.toLocaleString("no-NO")}–${rangeEnd.toLocaleString("no-NO")}` : "",
+        entry_date_display: row.entry_date ? formatDateLabel(row.entry_date) : conversionDateLabel
+      };
+    });
 
     const shareholderRegisterHtml = buildShareholderRegisterHtml({
       companyName,
@@ -1284,10 +1310,10 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
   const boardLocked = byId[conversion.board_document_id]?.status === "LOCKED";
   const gfLocked = byId[conversion.gf_document_id]?.status === "LOCKED";
   const confirmationLocked = byId[conversion.capital_confirmation_document_id]?.status === "LOCKED";
-  const articlesLocked = byId[conversion.updated_articles_document_id]?.status === "LOCKED";
-  const registerLocked = byId[conversion.shareholder_register_document_id]?.status === "LOCKED";
+  const articlesReady = Boolean(byId[conversion.updated_articles_document_id]);
+  const registerReady = Boolean(byId[conversion.shareholder_register_document_id]);
 
-  if (!boardLocked || !gfLocked || !confirmationLocked || !articlesLocked || !registerLocked) {
+  if (!boardLocked || !gfLocked || !confirmationLocked || !articlesReady || !registerReady) {
     return;
   }
 
@@ -1868,15 +1894,8 @@ router.post("/gf/resend-sign-link", auth, requireRole(["startup"]), async (req, 
       [conversion.gf_document_id]
     );
 
-    const [legalRows] = await connection.query(
-      `SELECT secretary_email FROM startup_legal_data WHERE user_id = ? LIMIT 1`,
-      [startupId]
-    );
-    const secretaryEmail = String(legalRows[0]?.secretary_email || "").trim().toLowerCase();
-
     const protocolSigner = unsignedSigners.find(
-      (s) => (secretaryEmail && s.email?.toLowerCase() === secretaryEmail) ||
-              String(s.role || "").toLowerCase().includes("protokoll")
+      (s) => String(s.role || "").toLowerCase().includes("protokoll")
     );
 
     if (!protocolSigner) {
@@ -1913,15 +1932,24 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
       return res.status(404).json({ error: "Fant ingen runde å knytte pakken til." });
     }
 
-    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
-    if (!conversion || !conversion.altinn_package_document_id) {
-      return res.status(400).json({ error: "Konverteringspakken er ikke klar ennå." });
+    let conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    if (!conversion) {
+      return res.status(400).json({ error: "Fant ingen aktiv konvertering." });
+    }
+
+    if (!conversion.altinn_package_document_id) {
+      const state = await buildConversionState(connection, startupContext, req.user);
+      const [fresh] = await connection.query("SELECT * FROM conversion_events WHERE id = ? LIMIT 1", [conversion.id]);
+      conversion = fresh[0] || conversion;
+      if (!conversion.altinn_package_document_id) {
+        return res.status(400).json({ error: "Konverteringspakken er ikke klar ennå. Alle dokumenter (styrets forslag, GF, revisorbekreftelse, vedtekter og aksjeeierbok) må være ferdigstilt." });
+      }
     }
 
     // Gate 1: all par value payments must be confirmed
     const [unpaidPar] = await connection.query(
       `SELECT id, investor_name FROM conversion_par_value_requests
-       WHERE conversion_id = ? AND (paid_confirmed_at IS NULL OR paid_confirmed_at = '')`,
+       WHERE conversion_event_id = ? AND paid_confirmed_at IS NULL`,
       [conversion.id]
     );
     if (unpaidPar.length > 0) {
@@ -1932,14 +1960,14 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
 
     // Gate 2: all investors must have complete legal profiles
     const [parRequests] = await connection.query(
-      `SELECT DISTINCT investor_user_id FROM conversion_par_value_requests WHERE conversion_id = ? AND investor_user_id IS NOT NULL`,
+      `SELECT DISTINCT investor_id FROM conversion_par_value_requests WHERE conversion_event_id = ? AND investor_id IS NOT NULL`,
       [conversion.id]
     );
-    const investorIds = parRequests.map((r) => r.investor_user_id);
+    const investorIds = parRequests.map((r) => r.investor_id);
     if (investorIds.length > 0) {
       const [incompleteProfiles] = await connection.query(
         `SELECT user_id FROM investor_legal_profiles
-         WHERE user_id IN (?) AND (full_name IS NULL OR full_name = '' OR birth_date IS NULL OR birth_date = '' OR digital_address IS NULL OR digital_address = '' OR residential_address IS NULL OR residential_address = '')`,
+         WHERE user_id IN (?) AND (full_name IS NULL OR full_name = '' OR birth_date IS NULL OR digital_address IS NULL OR digital_address = '' OR residential_address IS NULL OR residential_address = '')`,
         [investorIds]
       );
       const [existingProfiles] = await connection.query(
@@ -1958,9 +1986,9 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     // Gate 3: all existing shareholders must be complete
     const [incompleteExisting] = await connection.query(
       `SELECT id FROM conversion_existing_shareholders
-       WHERE conversion_id = ? AND (
+       WHERE conversion_event_id = ? AND (
          shareholder_name IS NULL OR shareholder_name = '' OR
-         birth_date IS NULL OR birth_date = '' OR
+         birth_date IS NULL OR
          digital_address IS NULL OR digital_address = '' OR
          residential_address IS NULL OR residential_address = '' OR
          share_count IS NULL OR share_count <= 0

@@ -510,7 +510,7 @@ router.get("/startup/list", auth, async (req, res) => {
                       WHERE ds.document_id = d.id
                     )
                   ) AS signed_at
-                FROM documents
+                FROM documents d
                 WHERE d.startup_id = ?
                 ORDER BY d.created_at DESC, d.id DESC
                 `,

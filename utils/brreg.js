@@ -104,6 +104,7 @@ export const fetchBrregCompany = async (rawOrgnr) => {
     form: data.organisasjonsform?.kode || null,
     formDescription: data.organisasjonsform?.beskrivelse || null,
     status: data.konkurs ? "Konkurs" : (data.slettedato ? "Slettet" : "Aktiv"),
+    municipality: data.forretningsadresse?.kommune || data.postadresse?.kommune || null,
     address: toAddressLabel(data.forretningsadresse || data.postadresse),
     hasRegisteredSignature: typeof data.harRegistrertSignatur === "boolean"
       ? data.harRegistrertSignatur
