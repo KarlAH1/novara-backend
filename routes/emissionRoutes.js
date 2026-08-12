@@ -7,6 +7,7 @@ import {
     updateEmissionConfig,
     getActiveEmission,
     activateEmission,
+    closeEmissionEarly,
     generateInvite,
     investInEmission,
     deleteEmissionByStartup,
@@ -30,6 +31,9 @@ router.put("/:id/config", auth, updateEmissionConfig);
 
 // Activate emission
 router.post("/:id/activate", auth, activateEmission);
+
+// Close emission early (before target reached)
+router.post("/:id/close-early", auth, closeEmissionEarly);
 
 // Delete emission
 router.delete("/:id", auth, deleteEmissionByStartup);

@@ -5,7 +5,7 @@ import {
   isUserInSameCompany,
   resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
-import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import { syncEmissionRoundAvailability, getEmissionRoundColumns, updateRoundClosure } from "../utils/emissionRoundState.js";
 import { sendRoundActivatedEmail } from "../utils/notificationEmailFlow.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
@@ -621,6 +621,35 @@ export const activateEmission = async (req, res) => {
   } catch (err) {
       console.error("Activate error:", err);
       res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const closeEmissionEarly = async (req, res) => {
+  try {
+    const emissionId = req.params.id;
+    const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+    const startupId = startupContext.startupUserId;
+
+    const [rows] = await pool.query(
+      `SELECT id, open, closed_reason FROM emission_rounds WHERE id = ? AND startup_id = ?`,
+      [emissionId, startupId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "Fant ikke runden." });
+    }
+
+    if (rows[0].closed_reason) {
+      return res.status(400).json({ message: "Runden er allerede lukket." });
+    }
+
+    const columns = await getEmissionRoundColumns(pool);
+    await updateRoundClosure(pool, emissionId, "manually_closed", columns);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Close emission early error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 

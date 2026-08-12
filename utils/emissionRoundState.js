@@ -62,7 +62,7 @@ export async function getEmissionRoundColumns(connection) {
   return new Set(columnRows.map((column) => column.Field));
 }
 
-async function updateRoundClosure(connection, roundId, closedReason, columns) {
+export async function updateRoundClosure(connection, roundId, closedReason, columns) {
   const updates = ["open = 0"];
   const params = [];
 
