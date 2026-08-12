@@ -18,6 +18,7 @@ import {
     extractArticlesTextFromFile,
     parseArticlesText
 } from "../utils/articlesParser.js";
+import { improveStartupPitchText } from "../utils/openaiPitchAssistant.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,6 +66,24 @@ function safeParseJson(value) {
         return {};
     }
 }
+
+export const improveStartupPitchCopy = async (req, res) => {
+    try {
+        const whatOffers = String(req.body?.what_offers || "").trim();
+        const useOfFunds = String(req.body?.use_of_funds || "").trim();
+
+        if (!whatOffers && !useOfFunds) {
+            return res.json({ success: true, suggestion: null });
+        }
+
+        const suggestion = await improveStartupPitchText({ whatOffers, useOfFunds });
+        res.json({ success: true, suggestion });
+    } catch (error) {
+        console.error("Improve pitch text error:", error);
+        // AI-forslag er en tilleggsfunksjon — feil her skal aldri blokkere lagring.
+        res.json({ success: true, suggestion: null });
+    }
+};
 
 export const createOrUpdateStartupProfile = async (req, res) => {
     try {

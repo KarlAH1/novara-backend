@@ -146,6 +146,7 @@ app.use(express.static(frontendDir));
    ROUTES IMPORT
 ========================================= */
 import authRoutes from "./routes/authRoutes.js";
+import taskRoutes from "./routes/taskRoutes.js";
 import startupRoutes from "./routes/startupRoutes.js";
 import emissionRoutes from "./routes/emissionRoutes.js";
 import investorRoutes from "./routes/investorRoutes.js";
@@ -198,6 +199,7 @@ app.get("/api/ready", async (req, res) => {
    API ROUTES
 ========================================= */
 app.use("/api/auth", authRoutes);
+app.use("/api/tasks", taskRoutes);
 app.use("/api/startup", startupRoutes);
 app.use("/api/emission", emissionRoutes);
 app.use("/api/investor", investorRoutes);

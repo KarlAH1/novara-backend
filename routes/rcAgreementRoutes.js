@@ -82,7 +82,7 @@ const getDocumentSigners = async (connection, documentId) => {
 
 let rcAgreementColumnsPromise;
 
-const getRcAgreementColumns = async () => {
+export const getRcAgreementColumns = async () => {
   if (!rcAgreementColumnsPromise) {
     rcAgreementColumnsPromise = pool
       .query("SHOW COLUMNS FROM rc_agreements")
@@ -926,6 +926,38 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
   }
 });
 
+/* =====================================================
+   INVESTOR MARKS AGREEMENT AS PAID
+   (informational only — startup still confirms separately)
+===================================================== */
+router.post("/:id(\\d+)/mark-paid", auth, requireRole(["investor"]), async (req, res) => {
+  try {
+    const agreementId = req.params.id;
+    const userId = req.user.id;
+
+    const [rows] = await pool.query(
+      `SELECT id, investor_id FROM rc_agreements WHERE id = ?`,
+      [agreementId]
+    );
+
+    if (!rows.length || rows[0].investor_id !== userId) {
+      return res.status(404).json({ error: "Agreement not found" });
+    }
+
+    await pool.query(
+      `UPDATE rc_agreements
+       SET investor_marked_paid_at = COALESCE(investor_marked_paid_at, NOW())
+       WHERE id = ?`,
+      [agreementId]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Mark RC paid error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
   /* =====================================================
    GET MY AGREEMENTS (Investor)
 ===================================================== */
@@ -949,6 +981,7 @@ router.get(
             a.created_at,
             a.activated_at,
             a.payment_confirmed_by_startup_at,
+            a.investor_marked_paid_at,
             CONCAT('Emisjon #', a.round_id) AS round_name,
             e.deadline,
             e.discount_rate,
@@ -1017,6 +1050,7 @@ router.get(
           a.created_at,
           a.activated_at,
           a.payment_confirmed_by_startup_at,
+          a.investor_marked_paid_at,
           u.name AS investor_name,
           u.email AS investor_email,
           CONCAT('Emisjon #', a.round_id) AS round_name,

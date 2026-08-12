@@ -14,7 +14,8 @@ import {
   startStartupPlanPayment,
   applyStartupDiscountCode,
   generateStartupDiscountCode,
-  reportStartupIssue
+  reportStartupIssue,
+  improveStartupPitchCopy
 } from "../controllers/startupController.js";
 
 const router = express.Router();
@@ -31,6 +32,7 @@ router.get("/ping", (req, res) =>
    (One startup per user)
 ========================================= */
 router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
+router.post("/improve-pitch", authMiddleware, improveStartupPitchCopy);
 router.post("/pitch-deck", authMiddleware, uploadStartupPitchDeck);
 router.post("/articles-of-association", authMiddleware, uploadStartupArticlesOfAssociation);
 router.get("/plan", authMiddleware, getStartupPlanStatus);
