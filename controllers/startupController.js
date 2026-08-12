@@ -22,7 +22,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendUploadsDir = path.resolve(__dirname, "../../frontend/uploads/startup-documents");
-const STARTUP_TEXT_MAX_LENGTH = 200;
+const STARTUP_TEXT_MAX_LENGTH = 500;
 
 function validateStartupText(value, fieldLabel, { required = false } = {}) {
     const normalized = String(value || "").trim();
