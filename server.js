@@ -14,6 +14,8 @@ import { ensureStartupDocumentSchema } from "./utils/startupDocumentSchema.js";
 import { ensureInvestorLegalProfileSchema } from "./utils/investorLegalProfileSchema.js";
 import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
 import { ensureStartupProfileSchema } from "./utils/startupProfileSchema.js";
+import { stripe, isStripeConfigured } from "./utils/stripeClient.js";
+import { handleCheckoutSessionCompleted, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted } from "./utils/stripePayments.js";
 
 /* =========================================
    ENVIRONMENT SAFETY CHECK
@@ -136,6 +138,40 @@ app.use(
 );
 
 /* =========================================
+   STRIPE WEBHOOK — must see the raw body for signature
+   verification, so it's registered before express.json().
+========================================= */
+app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!isStripeConfigured() || !process.env.STRIPE_WEBHOOK_SECRET) {
+    return res.status(503).send("Stripe webhook not configured");
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      req.headers["stripe-signature"],
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Stripe webhook signature verification failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    if (event.type === "checkout.session.completed") {
+      await handleCheckoutSessionCompleted(event.data.object);
+      await handlePlanCheckoutSessionCompleted(event.data.object);
+      await handleParValueCheckoutSessionCompleted(event.data.object);
+    }
+    res.json({ received: true });
+  } catch (err) {
+    console.error("Stripe webhook handling error:", err);
+    res.status(500).json({ error: "Webhook handling failed" });
+  }
+});
+
+/* =========================================
    MIDDLEWARE
 ========================================= */
 app.use(express.json({ limit: "10mb" }));
@@ -147,6 +183,7 @@ app.use(express.static(frontendDir));
 ========================================= */
 import authRoutes from "./routes/authRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js";
+import stripeRoutes from "./routes/stripeRoutes.js";
 import startupRoutes from "./routes/startupRoutes.js";
 import emissionRoutes from "./routes/emissionRoutes.js";
 import investorRoutes from "./routes/investorRoutes.js";
@@ -200,6 +237,7 @@ app.get("/api/ready", async (req, res) => {
 ========================================= */
 app.use("/api/auth", authRoutes);
 app.use("/api/tasks", taskRoutes);
+app.use("/api/stripe", stripeRoutes);
 app.use("/api/startup", startupRoutes);
 app.use("/api/emission", emissionRoutes);
 app.use("/api/investor", investorRoutes);

@@ -7,17 +7,13 @@ import {
   investViaInvite,
   resolveRcPaymentDeadline
 } from "../controllers/rcAgreementController.js";
-import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 import { applySignatureBlockToHtml } from "../utils/documentSigning.js";
 import { sendRcPaymentConfirmedEmail } from "../utils/notificationEmailFlow.js";
+import { activateRcAgreementPayment } from "../utils/rcPaymentActivation.js";
 
 const router = express.Router();
-
-const getRcPaymentColumns = async (connection) => {
-  const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
-  return new Set(columnRows.map((column) => column.Field));
-};
 
 const formatDateOnly = (value) => {
   if (!value) return "";
@@ -195,6 +191,7 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         COALESCE(c.company_name, sp.company_name, u.name) AS company_legal_name,
         investor.name AS investor_name,
         investor.email AS investor_email,
+        pr.id AS par_value_request_id,
         pr.par_value_amount,
         pr.reference AS par_value_reference,
         pr.due_date AS par_value_due_date,
@@ -202,7 +199,9 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         d.id AS document_id,
         d.title AS document_title,
         d.status AS document_status,
-        d.locked_at AS document_locked_at
+        d.locked_at AS document_locked_at,
+        c.stripe_account_id,
+        c.stripe_charges_enabled
       FROM rc_agreements a
       JOIN emission_rounds e ON a.round_id = e.id
       JOIN users u ON e.startup_id = u.id
@@ -781,134 +780,31 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
   const connection = await pool.getConnection();
 
   try {
-
     const agreementId = req.params.id;
     const userId = req.user.id;
 
-    await connection.beginTransaction();
-
-    const [rows] = await connection.query(
-      `
-      SELECT a.*, e.amount_raised, investor.email AS investor_email, COALESCE(investor.name, investor.email) AS investor_name
-      FROM rc_agreements a
-      JOIN emission_rounds e ON a.round_id = e.id
-      LEFT JOIN users investor ON investor.id = a.investor_id
-      WHERE a.id=? AND a.startup_id=?
-      FOR UPDATE
-      `,
-      [agreementId, userId]
-    );
-
-    if (!rows.length) {
-      await connection.rollback();
-      return res.status(404).json({
-        error: "Agreement not found"
-      });
-    }
-
-    const agreement = rows[0];
-    const availability = await syncEmissionRoundAvailability(connection, agreement.round_id, { lock: true });
-
-    if (agreement.status !== "Awaiting Payment") {
-      await connection.rollback();
-      return res.status(400).json({
-        error: "Agreement not ready for activation"
-      });
-    }
-
-    if (!availability?.canInvest || agreement.investment_amount > (availability?.remainingCapacity ?? 0)) {
-      await connection.rollback();
-      return res.status(400).json({
-        error: getCapacityExceededMessage(availability?.remainingCapacity ?? 0),
-        max_available_amount: availability?.remainingCapacity ?? 0,
-        remainingCapacity: availability?.remainingCapacity ?? 0
-      });
-    }
-
-    await connection.query(
-      `
-      UPDATE rc_agreements
-      SET
-        status='Active RC',
-        activated_at=NOW(),
-        payment_confirmed_by_startup_at=NOW()
-      WHERE id=?
-      `,
-      [agreementId]
-    );
-
-    await connection.query(
-      `
-      UPDATE emission_rounds
-      SET amount_raised = amount_raised + ?
-      WHERE id = ?
-      `,
-      [agreement.investment_amount, agreement.round_id]
-    );
-
-    await syncEmissionRoundAvailability(connection, agreement.round_id, { lock: true });
-
-    const [paymentRows] = await connection.query(
-      "SELECT id FROM rc_payments WHERE agreement_id = ?",
-      [agreementId]
-    );
-
-    const rcPaymentColumns = await getRcPaymentColumns(connection);
-
-    if (paymentRows.length === 0) {
-      const insertColumns = ["agreement_id", "amount", "status"];
-      const insertValues = ["?", "?", "'Payment Confirmed'"];
-
-      if (rcPaymentColumns.has("reference")) {
-        insertColumns.push("reference");
-        insertValues.push("?");
-      }
-
-      if (rcPaymentColumns.has("initiated_at")) {
-        insertColumns.push("initiated_at");
-        insertValues.push("NOW()");
-      }
-
-      if (rcPaymentColumns.has("confirmed_at")) {
-        insertColumns.push("confirmed_at");
-        insertValues.push("NOW()");
-      }
-
-      await connection.query(
-        `
-        INSERT INTO rc_payments
-        (${insertColumns.join(", ")})
-        VALUES (${insertValues.join(", ")})
-        `,
-        rcPaymentColumns.has("reference")
-          ? [agreementId, agreement.investment_amount, agreement.rc_id || `RC-${agreementId}`]
-          : [agreementId, agreement.investment_amount]
-      );
-    } else {
-      const updateClauses = ["status='Payment Confirmed'"];
-
-      if (rcPaymentColumns.has("confirmed_at")) {
-        updateClauses.push("confirmed_at=NOW()");
-      }
-
-      await connection.query(
-        `
-        UPDATE rc_payments
-        SET ${updateClauses.join(", ")}
-        WHERE agreement_id = ?
-        `,
-        [agreementId]
-      );
-    }
-
-    await connection.commit();
-
-    sendRcPaymentConfirmedEmail({
-      investorEmail: agreement.investor_email,
-      startupName: req.user.name || "selskapet",
-      amount: agreement.investment_amount,
-      agreementId
+    const result = await activateRcAgreementPayment(connection, {
+      agreementId,
+      expectedStartupId: userId
     });
+
+    if (!result.ok) {
+      return res.status(result.code).json({
+        error: result.error,
+        ...(result.max_available_amount !== undefined
+          ? { max_available_amount: result.max_available_amount, remainingCapacity: result.max_available_amount }
+          : {})
+      });
+    }
+
+    if (!result.alreadyActive) {
+      sendRcPaymentConfirmedEmail({
+        investorEmail: result.agreement.investor_email,
+        startupName: req.user.name || "selskapet",
+        amount: result.agreement.investment_amount,
+        agreementId
+      });
+    }
 
     res.json({
       success: true,
@@ -916,7 +812,6 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
     });
 
   } catch (err) {
-    await connection.rollback();
     console.error("Confirm payment failed:", err);
     res.status(500).json({
       error: "Internal server error"

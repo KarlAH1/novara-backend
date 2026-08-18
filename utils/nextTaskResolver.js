@@ -1,7 +1,8 @@
 import pool from "../config/db.js";
-import { getCompanyStartupProfile, resolveCompanyStartupOwner } from "./startupContext.js";
+import { getCompanyStartupProfile, resolveCompanyStartupOwner, getCompanyForUserWithConnection } from "./startupContext.js";
 import { getRcAgreementColumns } from "../routes/rcAgreementRoutes.js";
 import { getStartupPlanSummaryForUser, STARTUP_PLAN_STATES } from "./startupPlanAccess.js";
+import { isStripeConfigured } from "./stripeClient.js";
 
 // rc_agreements columns vary by migration state — mirrors the same
 // dynamic-select pattern used in the GET /:id route (rcAgreementRoutes.js).
@@ -132,7 +133,7 @@ async function getStartupPlanTask(userId) {
             title: "Venter på bekreftelse fra Raisium",
             description: "Betalingen din er registrert og venter på bekreftelse fra Raisium før rundeverktøyet åpnes.",
             ctaLabel: "Se status",
-            ctaUrl: "profile.html"
+            ctaUrl: "startup-payment.html"
         };
     }
 
@@ -154,6 +155,19 @@ async function getStartupPlanTask(userId) {
 }
 
 async function getStartupNextTask(userId) {
+    const profile = await getCompanyStartupProfile(pool, userId);
+    const offeringMissing = !String(profile?.sector || "").trim();
+    const useOfFundsMissing = !String(profile?.pitch || "").trim();
+
+    if (!profile || offeringMissing || useOfFundsMissing) {
+        return {
+            title: "Fullfør profilen",
+            description: "Fyll ut hva selskapet tilbyr og hva pengene skal brukes til, så investorer kan se det.",
+            ctaLabel: "Gå til profilen",
+            ctaUrl: "profile.html"
+        };
+    }
+
     const planTask = await getStartupPlanTask(userId);
     if (planTask) return planTask;
 
@@ -183,19 +197,6 @@ async function getStartupNextTask(userId) {
         }
     }
 
-    const profile = await getCompanyStartupProfile(pool, userId);
-    const offeringMissing = !String(profile?.sector || "").trim();
-    const useOfFundsMissing = !String(profile?.pitch || "").trim();
-
-    if (!profile || offeringMissing || useOfFundsMissing) {
-        return {
-            title: "Fullfør profilen",
-            description: "Fyll ut hva selskapet tilbyr og hva pengene skal brukes til, så investorer kan se det.",
-            ctaLabel: "Gå til profilen",
-            ctaUrl: "profile.html"
-        };
-    }
-
     const { startupUserId } = await resolveCompanyStartupOwner(pool, userId);
     const [articlesRows] = await pool.query(
         `SELECT id FROM startup_documents WHERE startup_id = ? AND document_type = 'current_articles_of_association' LIMIT 1`,
@@ -206,8 +207,8 @@ async function getStartupNextTask(userId) {
         return {
             title: "Last opp vedtekter",
             description: "Last opp gjeldende vedtekter, så de er klare til bruk i dokumentflyten og en eventuell konvertering.",
-            ctaLabel: "Gå til profilen",
-            ctaUrl: "profile.html"
+            ctaLabel: "Gå til dokumenter",
+            ctaUrl: "document.html"
         };
     }
 
@@ -223,6 +224,25 @@ async function getStartupNextTask(userId) {
             ctaLabel: "Gå til profilen",
             ctaUrl: "profile.html"
         };
+    }
+
+    if (isStripeConfigured()) {
+        const company = await getCompanyForUserWithConnection(pool, userId);
+        if (company?.company_id) {
+            const [companyRows] = await pool.query(
+                "SELECT stripe_charges_enabled FROM companies WHERE id = ? LIMIT 1",
+                [company.company_id]
+            );
+
+            if (!companyRows[0]?.stripe_charges_enabled) {
+                return {
+                    title: "Koble Stripe",
+                    description: "Koble til Stripe så investorer kan betale umiddelbart med kort eller Vipps, i stedet for bankoverføring.",
+                    ctaLabel: "Gå til dashbordet",
+                    ctaUrl: "dashboard.html"
+                };
+            }
+        }
     }
 
     return null;

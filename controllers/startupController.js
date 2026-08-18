@@ -19,6 +19,7 @@ import {
     parseArticlesText
 } from "../utils/articlesParser.js";
 import { improveStartupPitchText } from "../utils/openaiPitchAssistant.js";
+import { isStripeConfigured } from "../utils/stripeClient.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -509,6 +510,7 @@ function buildPlanResponse(summary) {
         includes_legal_help: summary.includes_legal_help,
         company: summary.company,
         plan_options: summary.plan_options,
+        stripe_configured: isStripeConfigured(),
         manual_payment: {
             recipient: process.env.RAISIUM_PAYMENT_RECIPIENT || "Raisium AS",
             account_number: process.env.RAISIUM_BANK_ACCOUNT || "15203206876",

@@ -4,7 +4,8 @@ export const STARTUP_PLAN_DEFINITIONS = {
   normal: {
     code: "normal",
     name: "Seed",
-    annual_price_nok: 3000,
+    annual_price_nok: 1500,
+    original_price_nok: 3000,
     available: true,
     features: [
       "Full dokumentflyt i Raisium",
