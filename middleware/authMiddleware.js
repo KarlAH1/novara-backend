@@ -39,7 +39,7 @@ export const auth = async (req, res, next) => {
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const [users] = await db.execute(
-            "SELECT id, email, role, email_verified FROM users WHERE id = ? LIMIT 1",
+            "SELECT id, name, email, role, email_verified FROM users WHERE id = ? LIMIT 1",
             [decoded.id]
         );
 
@@ -59,6 +59,7 @@ export const auth = async (req, res, next) => {
 
         req.user = {
             id: user.id,
+            name: user.name,
             role: user.role ? user.role.toLowerCase() : null,
             email: user.email,
             emailVerified: Boolean(user.email_verified)

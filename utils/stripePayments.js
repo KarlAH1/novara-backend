@@ -1,7 +1,7 @@
 import pool from "../config/db.js";
 import { stripe } from "./stripeClient.js";
 import { activateRcAgreementPayment } from "./rcPaymentActivation.js";
-import { sendRcPaymentConfirmedEmail } from "./notificationEmailFlow.js";
+import { sendRcPaymentConfirmedEmail, sendStripePaymentReceivedStartupEmail } from "./notificationEmailFlow.js";
 import { getCompanyForUser } from "./startupPlanAccess.js";
 import { sendTelegramAdminAlert } from "./telegramNotifier.js";
 
@@ -84,6 +84,14 @@ export async function handleCheckoutSessionCompleted(session) {
             sendRcPaymentConfirmedEmail({
                 investorEmail: result.agreement.investor_email,
                 startupName: result.agreement.startup_name || "selskapet",
+                amount: result.agreement.investment_amount,
+                agreementId
+            });
+
+            sendStripePaymentReceivedStartupEmail({
+                startupEmail: result.agreement.startup_email,
+                investorName: result.agreement.investor_name,
+                investorEmail: result.agreement.investor_email,
                 amount: result.agreement.investment_amount,
                 agreementId
             });

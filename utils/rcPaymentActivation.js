@@ -21,7 +21,7 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
         const [rows] = await connection.query(
             `
             SELECT a.*, e.amount_raised, investor.email AS investor_email, COALESCE(investor.name, investor.email) AS investor_name,
-                   COALESCE(su.name, su.email) AS startup_name
+                   COALESCE(su.name, su.email) AS startup_name, su.email AS startup_email
             FROM rc_agreements a
             JOIN emission_rounds e ON a.round_id = e.id
             LEFT JOIN users investor ON investor.id = a.investor_id

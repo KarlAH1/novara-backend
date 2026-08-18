@@ -370,10 +370,8 @@ export const investViaInvite = async (req, res) => {
         await connection.commit();
 
         sendRcAgreementCreatedEmails({
-            startupEmail: round.startup_email,
             startupName: round.startup_name,
             investorEmail: investorRows[0].email,
-            investorName: investorRows[0].name,
             amount: requestedAmount,
             agreementId
         }).catch((emailError) => {

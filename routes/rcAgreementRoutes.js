@@ -10,8 +10,9 @@ import {
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 import { applySignatureBlockToHtml } from "../utils/documentSigning.js";
-import { sendRcPaymentConfirmedEmail } from "../utils/notificationEmailFlow.js";
+import { sendRcPaymentConfirmedEmail, sendInvestorMarkedPaidEmail, sendRcAgreementCancelledEmail, sendInvestorWithdrewEmail } from "../utils/notificationEmailFlow.js";
 import { activateRcAgreementPayment } from "../utils/rcPaymentActivation.js";
+import { maybeSendPaymentReminder } from "../utils/rcPaymentReminder.js";
 
 const router = express.Router();
 
@@ -102,6 +103,18 @@ const rcDocumentJoin = `
 `;
 
 const getRcAgreementViewState = (agreement = {}) => {
+  if (agreement.status === "Cancelled") {
+    return {
+      flow_status: "Kansellert",
+      flow_message: agreement.cancelled_by === "investor"
+        ? "Investoren avbrøt investeringen før betaling."
+        : "Avtalen er kansellert av selskapet fordi betaling ikke ble mottatt.",
+      final_document_status: "Kansellert",
+      is_downloadable: false,
+      payment_status: "Kansellert"
+    };
+  }
+
   const paymentConfirmed = !!agreement.payment_confirmed_by_startup_at || agreement.status === "Active RC";
   const investorSigned = !!agreement.investor_signed_at || agreement.status === "Awaiting Payment" || paymentConfirmed;
   const startupPreApproved = agreement.round_open === 1 || !!agreement.round_activated_at;
@@ -239,10 +252,15 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
       email: agreement.investor_email
     });
 
-    res.json({
+    const enrichedAgreement = {
       ...agreement,
+      payment_deadline: resolveRcPaymentDeadline(agreement)
+    };
+    maybeSendPaymentReminder(enrichedAgreement);
+
+    res.json({
+      ...enrichedAgreement,
       investor_legal_profile: investorLegalProfile,
-      payment_deadline: resolveRcPaymentDeadline(agreement),
       round_status: availability?.status || null,
       round_closed_reason: availability?.closedReason || null,
       round_remaining_capacity: availability?.remainingCapacity ?? null,
@@ -800,7 +818,7 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
     if (!result.alreadyActive) {
       sendRcPaymentConfirmedEmail({
         investorEmail: result.agreement.investor_email,
-        startupName: req.user.name || "selskapet",
+        startupName: result.agreement.startup_name || "selskapet",
         amount: result.agreement.investment_amount,
         agreementId
       });
@@ -831,13 +849,25 @@ router.post("/:id(\\d+)/mark-paid", auth, requireRole(["investor"]), async (req,
     const userId = req.user.id;
 
     const [rows] = await pool.query(
-      `SELECT id, investor_id FROM rc_agreements WHERE id = ?`,
+      `
+      SELECT a.id, a.investor_id, a.investment_amount, a.investor_marked_paid_at,
+             COALESCE(investor.name, investor.email) AS investor_name, investor.email AS investor_email,
+             su.email AS startup_email
+      FROM rc_agreements a
+      JOIN emission_rounds e ON a.round_id = e.id
+      LEFT JOIN users investor ON investor.id = a.investor_id
+      LEFT JOIN users su ON su.id = e.startup_id
+      WHERE a.id = ?
+      `,
       [agreementId]
     );
 
     if (!rows.length || rows[0].investor_id !== userId) {
       return res.status(404).json({ error: "Agreement not found" });
     }
+
+    const agreement = rows[0];
+    const alreadyMarked = Boolean(agreement.investor_marked_paid_at);
 
     await pool.query(
       `UPDATE rc_agreements
@@ -846,9 +876,149 @@ router.post("/:id(\\d+)/mark-paid", auth, requireRole(["investor"]), async (req,
       [agreementId]
     );
 
+    if (!alreadyMarked) {
+      sendInvestorMarkedPaidEmail({
+        startupEmail: agreement.startup_email,
+        investorName: agreement.investor_name,
+        investorEmail: agreement.investor_email,
+        amount: agreement.investment_amount,
+        agreementId
+      }).catch((emailError) => {
+        console.error("Investor marked-paid notification email failed:", emailError);
+      });
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error("Mark RC paid error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/* =====================================================
+   STARTUP CANCELS AN UNPAID AGREEMENT
+   Only while status is Awaiting Payment — startup's own judgment call,
+   not automatic. Investor is always notified by email.
+===================================================== */
+router.post("/:id(\\d+)/cancel", auth, requireRole(["startup"]), async (req, res) => {
+  try {
+    const agreementId = req.params.id;
+    const startupId = req.user.id;
+    const reason = String(req.body?.reason || "").trim().slice(0, 255) || null;
+
+    const rcAgreementColumns = await getRcAgreementColumns();
+    const investorSignedAtSelect = rcAgreementColumns.has("investor_signed_at")
+      ? "a.investor_signed_at"
+      : rcAgreementColumns.has("signed_at")
+        ? "a.signed_at AS investor_signed_at"
+        : "NULL AS investor_signed_at";
+
+    const [rows] = await pool.query(
+      `
+      SELECT a.id, a.status, a.investment_amount, a.created_at, ${investorSignedAtSelect},
+             COALESCE(investor.name, investor.email) AS investor_name, investor.email AS investor_email
+      FROM rc_agreements a
+      JOIN emission_rounds e ON a.round_id = e.id
+      LEFT JOIN users investor ON investor.id = a.investor_id
+      WHERE a.id = ? AND e.startup_id = ?
+      `,
+      [agreementId, startupId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Agreement not found" });
+    }
+
+    const agreement = rows[0];
+
+    if (agreement.status !== "Awaiting Payment") {
+      return res.status(400).json({ error: "Kun avtaler som venter på betaling kan kanselleres." });
+    }
+
+    const deadline = resolveRcPaymentDeadline(agreement);
+    if (!deadline || new Date(deadline) > new Date()) {
+      return res.status(400).json({ error: "Avtalen kan først kanselleres etter at betalingsfristen har gått ut." });
+    }
+
+    await pool.query(
+      `UPDATE rc_agreements
+       SET status = 'Cancelled', cancelled_at = NOW(), cancellation_reason = ?, cancelled_by = 'startup'
+       WHERE id = ?`,
+      [reason, agreementId]
+    );
+
+    sendRcAgreementCancelledEmail({
+      investorEmail: agreement.investor_email,
+      investorName: agreement.investor_name,
+      startupName: req.user.name,
+      amount: agreement.investment_amount,
+      reason,
+      agreementId
+    }).catch((emailError) => {
+      console.error("Cancellation notification email failed:", emailError);
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Cancel RC agreement error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/* =====================================================
+   INVESTOR WITHDRAWS BEFORE PAYING
+   No deadline restriction — investor is giving up their own right, not
+   losing something the startup owed them. Startup is always notified.
+===================================================== */
+router.post("/:id(\\d+)/withdraw", auth, requireRole(["investor"]), async (req, res) => {
+  try {
+    const agreementId = req.params.id;
+    const investorId = req.user.id;
+    const reason = String(req.body?.reason || "").trim().slice(0, 255) || null;
+
+    const [rows] = await pool.query(
+      `
+      SELECT a.id, a.status, a.investment_amount, a.investor_id,
+             COALESCE(su.name, su.email) AS startup_name, su.email AS startup_email
+      FROM rc_agreements a
+      JOIN emission_rounds e ON a.round_id = e.id
+      LEFT JOIN users su ON su.id = e.startup_id
+      WHERE a.id = ?
+      `,
+      [agreementId]
+    );
+
+    if (!rows.length || rows[0].investor_id !== investorId) {
+      return res.status(404).json({ error: "Agreement not found" });
+    }
+
+    const agreement = rows[0];
+
+    if (agreement.status !== "Awaiting Payment") {
+      return res.status(400).json({ error: "Kun avtaler som venter på betaling kan avbrytes." });
+    }
+
+    await pool.query(
+      `UPDATE rc_agreements
+       SET status = 'Cancelled', cancelled_at = NOW(), cancellation_reason = ?, cancelled_by = 'investor'
+       WHERE id = ?`,
+      [reason, agreementId]
+    );
+
+    sendInvestorWithdrewEmail({
+      startupEmail: agreement.startup_email,
+      investorName: req.user.name,
+      investorEmail: req.user.email,
+      amount: agreement.investment_amount,
+      reason,
+      agreementId
+    }).catch((emailError) => {
+      console.error("Investor withdrawal notification email failed:", emailError);
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Withdraw RC agreement error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -877,6 +1047,10 @@ router.get(
             a.activated_at,
             a.payment_confirmed_by_startup_at,
             a.investor_marked_paid_at,
+            a.payment_reminder_sent_at,
+            a.cancelled_at,
+            a.cancelled_by,
+            a.cancellation_reason,
             CONCAT('Emisjon #', a.round_id) AS round_name,
             e.deadline,
             e.discount_rate,
@@ -913,12 +1087,20 @@ router.get(
           [investorId]
         );
   
-        res.json(rows.map((row) => ({
+        const enrichedRows = rows.map((row) => ({
           ...row,
           payment_deadline: resolveRcPaymentDeadline(row),
           ...getRcAgreementViewState(row)
-        })));
-  
+        }));
+
+        enrichedRows.forEach((row) => maybeSendPaymentReminder({
+          ...row,
+          investor_email: req.user.email,
+          investor_name: req.user.name
+        }));
+
+        res.json(enrichedRows);
+
       } catch (err) {
         console.error("Get my agreements failed:", err);
         res.status(500).json({ error: "Internal server error" });
@@ -946,6 +1128,10 @@ router.get(
           a.activated_at,
           a.payment_confirmed_by_startup_at,
           a.investor_marked_paid_at,
+          a.payment_reminder_sent_at,
+          a.cancelled_at,
+          a.cancelled_by,
+          a.cancellation_reason,
           u.name AS investor_name,
           u.email AS investor_email,
           CONCAT('Emisjon #', a.round_id) AS round_name,
@@ -978,11 +1164,15 @@ router.get(
         [startupId]
       );
 
-      res.json(rows.map((row) => ({
+      const enrichedRows = rows.map((row) => ({
         ...row,
         payment_deadline: resolveRcPaymentDeadline(row),
         ...getRcAgreementViewState(row)
-      })));
+      }));
+
+      enrichedRows.forEach((row) => maybeSendPaymentReminder({ ...row, startup_name: req.user.name }));
+
+      res.json(enrichedRows);
 
     } catch (err) {
       console.error("Get startup agreements failed:", err);

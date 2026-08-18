@@ -35,31 +35,20 @@ export async function sendRoundActivatedEmail({
 }
 
 export async function sendRcAgreementCreatedEmails({
-  startupEmail,
-  startupName,
   investorEmail,
-  investorName,
+  startupName,
   amount,
   agreementId
 }) {
-  const dashboardUrl = `${getFrontendBase()}/dashboard.html`;
   const rcUrl = `${getFrontendBase()}/rc-detail.html?id=${agreementId}`;
   const amountLabel = formatNok(amount);
 
   const tasks = [];
 
-  if (startupEmail) {
-    tasks.push(sendEmail({
-      to: startupEmail,
-      subject: "Ny investoravtale i Raisium",
-      text: `Hei,\n\n${investorName || investorEmail || "En investor"} har registrert ${amountLabel} i den private runden.\n\nGå til dashboardet for status og oppfølging:\n${dashboardUrl}`,
-      html: `
-        <p>Hei,</p>
-        <p><strong>${investorName || investorEmail || "En investor"}</strong> har registrert <strong>${amountLabel}</strong> i den private runden.</p>
-        <p><a href="${dashboardUrl}">Åpne dashboard</a></p>
-      `
-    }));
-  }
+  // Startupen varsles bevisst IKKE her — avtalen er kun signert, ikke betalt.
+  // De får beskjed først når investor faktisk har betalt eller markert som betalt
+  // (se sendInvestorMarkedPaidEmail / Stripe-webhooken), så de slipper å sjekke
+  // kontoen sin forgjeves hver gang en avtale opprettes.
 
   if (investorEmail) {
     tasks.push(sendEmail({
@@ -93,6 +82,137 @@ export async function sendRcPaymentConfirmedEmail({
       <p>Hei,</p>
       <p>Betalingen på <strong>${formatNok(amount)}</strong> er bekreftet av <strong>${startupName || "selskapet"}</strong>.</p>
       <p><a href="${rcUrl}">Åpne avtalen</a></p>
+    `
+  });
+}
+
+// Investor har trykket "Jeg har betalt" (bankoverføring) — startupen må selv
+// bekrefte mottak i dashboardet før avtalen aktiveres.
+export async function sendInvestorMarkedPaidEmail({
+  startupEmail,
+  investorName,
+  investorEmail,
+  amount,
+  agreementId
+}) {
+  if (!startupEmail) return;
+  const dashboardUrl = `${getFrontendBase()}/dashboard.html`;
+  const amountLabel = formatNok(amount);
+  const investorLabel = investorName || investorEmail || "En investor";
+  await sendSafe({
+    to: startupEmail,
+    subject: "En investor har markert betaling som sendt",
+    text: `Hei,\n\n${investorLabel} har markert ${amountLabel} som betalt i den private runden.\n\nSjekk kontoen din og bekreft mottak i Raisium når pengene er der:\n${dashboardUrl}`,
+    html: `
+      <p>Hei,</p>
+      <p><strong>${investorLabel}</strong> har markert <strong>${amountLabel}</strong> som betalt i den private runden.</p>
+      <p>Sjekk kontoen din og bekreft mottak i Raisium når pengene er der.</p>
+      <p><a href="${dashboardUrl}">Åpne dashboard</a></p>
+    `
+  });
+}
+
+// Stripe har bekreftet betaling og aktivert avtalen automatisk — startupen
+// trenger ikke gjøre noe, men bør vite at pengene er på vei.
+export async function sendStripePaymentReceivedStartupEmail({
+  startupEmail,
+  investorName,
+  investorEmail,
+  amount,
+  agreementId
+}) {
+  if (!startupEmail) return;
+  const dashboardUrl = `${getFrontendBase()}/dashboard.html`;
+  const amountLabel = formatNok(amount);
+  const investorLabel = investorName || investorEmail || "En investor";
+  await sendSafe({
+    to: startupEmail,
+    subject: "Betaling mottatt via Stripe",
+    text: `Hei,\n\n${investorLabel} har betalt ${amountLabel} med kort/Vipps via Stripe. Avtalen er automatisk aktivert i Raisium.\n\nÅpne dashboard:\n${dashboardUrl}`,
+    html: `
+      <p>Hei,</p>
+      <p><strong>${investorLabel}</strong> har betalt <strong>${amountLabel}</strong> med kort/Vipps via Stripe. Avtalen er automatisk aktivert i Raisium.</p>
+      <p><a href="${dashboardUrl}">Åpne dashboard</a></p>
+    `
+  });
+}
+
+// Betalingsfristen har passert uten at investor har betalt eller markert som
+// betalt — én engangs-påminnelse, sendt automatisk (ikke gjentagende spam).
+export async function sendRcPaymentReminderEmail({
+  investorEmail,
+  investorName,
+  startupName,
+  amount,
+  agreementId
+}) {
+  if (!investorEmail) return;
+  const rcUrl = `${getFrontendBase()}/rc-detail.html?id=${agreementId}`;
+  const amountLabel = formatNok(amount);
+  await sendSafe({
+    to: investorEmail,
+    subject: `Påminnelse: betaling til ${startupName || "selskapet"} venter`,
+    text: `Hei ${investorName || ""},\n\nBetalingsfristen for avtalen din på ${amountLabel} hos ${startupName || "selskapet"} har passert. Fullfør betalingen for å aktivere avtalen:\n${rcUrl}`,
+    html: `
+      <p>Hei ${investorName || ""},</p>
+      <p>Betalingsfristen for avtalen din på <strong>${amountLabel}</strong> hos <strong>${startupName || "selskapet"}</strong> har passert.</p>
+      <p>Fullfør betalingen for å aktivere avtalen.</p>
+      <p><a href="${rcUrl}">Åpne avtalen</a></p>
+    `
+  });
+}
+
+// Startupen har kansellert en avtale som ikke ble betalt i tide.
+export async function sendRcAgreementCancelledEmail({
+  investorEmail,
+  investorName,
+  startupName,
+  amount,
+  reason,
+  agreementId
+}) {
+  if (!investorEmail) return;
+  const amountLabel = formatNok(amount);
+  const reasonLine = reason ? `\n\nBegrunnelse fra selskapet: ${reason}` : "";
+  const reasonHtml = reason ? `<p>Begrunnelse fra selskapet: ${reason}</p>` : "";
+  await sendSafe({
+    to: investorEmail,
+    subject: `Avtalen din hos ${startupName || "selskapet"} er kansellert`,
+    text: `Hei ${investorName || ""},\n\n${startupName || "Selskapet"} har kansellert avtalen din på ${amountLabel}, siden betaling ikke ble mottatt.${reasonLine}\n\nTa kontakt med selskapet hvis du fortsatt ønsker å investere.`,
+    html: `
+      <p>Hei ${investorName || ""},</p>
+      <p><strong>${startupName || "Selskapet"}</strong> har kansellert avtalen din på <strong>${amountLabel}</strong>, siden betaling ikke ble mottatt.</p>
+      ${reasonHtml}
+      <p>Ta kontakt med selskapet hvis du fortsatt ønsker å investere.</p>
+    `
+  });
+}
+
+// Investor har selv avbrutt investeringen før betaling — startupen varsles
+// med det samme.
+export async function sendInvestorWithdrewEmail({
+  startupEmail,
+  investorName,
+  investorEmail,
+  amount,
+  reason,
+  agreementId
+}) {
+  if (!startupEmail) return;
+  const dashboardUrl = `${getFrontendBase()}/dashboard.html`;
+  const amountLabel = formatNok(amount);
+  const investorLabel = investorName || investorEmail || "En investor";
+  const reasonLine = reason ? `\n\nBegrunnelse fra investoren: ${reason}` : "";
+  const reasonHtml = reason ? `<p>Begrunnelse fra investoren: ${reason}</p>` : "";
+  await sendSafe({
+    to: startupEmail,
+    subject: "En investor har avbrutt investeringen",
+    text: `Hei,\n\n${investorLabel} har avbrutt investeringen på ${amountLabel} i den private runden, før betaling.${reasonLine}\n\nÅpne dashboard:\n${dashboardUrl}`,
+    html: `
+      <p>Hei,</p>
+      <p><strong>${investorLabel}</strong> har avbrutt investeringen på <strong>${amountLabel}</strong> i den private runden, før betaling.</p>
+      ${reasonHtml}
+      <p><a href="${dashboardUrl}">Åpne dashboard</a></p>
     `
   });
 }
