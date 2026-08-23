@@ -45,6 +45,13 @@ router.post("/connect/onboard", auth, requireRole(["startup"]), async (req, res)
         res.json({ url });
     } catch (err) {
         console.error("Stripe connect onboard error:", err);
+
+        if (String(err.message || "").includes("sign up for Connect")) {
+            return res.status(500).json({
+                error: "Stripe Connect er ikke aktivert på Raisium sin Stripe-konto ennå. Gå til https://dashboard.stripe.com/connect/accounts/overview og fullfør oppsettet der (tar noen minutter), prøv deretter igjen."
+            });
+        }
+
         res.status(500).json({ error: err.message || "Kunne ikke starte Stripe-tilkobling." });
     }
 });

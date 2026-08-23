@@ -566,6 +566,45 @@ export const updateEmissionConfig = async (req, res) => {
     }
   };
 
+/* =====================================================
+   UPDATE BANK ACCOUNT ONLY
+   Unlike the full config, this is NOT locked after the first investment —
+   a wrong account number needs to be fixable any time, since it's where
+   investors are actually sending money.
+===================================================== */
+export const updateEmissionBankAccount = async (req, res) => {
+  try {
+    const emissionId = req.params.id;
+    const bank_account = String(req.body.bank_account || "").trim();
+
+    if (!bank_account) {
+      return res.status(400).json({ message: "Kontonummer må være satt." });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, startup_id FROM emission_rounds WHERE id = ?`,
+      [emissionId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "Emission not found" });
+    }
+
+    if (!(await isUserInSameCompany(pool, req.user.id, rows[0].startup_id))) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    await pool.query(
+      `UPDATE emission_rounds SET bank_account = ? WHERE id = ?`,
+      [bank_account, emissionId]
+    );
+
+    res.json({ success: true, bank_account });
+  } catch (err) {
+    console.error("Update bank account error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
 
 /* =====================================================
    ACTIVATE EMISSION

@@ -5,6 +5,7 @@ import {
     getEmissionById,
     getPreviousEmissions,
     updateEmissionConfig,
+    updateEmissionBankAccount,
     getActiveEmission,
     activateEmission,
     closeEmissionEarly,
@@ -28,6 +29,9 @@ router.get("/:id", auth, getEmissionById);
 
 // Update config
 router.put("/:id/config", auth, updateEmissionConfig);
+
+// Update bank account only — allowed anytime, even after investments exist
+router.put("/:id/bank-account", auth, updateEmissionBankAccount);
 
 // Activate emission
 router.post("/:id/activate", auth, activateEmission);

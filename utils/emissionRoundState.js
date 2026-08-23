@@ -129,6 +129,7 @@ export async function syncEmissionRoundAvailability(connection, roundId, options
       ${actualCommittedSelect} AS committed_amount,
       er.deadline,
       er.open,
+      er.bank_account,
       ${columns.has("status") ? "status" : "NULL AS status"},
       ${columns.has("closed_at") ? "closed_at" : "NULL AS closed_at"},
       ${columns.has("closed_reason") ? "closed_reason" : "NULL AS closed_reason"}
