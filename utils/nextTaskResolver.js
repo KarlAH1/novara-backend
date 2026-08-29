@@ -238,8 +238,8 @@ async function getStartupNextTask(userId) {
                 return {
                     title: "Koble Stripe",
                     description: "Koble til Stripe så investorer kan betale umiddelbart med kort eller Vipps, i stedet for bankoverføring.",
-                    ctaLabel: "Gå til dashbordet",
-                    ctaUrl: "dashboard.html"
+                    ctaLabel: "Gå til profilen",
+                    ctaUrl: "profile.html"
                 };
             }
         }

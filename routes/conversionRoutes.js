@@ -682,13 +682,13 @@ function buildShareholderRegisterHtml({ companyName, orgnr, date, totalShareCapi
     .replace(/{{rows}}/g, htmlRows);
 }
 
-async function createDocument(connection, { type, startupId, title, html, signers = [] }) {
+async function createDocument(connection, { type, startupId, roundId, title, html, signers = [] }) {
   const [docResult] = await connection.query(
     `
-    INSERT INTO documents (type, startup_id, title, html_content, status)
-    VALUES (?, ?, ?, ?, 'DRAFT')
+    INSERT INTO documents (type, startup_id, round_id, title, html_content, status)
+    VALUES (?, ?, ?, ?, ?, 'DRAFT')
     `,
-    [type, startupId, title, html]
+    [type, startupId, roundId || null, title, html]
   );
 
   for (const signer of signers) {
@@ -943,6 +943,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const boardId = await createDocument(connection, {
       type: "SFC",
       startupId: startupContext.startupUserId,
+      roundId: round.id,
       title: `SFC – ${companyName}`,
       html: boardHtml,
       signers: boardSigners
@@ -1066,6 +1067,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const gfId = await createDocument(connection, {
       type: "GFC",
       startupId: startupContext.startupUserId,
+      roundId: round.id,
       title: `GFC – ${companyName}`,
       html: gfHtml,
       signers: gfSigners
@@ -1116,6 +1118,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const articlesId = await createDocument(connection, {
       type: "CONVERSION_ARTICLES",
       startupId: startupContext.startupUserId,
+      roundId: round.id,
       title: `Vedtekter etter konvertering – ${companyName}`,
       html: updatedArticles.html
     });
@@ -1218,6 +1221,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const registerId = await createDocument(connection, {
       type: "CONVERSION_SHARE_REGISTER",
       startupId: startupContext.startupUserId,
+      roundId: round.id,
       title: `Aksjeeierbok etter konvertering – ${companyName}`,
       html: shareholderRegisterHtml
     });
@@ -1256,6 +1260,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const confirmationId = await createDocument(connection, {
       type: "CONVERSION_CAPITAL_CONFIRMATION",
       startupId: startupContext.startupUserId,
+      roundId: round.id,
       title: `Revisorbekreftelse – ${companyName}`,
       html: confirmationHtml,
       signers: confirmationSigners
@@ -1330,6 +1335,7 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
   const packageId = await createDocument(connection, {
     type: "CONVERSION_PACKAGE",
     startupId: startupContext.startupUserId,
+    roundId: round.id,
     title: `Altinn-pakke – ${companyName}`,
     html: packageHtml
   });

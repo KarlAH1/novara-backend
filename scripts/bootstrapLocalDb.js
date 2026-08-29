@@ -125,35 +125,6 @@ const statements = [
   )
   `,
   `
-  CREATE TABLE IF NOT EXISTS documents (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    type ENUM('BOARD','GF','RC','SFC','GFC','CONVERSION_BOARD','CONVERSION_GF','CONVERSION_ARTICLES','CONVERSION_SHARE_REGISTER','CONVERSION_CAPITAL_CONFIRMATION','CONVERSION_PACKAGE') NOT NULL,
-    startup_id INT NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    html_content LONGTEXT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
-    document_hash VARCHAR(128) NULL,
-    locked_at DATETIME NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_documents_user FOREIGN KEY (startup_id) REFERENCES users(id) ON DELETE CASCADE
-  )
-  `,
-  `
-  CREATE TABLE IF NOT EXISTS document_signers (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    document_id INT NOT NULL,
-    email VARCHAR(255) NOT NULL,
-    user_id INT NULL,
-    role VARCHAR(64) NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'INVITED',
-    signed_at DATETIME NULL,
-    ip_address VARCHAR(64) NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_document_signers_document FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-  )
-  `,
-  `
   CREATE TABLE IF NOT EXISTS emission_rounds (
     id INT AUTO_INCREMENT PRIMARY KEY,
     startup_id INT NOT NULL,
@@ -173,6 +144,37 @@ const statements = [
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_emission_rounds_user FOREIGN KEY (startup_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS documents (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    type ENUM('BOARD','GF','RC','SFC','GFC','CONVERSION_BOARD','CONVERSION_GF','CONVERSION_ARTICLES','CONVERSION_SHARE_REGISTER','CONVERSION_CAPITAL_CONFIRMATION','CONVERSION_PACKAGE') NOT NULL,
+    startup_id INT NOT NULL,
+    round_id INT NULL,
+    title VARCHAR(255) NOT NULL,
+    html_content LONGTEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+    document_hash VARCHAR(128) NULL,
+    locked_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_documents_user FOREIGN KEY (startup_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_documents_round FOREIGN KEY (round_id) REFERENCES emission_rounds(id) ON DELETE SET NULL
+  )
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS document_signers (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    document_id INT NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    user_id INT NULL,
+    role VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'INVITED',
+    signed_at DATETIME NULL,
+    ip_address VARCHAR(64) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_document_signers_document FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
   )
   `,
   `
@@ -210,6 +212,8 @@ const statements = [
     payment_confirmed_by_startup_at DATETIME NULL,
     payment_confirmed_by INT NULL,
     document_hash VARCHAR(128) NULL,
+    stripe_fee_amount DECIMAL(10,2) NULL,
+    stripe_net_amount DECIMAL(10,2) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_rc_agreements_round FOREIGN KEY (round_id) REFERENCES emission_rounds(id) ON DELETE CASCADE,
@@ -344,6 +348,8 @@ const statements = [
     notice_sent_at DATETIME NULL,
     paid_confirmed_at DATETIME NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'pending_notice',
+    stripe_fee_amount DECIMAL(10,2) NULL,
+    stripe_net_amount DECIMAL(10,2) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   )

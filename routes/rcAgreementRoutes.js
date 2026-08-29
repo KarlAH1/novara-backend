@@ -209,6 +209,8 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         pr.reference AS par_value_reference,
         pr.due_date AS par_value_due_date,
         pr.status AS par_value_status,
+        pr.stripe_fee_amount AS par_value_stripe_fee_amount,
+        pr.stripe_net_amount AS par_value_stripe_net_amount,
         d.id AS document_id,
         d.title AS document_title,
         d.status AS document_status,

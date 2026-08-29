@@ -491,6 +491,21 @@ router.get("/startup/list", auth, async (req, res) => {
             conversionState = null;
         }
 
+        let rounds = [];
+        try {
+            const [roundRows] = await pool.query(
+                `SELECT id, target_amount, open, closed_at, closed_reason, created_at
+                 FROM emission_rounds
+                 WHERE startup_id = ?
+                 ORDER BY created_at DESC`,
+                [startupId]
+            );
+            rounds = roundRows;
+        } catch (error) {
+            console.error("Document room rounds fallback:", error);
+            rounds = [];
+        }
+
         let documents = [];
         try {
             const [rows] = await pool.query(
@@ -498,6 +513,7 @@ router.get("/startup/list", auth, async (req, res) => {
                 SELECT
                   d.id,
                   d.type,
+                  d.round_id,
                   d.title,
                   d.status,
                   d.created_at,
@@ -568,7 +584,7 @@ router.get("/startup/list", auth, async (req, res) => {
 
                 const [rows] = await pool.query(
                     `
-                    SELECT id, trigger_type, status, board_document_id, gf_document_id, created_at
+                    SELECT id, round_id, trigger_type, status, board_document_id, gf_document_id, created_at
                            , ${hasUpdatedArticles ? "updated_articles_document_id" : "NULL AS updated_articles_document_id"}
                            , ${hasShareholderRegister ? "shareholder_register_document_id" : "NULL AS shareholder_register_document_id"}
                            , ${hasCapitalConfirmation ? "capital_confirmation_document_id" : "NULL AS capital_confirmation_document_id"}
@@ -655,6 +671,7 @@ router.get("/startup/list", auth, async (req, res) => {
         }
 
         res.json({
+            rounds,
             documents: [
                 ...documents,
                 ...startupDocuments.map((doc) => ({

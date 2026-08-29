@@ -5,6 +5,39 @@ import { sendRcPaymentConfirmedEmail, sendStripePaymentReceivedStartupEmail } fr
 import { getCompanyForUser } from "./startupPlanAccess.js";
 import { sendTelegramAdminAlert } from "./telegramNotifier.js";
 
+// Direct charges mean Stripe's processing fee is deducted from the connected
+// account (the startup), so the amount that actually lands in their bank
+// account is lower than the RC investment amount. We record that fee/net
+// split here purely for transparency in the UI — it does not change the
+// investment amount itself, which is the contractual figure that governs
+// share conversion.
+async function fetchStripeFeeSplit(paymentIntentId, stripeAccountId) {
+    if (!paymentIntentId || !stripeAccountId) {
+        return null;
+    }
+
+    try {
+        const paymentIntent = await stripe.paymentIntents.retrieve(
+            paymentIntentId,
+            { expand: ["latest_charge.balance_transaction"] },
+            { stripeAccount: stripeAccountId }
+        );
+
+        const balanceTransaction = paymentIntent?.latest_charge?.balance_transaction;
+        if (!balanceTransaction) {
+            return null;
+        }
+
+        return {
+            feeAmount: balanceTransaction.fee / 100,
+            netAmount: balanceTransaction.net / 100
+        };
+    } catch (err) {
+        console.error("Stripe fee lookup error:", err);
+        return null;
+    }
+}
+
 export async function createCheckoutSessionForAgreement({ agreementId, investorId, frontendBase }) {
     const [rows] = await pool.query(
         `
@@ -80,6 +113,22 @@ export async function handleCheckoutSessionCompleted(session) {
                 `UPDATE rc_agreements SET stripe_payment_intent_id = ?, stripe_paid_at = NOW() WHERE id = ?`,
                 [session.payment_intent || null, agreementId]
             );
+
+            const [companyRows] = await pool.query(
+                `SELECT c.stripe_account_id
+                 FROM rc_agreements a
+                 JOIN company_memberships cm ON cm.user_id = a.startup_id
+                 JOIN companies c ON c.id = cm.company_id
+                 WHERE a.id = ? LIMIT 1`,
+                [agreementId]
+            );
+            const feeSplit = await fetchStripeFeeSplit(session.payment_intent, companyRows[0]?.stripe_account_id);
+            if (feeSplit) {
+                await pool.query(
+                    `UPDATE rc_agreements SET stripe_fee_amount = ?, stripe_net_amount = ? WHERE id = ?`,
+                    [feeSplit.feeAmount, feeSplit.netAmount, agreementId]
+                );
+            }
 
             sendRcPaymentConfirmedEmail({
                 investorEmail: result.agreement.investor_email,
@@ -180,7 +229,12 @@ export async function handleParValueCheckoutSessionCompleted(session) {
     }
 
     const [rows] = await pool.query(
-        `SELECT id, status FROM conversion_par_value_requests WHERE id = ? LIMIT 1`,
+        `SELECT pr.id, pr.status, c.stripe_account_id
+         FROM conversion_par_value_requests pr
+         JOIN conversion_events ce ON pr.conversion_event_id = ce.id
+         JOIN company_memberships cm ON cm.user_id = ce.startup_id
+         JOIN companies c ON c.id = cm.company_id
+         WHERE pr.id = ? LIMIT 1`,
         [requestId]
     );
     const request = rows[0];
@@ -196,6 +250,14 @@ export async function handleParValueCheckoutSessionCompleted(session) {
          WHERE id = ?`,
         [session.payment_intent || null, requestId]
     );
+
+    const feeSplit = await fetchStripeFeeSplit(session.payment_intent, request.stripe_account_id);
+    if (feeSplit) {
+        await pool.query(
+            `UPDATE conversion_par_value_requests SET stripe_fee_amount = ?, stripe_net_amount = ? WHERE id = ?`,
+            [feeSplit.feeAmount, feeSplit.netAmount, requestId]
+        );
+    }
 }
 
 async function getOpenStartupPlanSubscription(companyId) {

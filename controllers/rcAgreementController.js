@@ -337,10 +337,11 @@ export const investViaInvite = async (req, res) => {
 
         const [documentResult] = await connection.query(`
             INSERT INTO documents
-            (type, startup_id, title, html_content, status)
-            VALUES ('RC', ?, ?, ?, 'DRAFT')
+            (type, startup_id, round_id, title, html_content, status)
+            VALUES ('RC', ?, ?, ?, ?, 'DRAFT')
         `, [
             round.startup_id,
+            roundId,
             `Privat RC-avtale - ${round.startup_name}`,
             html
         ]);

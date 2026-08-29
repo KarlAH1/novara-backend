@@ -166,17 +166,16 @@ export const startEmission = async (req, res) => {
       ========================= */
 
       const [latestRounds] = await pool.query(`
-        SELECT id, closed_reason
+        SELECT id, open, closed_reason
         FROM emission_rounds
         WHERE startup_id=?
         ORDER BY id DESC
         LIMIT 1
       `, [startup_id]);
 
-      const latestClosedReason = String(latestRounds[0]?.closed_reason || "");
-      if (latestClosedReason && latestClosedReason !== "conversion_downloaded") {
+      if (latestRounds.length && Number(latestRounds[0].open) === 1) {
         return res.status(400).json({
-          message: "Forrige runde må ferdigstilles før ny runde kan opprettes.",
+          message: "Du har allerede en åpen runde. Lukk den før du starter en ny.",
           emissionId: latestRounds[0].id
         });
       }
@@ -233,7 +232,15 @@ export const startEmission = async (req, res) => {
         (startup_id, target_amount, deadline, open)
         VALUES (?, ?, ?, 0)
       `, [startup_id, approvedAmount, deadline]);
-  
+
+      // Link the Board/GF documents that justified this round to the round itself,
+      // so the document room can group them correctly (important once a startup
+      // runs multiple rounds over time).
+      await pool.query(
+        `UPDATE documents SET round_id = ? WHERE id IN (?, ?)`,
+        [result.insertId, board[0].id, gf[0].id]
+      );
+
       res.json({
         emissionId: result.insertId
       });
@@ -682,10 +689,35 @@ export const closeEmissionEarly = async (req, res) => {
       return res.status(400).json({ message: "Runden er allerede lukket." });
     }
 
+    const [unresolvedRows] = await pool.query(
+      `SELECT COUNT(*) AS count FROM rc_agreements
+       WHERE round_id = ? AND status NOT IN ('Active RC', 'Cancelled')`,
+      [emissionId]
+    );
+
+    if (unresolvedRows[0]?.count > 0) {
+      return res.status(400).json({
+        message: `Runden kan ikke lukkes ennå. ${unresolvedRows[0].count} avtale(r) venter fortsatt på signering eller betaling. Få dem signert og betalt, eller avbryt dem, før runden kan lukkes.`
+      });
+    }
+
+    const [activeCountRows] = await pool.query(
+      `SELECT COUNT(*) AS count FROM rc_agreements WHERE round_id = ? AND status = 'Active RC'`,
+      [emissionId]
+    );
+
+    if (Number(activeCountRows[0]?.count || 0) === 0) {
+      // No one ever actually invested in this round — remove it entirely, as if
+      // it never existed, so a new round can start cleanly right away.
+      await pool.query(`DELETE FROM documents WHERE round_id = ?`, [emissionId]);
+      await pool.query(`DELETE FROM emission_rounds WHERE id = ?`, [emissionId]);
+      return res.json({ success: true, deleted: true });
+    }
+
     const columns = await getEmissionRoundColumns(pool);
     await updateRoundClosure(pool, emissionId, "manually_closed", columns);
 
-    res.json({ success: true });
+    res.json({ success: true, deleted: false });
   } catch (err) {
     console.error("Close emission early error:", err);
     res.status(500).json({ message: "Server error" });
