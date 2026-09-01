@@ -48,6 +48,7 @@ export async function ensureInvestorLegalProfileSchema() {
           postal_code VARCHAR(32) NULL,
           city VARCHAR(128) NULL,
           country VARCHAR(128) NULL,
+          national_id_encrypted TEXT NULL,
           completed_at DATETIME NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -65,6 +66,7 @@ export async function ensureInvestorLegalProfileSchema() {
       ["postal_code", "ALTER TABLE investor_legal_profiles ADD COLUMN postal_code VARCHAR(32) NULL"],
       ["city", "ALTER TABLE investor_legal_profiles ADD COLUMN city VARCHAR(128) NULL"],
       ["country", "ALTER TABLE investor_legal_profiles ADD COLUMN country VARCHAR(128) NULL"],
+      ["national_id_encrypted", "ALTER TABLE investor_legal_profiles ADD COLUMN national_id_encrypted TEXT NULL"],
       ["completed_at", "ALTER TABLE investor_legal_profiles ADD COLUMN completed_at DATETIME NULL"]
     ];
 

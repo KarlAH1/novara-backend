@@ -344,7 +344,12 @@ export const getPreviousEmissions = async (req, res) => {
                     SELECT COALESCE(SUM(a.investment_amount), 0)
                     FROM rc_agreements a
                     WHERE a.round_id = e.id
-                ) AS total_investment_amount
+                ) AS total_investment_amount,
+                (
+                    SELECT COALESCE(SUM(a.investment_amount), 0)
+                    FROM rc_agreements a
+                    WHERE a.round_id = e.id AND a.status = 'Active RC'
+                ) AS active_investment_amount
             FROM emission_rounds e
             WHERE e.startup_id = ?
               AND (
@@ -709,6 +714,10 @@ export const closeEmissionEarly = async (req, res) => {
     if (Number(activeCountRows[0]?.count || 0) === 0) {
       // No one ever actually invested in this round — remove it entirely, as if
       // it never existed, so a new round can start cleanly right away.
+      await pool.query(
+        `DELETE ds FROM document_signers ds INNER JOIN documents d ON d.id = ds.document_id WHERE d.round_id = ?`,
+        [emissionId]
+      );
       await pool.query(`DELETE FROM documents WHERE round_id = ?`, [emissionId]);
       await pool.query(`DELETE FROM emission_rounds WHERE id = ?`, [emissionId]);
       return res.json({ success: true, deleted: true });

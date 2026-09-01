@@ -98,14 +98,16 @@ async function getInvestorNextTask(userId) {
 
     if (agreements.length > 0) {
         const [legalRows] = await pool.query(
-            `SELECT full_name, birth_date, digital_address, residential_address, postal_code, city, country
+            `SELECT full_name, birth_date, digital_address, residential_address, postal_code, city, country,
+                    (national_id_encrypted IS NOT NULL) AS has_national_id
              FROM investor_legal_profiles WHERE user_id = ? LIMIT 1`,
             [userId]
         );
         const legal = legalRows[0] || {};
         const legalComplete = Boolean(
-            legal.full_name && legal.birth_date && legal.digital_address &&
-            legal.residential_address && legal.postal_code && legal.city && legal.country
+            legal.full_name && legal.digital_address &&
+            legal.residential_address && legal.postal_code && legal.city && legal.country &&
+            legal.has_national_id
         );
 
         if (!legalComplete) {

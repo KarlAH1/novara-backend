@@ -22,6 +22,7 @@ import {
 } from "../utils/notificationEmailFlow.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getEmissionRoundColumns } from "../utils/emissionRoundState.js";
+import { decryptNationalId } from "../utils/nationalIdCrypto.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -239,7 +240,7 @@ function buildParValueReference(agreementId, conversionId) {
 async function getLatestRoundForStartup(connection, startupId) {
   const [rows] = await connection.query(
     `
-    SELECT id, startup_id, target_amount, amount_raised, committed_amount, conversion_years, trigger_period, discount_rate, valuation_cap, deadline, closed_reason, bank_account
+    SELECT id, startup_id, target_amount, amount_raised, committed_amount, conversion_years, trigger_period, discount_rate, valuation_cap, deadline, closed_reason, bank_account, created_at
     FROM emission_rounds
     WHERE startup_id = ?
     ORDER BY id DESC
@@ -755,12 +756,23 @@ async function buildConversionCalculations(connection, startupId, round, convers
 
   if (conversion) {
     try {
+      // Discount only rewards an EARLY trigger event — if the trigger happens
+      // more than 2 years after the round opened, only the valuation cap
+      // (if set) applies, not the discount.
+      const discountWindowExpired = Boolean(
+        round.created_at &&
+        conversion.conversion_date &&
+        new Date(conversion.conversion_date).getTime() > addDays(new Date(round.created_at), 730).getTime()
+      );
+      const effectiveDiscountRate = discountWindowExpired ? null : round.discount_rate;
+
       calculations = {
         trigger_type: conversion.trigger_type,
         priced_round_share_price: conversion.priced_round_share_price == null ? null : Number(conversion.priced_round_share_price),
         capitalization_base_share_count: Number(basis.current_share_count || 0) || null,
         nominal_value_per_share: Number(basis.nominal_value_per_share || 0) || null,
-        discount_percent: round.discount_rate == null ? null : Number(round.discount_rate),
+        discount_percent: effectiveDiscountRate == null ? null : Number(effectiveDiscountRate),
+        discount_window_expired: discountWindowExpired,
         valuation_cap: round.valuation_cap == null ? null : Number(round.valuation_cap),
         investors: participants.map((agreement) => ({
           agreement_id: agreement.id,
@@ -771,7 +783,7 @@ async function buildConversionCalculations(connection, startupId, round, convers
           ...calculateRcConversion({
             investment_amount: agreement.investment_amount,
             valuation_cap: round.valuation_cap,
-            discount_percent: round.discount_rate,
+            discount_percent: effectiveDiscountRate,
             trigger_type: conversion.trigger_type,
             priced_round_share_price: conversion.priced_round_share_price,
             capitalization_base_share_count: basis.current_share_count,
@@ -1145,7 +1157,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const [investorLegalRows] = investorIds.length
       ? await connection.query(
           `
-          SELECT user_id, full_name, birth_date, digital_address, residential_address, postal_code, city, country
+          SELECT user_id, full_name, birth_date, digital_address, residential_address, postal_code, city, country, national_id_encrypted
           FROM investor_legal_profiles
           WHERE user_id IN (?)
           `,
@@ -1158,6 +1170,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
         {
           full_name: row.full_name || "",
           birth_date: row.birth_date ? formatDateLabel(row.birth_date) : "",
+          national_id: row.national_id_encrypted ? decryptNationalId(row.national_id_encrypted) : "",
           digital_address: row.digital_address || "",
           residential_address: row.residential_address || "",
           postal_code: row.postal_code || "",
@@ -1182,7 +1195,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       const profile = investorLegalProfiles.get(Number(investor.investor_id)) || {};
       return {
         shareholder_name: profile.full_name || investor.investor_name || investor.investor_email || `Investor ${investor.agreement_id}`,
-        identifier_value: profile.birth_date || "",
+        identifier_value: profile.national_id || profile.birth_date || "",
         digital_address: profile.digital_address || investor.investor_email || "",
         residential_address: [profile.residential_address, profile.postal_code, profile.city, profile.country].filter(Boolean).join(", "),
         share_class: "A",

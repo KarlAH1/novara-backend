@@ -13,8 +13,47 @@ import { applySignatureBlockToHtml } from "../utils/documentSigning.js";
 import { sendRcPaymentConfirmedEmail, sendInvestorMarkedPaidEmail, sendRcAgreementCancelledEmail, sendInvestorWithdrewEmail } from "../utils/notificationEmailFlow.js";
 import { activateRcAgreementPayment } from "../utils/rcPaymentActivation.js";
 import { maybeSendPaymentReminder } from "../utils/rcPaymentReminder.js";
+import { encryptNationalId, decryptNationalId } from "../utils/nationalIdCrypto.js";
+import { decodeBirthDateFromNationalId } from "../utils/norwegianNationalId.js";
 
 const router = express.Router();
+
+// Unpaid RC agreements never became a real, legally binding commitment (no
+// signatures against money, no funds moved), so cancelling one wipes it —
+// including its RC document — rather than keeping it as history. This also
+// frees the (round_id, investor_id) unique slot so the investor can start a
+// fresh agreement in the same round.
+const deleteUnpaidRcAgreement = async (agreement) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [docRows] = await connection.query(
+      `
+      SELECT d.id
+      FROM documents d
+      JOIN document_signers ds ON ds.document_id = d.id
+      WHERE d.type = 'RC' AND d.round_id = ? AND ds.user_id = ? AND ds.role = 'Investor'
+      `,
+      [agreement.round_id, agreement.investor_id]
+    );
+
+    if (docRows.length) {
+      const docIds = docRows.map((row) => row.id);
+      await connection.query("DELETE FROM document_signers WHERE document_id IN (?)", [docIds]);
+      await connection.query("DELETE FROM documents WHERE id IN (?)", [docIds]);
+    }
+
+    await connection.query("DELETE FROM rc_agreements WHERE id = ?", [agreement.id]);
+
+    await connection.commit();
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
+};
 
 const formatDateOnly = (value) => {
   if (!value) return "";
@@ -26,7 +65,8 @@ const formatDateOnly = (value) => {
 const getInvestorLegalProfile = async (connection, userId, fallback = {}) => {
   const [rows] = await connection.query(
     `
-    SELECT full_name, birth_date, digital_address, residential_address, postal_code, city, country, completed_at
+    SELECT full_name, birth_date, digital_address, residential_address, postal_code, city, country, completed_at,
+           (national_id_encrypted IS NOT NULL) AS has_national_id
     FROM investor_legal_profiles
     WHERE user_id = ?
     LIMIT 1
@@ -42,17 +82,18 @@ const getInvestorLegalProfile = async (connection, userId, fallback = {}) => {
     residential_address: row.residential_address || "",
     postal_code: row.postal_code || "",
     city: row.city || "",
-    country: row.country || "Norge"
+    country: row.country || "Norge",
+    has_national_id: Boolean(row.has_national_id)
   };
 
   const complete = Boolean(
     profile.full_name &&
-    profile.birth_date &&
     profile.digital_address &&
     profile.residential_address &&
     profile.postal_code &&
     profile.city &&
-    profile.country
+    profile.country &&
+    profile.has_national_id
   );
 
   return {
@@ -313,6 +354,38 @@ router.get("/:id(\\d+)/shareholder-profile", auth, async (req, res) => {
   }
 });
 
+// Only called when the investor explicitly clicks "reveal" — never bundled
+// into the normal agreement-detail response, so the plaintext only ever
+// crosses the wire at the moment it's actually requested.
+router.get("/:id(\\d+)/national-id", auth, requireRole(["investor"]), async (req, res) => {
+  try {
+    const agreementId = Number(req.params.id || 0);
+    const userId = req.user.id;
+
+    const [rows] = await pool.query(
+      `SELECT investor_id FROM rc_agreements WHERE id = ? LIMIT 1`,
+      [agreementId]
+    );
+    if (!rows.length || rows[0].investor_id !== userId) {
+      return res.status(404).json({ error: "Agreement not found" });
+    }
+
+    const [profileRows] = await pool.query(
+      `SELECT national_id_encrypted FROM investor_legal_profiles WHERE user_id = ? LIMIT 1`,
+      [userId]
+    );
+    const encrypted = profileRows[0]?.national_id_encrypted || null;
+    if (!encrypted) {
+      return res.status(404).json({ error: "Ingen fødselsnummer lagret." });
+    }
+
+    res.json({ national_id: decryptNationalId(encrypted) });
+  } catch (err) {
+    console.error("Reveal national ID error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.post("/:id(\\d+)/shareholder-profile", auth, requireRole(["investor"]), async (req, res) => {
   const connection = await pool.getConnection();
 
@@ -347,7 +420,6 @@ router.post("/:id(\\d+)/shareholder-profile", auth, requireRole(["investor"]), a
 
     const payload = {
       full_name: String(req.body.full_name || "").trim(),
-      birth_date: String(req.body.birth_date || "").trim(),
       digital_address: String(req.body.digital_address || "").trim(),
       residential_address: String(req.body.residential_address || "").trim(),
       postal_code: String(req.body.postal_code || "").trim(),
@@ -355,40 +427,55 @@ router.post("/:id(\\d+)/shareholder-profile", auth, requireRole(["investor"]), a
       country: String(req.body.country || "").trim() || "Norge"
     };
 
-    if (!payload.full_name || !payload.birth_date || !payload.digital_address || !payload.residential_address || !payload.postal_code || !payload.city || !payload.country) {
+    if (!payload.full_name || !payload.digital_address || !payload.residential_address || !payload.postal_code || !payload.city || !payload.country) {
       return res.status(400).json({ error: "Fyll inn alle opplysninger som kreves for aksjeeierboken." });
     }
 
-    const birthDate = new Date(payload.birth_date);
-    if (Number.isNaN(birthDate.getTime())) {
-      return res.status(400).json({ error: "Ugyldig fødselsdato." });
+    // Fødselsnummer only needs to be entered once — leave the field blank on
+    // a later edit to keep whatever was already saved (COALESCE below), so
+    // re-saving the address etc. never silently wipes it. Fødselsdato is
+    // derived from it (first 6 digits) rather than entered separately.
+    const rawNationalId = String(req.body.national_id || "").replace(/\s+/g, "");
+    let nationalIdEncrypted = null;
+    let derivedBirthDate = null;
+    if (rawNationalId) {
+      if (!/^\d{11}$/.test(rawNationalId)) {
+        return res.status(400).json({ error: "Fødselsnummer må være 11 siffer." });
+      }
+      derivedBirthDate = decodeBirthDateFromNationalId(rawNationalId);
+      if (!derivedBirthDate) {
+        return res.status(400).json({ error: "Fødselsnummeret ser ikke gyldig ut — sjekk at det er riktig tastet inn." });
+      }
+      nationalIdEncrypted = encryptNationalId(rawNationalId);
     }
 
     await connection.query(
       `
       INSERT INTO investor_legal_profiles (
-        user_id, full_name, birth_date, digital_address, residential_address, postal_code, city, country, completed_at
+        user_id, full_name, birth_date, digital_address, residential_address, postal_code, city, country, national_id_encrypted, completed_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
       ON DUPLICATE KEY UPDATE
         full_name = VALUES(full_name),
-        birth_date = VALUES(birth_date),
+        birth_date = COALESCE(VALUES(birth_date), birth_date),
         digital_address = VALUES(digital_address),
         residential_address = VALUES(residential_address),
         postal_code = VALUES(postal_code),
         city = VALUES(city),
         country = VALUES(country),
+        national_id_encrypted = COALESCE(VALUES(national_id_encrypted), national_id_encrypted),
         completed_at = NOW()
       `,
       [
         userId,
         payload.full_name,
-        payload.birth_date,
+        derivedBirthDate,
         payload.digital_address,
         payload.residential_address,
         payload.postal_code,
         payload.city,
-        payload.country
+        payload.country,
+        nationalIdEncrypted
       ]
     );
 
@@ -917,7 +1004,7 @@ router.post("/:id(\\d+)/cancel", auth, requireRole(["startup"]), async (req, res
 
     const [rows] = await pool.query(
       `
-      SELECT a.id, a.status, a.investment_amount, a.created_at, ${investorSignedAtSelect},
+      SELECT a.id, a.status, a.investment_amount, a.created_at, a.round_id, a.investor_id, ${investorSignedAtSelect},
              COALESCE(investor.name, investor.email) AS investor_name, investor.email AS investor_email
       FROM rc_agreements a
       JOIN emission_rounds e ON a.round_id = e.id
@@ -942,12 +1029,7 @@ router.post("/:id(\\d+)/cancel", auth, requireRole(["startup"]), async (req, res
       return res.status(400).json({ error: "Avtalen kan først kanselleres etter at betalingsfristen har gått ut." });
     }
 
-    await pool.query(
-      `UPDATE rc_agreements
-       SET status = 'Cancelled', cancelled_at = NOW(), cancellation_reason = ?, cancelled_by = 'startup'
-       WHERE id = ?`,
-      [reason, agreementId]
-    );
+    await deleteUnpaidRcAgreement(agreement);
 
     sendRcAgreementCancelledEmail({
       investorEmail: agreement.investor_email,
@@ -980,7 +1062,7 @@ router.post("/:id(\\d+)/withdraw", auth, requireRole(["investor"]), async (req, 
 
     const [rows] = await pool.query(
       `
-      SELECT a.id, a.status, a.investment_amount, a.investor_id,
+      SELECT a.id, a.status, a.investment_amount, a.investor_id, a.round_id,
              COALESCE(su.name, su.email) AS startup_name, su.email AS startup_email
       FROM rc_agreements a
       JOIN emission_rounds e ON a.round_id = e.id
@@ -1000,12 +1082,7 @@ router.post("/:id(\\d+)/withdraw", auth, requireRole(["investor"]), async (req, 
       return res.status(400).json({ error: "Kun avtaler som venter på betaling kan avbrytes." });
     }
 
-    await pool.query(
-      `UPDATE rc_agreements
-       SET status = 'Cancelled', cancelled_at = NOW(), cancellation_reason = ?, cancelled_by = 'investor'
-       WHERE id = ?`,
-      [reason, agreementId]
-    );
+    await deleteUnpaidRcAgreement(agreement);
 
     sendInvestorWithdrewEmail({
       startupEmail: agreement.startup_email,
