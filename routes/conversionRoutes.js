@@ -656,6 +656,109 @@ function isExistingShareholderTaskComplete(rows = []) {
   );
 }
 
+/*
+  Styrets redegjørelse etter aksjeloven § 10-2 jf. § 2-6.
+
+  Required because the subscription is settled by set-off rather than cash,
+  which counts as an aksjeinnskudd in something other than money. It must be
+  dated and signed by every board member personally — this is an assertion each
+  of them carries liability for, so it cannot be delegated by fullmakt — and
+  then confirmed by the auditor.
+
+  Board members are stored per conversion rather than per company, because what
+  matters legally is the board as constituted when the redegjørelse is signed.
+*/
+function parseBoardMembers(conversion) {
+  try {
+    const parsed = JSON.parse(conversion?.board_members_json || "[]");
+    return Array.isArray(parsed) ? parsed.filter((m) => m && m.name) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function buildRedegjorelseDocument(connection, {
+  conversion, round, startupContext, companyName, orgnr, today, basis, calculations
+}) {
+  const templatePath = path.join(templatesDir, "redegjorelse-template.html");
+  let html = fs.readFileSync(templatePath, "utf8");
+
+  const nominalValue = Number(basis.nominal_value_per_share || 0);
+  const totalInvestmentAmount = Number(calculations.totals?.total_investment_amount || 0);
+  const totalNewShares = Number(calculations.totals?.total_conversion_share_count || 0);
+  const totalNominalAmount = Number(calculations.totals?.total_nominal_amount || 0);
+  const totalSharePremium = Number(calculations.totals?.total_share_premium || 0);
+
+  const claimRows = (calculations.investors || []).map((item) => {
+    const name = escapeHtml(item.investor_name || item.investor_email || "Investor");
+    const shares = Number(item.conversion_share_count || 0);
+    return `
+        <tr>
+          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0;">${name}</td>
+          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0;">RC-${escapeHtml(String(item.agreement_id))}</td>
+          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0; text-align: right;">${escapeHtml(formatCurrency(item.investment_amount))}</td>
+          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0; text-align: right;">${shares.toLocaleString("no-NO")}</td>
+        </tr>`;
+  }).join("");
+
+  const boardMembers = parseBoardMembers(conversion);
+  const boardSignatureRows = boardMembers.length
+    ? boardMembers.map((member) => `
+        <div style="margin: 0 0 22px;">
+          <div style="height: 1px; background: #111827; margin-bottom: 6px;"></div>
+          <p style="margin: 0;">${escapeHtml(member.name)}${member.role ? ` – ${escapeHtml(member.role)}` : ""}</p>
+        </div>`).join("")
+    : `<p style="margin:0; color:#b91c1c;">Styrets sammensetning er ikke registrert. Redegjørelsen kan ikke signeres før samtlige styremedlemmer er lagt inn.</p>`;
+
+  html = html
+    .replace(/{{company_name}}/g, escapeHtml(companyName))
+    .replace(/{{orgnr}}/g, escapeHtml(orgnr))
+    .replace(/{{date}}/g, escapeHtml(today))
+    .replace(/{{trigger_type}}/g, escapeHtml(getTriggerLabel(conversion.trigger_type)))
+    .replace(/{{total_subscription_amount}}/g, escapeHtml(formatCurrency(totalInvestmentAmount)))
+    .replace(/{{increase_amount}}/g, escapeHtml(formatCurrency(totalNominalAmount)))
+    .replace(/{{total_share_premium}}/g, escapeHtml(formatCurrency(totalSharePremium)))
+    .replace(/{{new_shares}}/g, totalNewShares.toLocaleString("no-NO"))
+    .replace(/{{nominal_value}}/g, escapeHtml(formatCurrency(nominalValue)))
+    .replace(/{{claim_rows}}/g, claimRows || `<tr><td colspan="4" style="padding:10px 14px;">Ingen fordringer registrert.</td></tr>`);
+
+  const signers = boardMembers
+    .filter((member) => member.email)
+    .map((member) => ({
+      email: String(member.email).trim().toLowerCase(),
+      user_id: null,
+      role: member.role || "Styremedlem",
+      status: "INVITED"
+    }));
+
+  const documentId = await createDocument(connection, {
+    type: "CONVERSION_REDEGJORELSE",
+    startupId: startupContext.startupUserId,
+    roundId: round.id,
+    title: `Redegjørelse § 10-2 jf. § 2-6 – ${companyName}`,
+    html,
+    signers
+  });
+
+  if (signers.length) {
+    await notifyDocumentSigners({
+      type: "CONVERSION_REDEGJORELSE",
+      documentId,
+      title: `Redegjørelse § 10-2 jf. § 2-6 – ${companyName}`,
+      companyName,
+      signers
+    });
+  }
+
+  await connection.query(
+    "UPDATE conversion_events SET redegjorelse_document_id = ? WHERE id = ?",
+    [documentId, conversion.id]
+  );
+  conversion.redegjorelse_document_id = documentId;
+
+  return documentId;
+}
+
 function buildShareholderRegisterHtml({ companyName, orgnr, date, totalShareCapital, totalShareCount, nominalValue, shareClass, rows }) {
   const templatePath = path.join(templatesDir, "eierregister-template.html");
   let template = fs.readFileSync(templatePath, "utf8");
@@ -1002,6 +1105,23 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const secretaryEmail = String(legalData.secretary_email || "").trim().toLowerCase();
     const secretaryUser = await findUserByEmail(connection, secretaryEmail);
 
+    // Aksjeinnskuddet gjøres opp ved motregning, altså i annet enn penger, så
+    // aksjeloven § 10-2 jf. § 2-6 krever en redegjørelse som skal foreligge for
+    // generalforsamlingen. Den bygges derfor før GF-protokollen, og undertegnes
+    // av samtlige styremedlemmer.
+    if (!freshConversion.redegjorelse_document_id) {
+      await buildRedegjorelseDocument(connection, {
+        conversion: freshConversion,
+        round,
+        startupContext,
+        companyName,
+        orgnr,
+        today,
+        basis,
+        calculations
+      });
+    }
+
     const gfTemplatePath = path.join(templatesDir, "gfc-template.html");
     let gfHtml = fs.readFileSync(gfTemplatePath, "utf8");
     const preShareCount = Number(basis.current_share_count || 0);
@@ -1300,6 +1420,7 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
     !conversion?.id ||
     conversion.altinn_package_document_id ||
     !conversion.board_document_id ||
+    !conversion.redegjorelse_document_id ||
     !conversion.gf_document_id ||
     !conversion.updated_articles_document_id ||
     !conversion.shareholder_register_document_id ||
@@ -1961,7 +2082,7 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
       const [fresh] = await connection.query("SELECT * FROM conversion_events WHERE id = ? LIMIT 1", [conversion.id]);
       conversion = fresh[0] || conversion;
       if (!conversion.altinn_package_document_id) {
-        return res.status(400).json({ error: "Konverteringspakken er ikke klar ennå. Alle dokumenter (styrets forslag, GF, revisorbekreftelse, vedtekter og aksjeeierbok) må være ferdigstilt." });
+        return res.status(400).json({ error: "Konverteringspakken er ikke klar ennå. Alle dokumenter (styrets forslag, redegjørelse etter § 10-2 jf. § 2-6, GF, revisorbekreftelse, vedtekter og aksjeeierbok) må være ferdigstilt." });
       }
     }
 
@@ -2043,13 +2164,17 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     );
 
     const docsById = Object.fromEntries(docs.map((doc) => [doc.id, doc]));
+    // Rekkefølgen følger saksgangen: styrets forslag, redegjørelsen som skal
+    // foreligge for generalforsamlingen, selve GF-vedtaket, og deretter
+    // revisors bekreftelse av motregningsoppgjøret og de oppdaterte registrene.
     const orderedDocs = [
       { id: conversion.altinn_package_document_id, prefix: "01", fallback: "altinnpakke-raisium" },
       { id: conversion.board_document_id, prefix: "02", fallback: "styrets-forslag" },
-      { id: conversion.gf_document_id, prefix: "03", fallback: "generalforsamling" },
-      { id: conversion.updated_articles_document_id, prefix: "04", fallback: "oppdaterte-vedtekter" },
-      { id: conversion.shareholder_register_document_id, prefix: "05", fallback: "aksjeeierbok" },
-      { id: conversion.capital_confirmation_document_id, prefix: "06", fallback: "revisorbekreftelse" }
+      { id: conversion.redegjorelse_document_id, prefix: "03", fallback: "redegjorelse-10-2-jf-2-6" },
+      { id: conversion.gf_document_id, prefix: "04", fallback: "generalforsamling" },
+      { id: conversion.capital_confirmation_document_id, prefix: "05", fallback: "revisorbekreftelse-motregning" },
+      { id: conversion.updated_articles_document_id, prefix: "06", fallback: "oppdaterte-vedtekter" },
+      { id: conversion.shareholder_register_document_id, prefix: "07", fallback: "aksjeeierbok" }
     ].filter((item) => item.id && docsById[item.id]);
 
     const companyName = startupContext.company?.company_name || "startup";

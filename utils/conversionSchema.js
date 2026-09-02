@@ -73,6 +73,8 @@ export async function ensureConversionSchema() {
         ["updated_articles_document_id", "ALTER TABLE conversion_events ADD COLUMN updated_articles_document_id INT NULL"],
         ["shareholder_register_document_id", "ALTER TABLE conversion_events ADD COLUMN shareholder_register_document_id INT NULL"],
         ["capital_confirmation_document_id", "ALTER TABLE conversion_events ADD COLUMN capital_confirmation_document_id INT NULL"],
+        ["redegjorelse_document_id", "ALTER TABLE conversion_events ADD COLUMN redegjorelse_document_id INT NULL"],
+        ["board_members_json", "ALTER TABLE conversion_events ADD COLUMN board_members_json LONGTEXT NULL"],
         ["altinn_package_document_id", "ALTER TABLE conversion_events ADD COLUMN altinn_package_document_id INT NULL"]
       ];
 
