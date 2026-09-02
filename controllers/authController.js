@@ -11,15 +11,6 @@ import {
 } from "../utils/authEmailFlow.js";
 import { createExpiry, createRawToken, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
-import {
-  buildVippsAuthorizationUrl,
-  createVippsState,
-  exchangeVippsCodeForTokens,
-  fetchVippsUserinfo,
-  isVippsLoginConfigured,
-  verifyVippsIdToken,
-  verifyVippsState
-} from "../utils/vippsLogin.js";
 import { getClientIp, logAuditEvent } from "../utils/auditLogger.js";
 
 function createAuthToken(user) {
@@ -199,29 +190,6 @@ export const verifyStartupRegistrationCode = async (req, res) => {
   }
 };
 
-function escapeScriptString(value) {
-  return JSON.stringify(String(value ?? ""));
-}
-
-function sendVippsLoginResult(res, { token, user, redirect }) {
-  const safeRedirect = String(redirect || "profile.html").startsWith("/")
-    ? "profile.html"
-    : String(redirect || "profile.html");
-
-  res.type("html").send(`
-<!doctype html>
-<html lang="no">
-<head><meta charset="utf-8"><title>Vipps Login</title></head>
-<body>
-<script>
-localStorage.setItem("token", ${escapeScriptString(token)});
-localStorage.setItem("user", ${JSON.stringify(JSON.stringify(user))});
-window.location.replace(${escapeScriptString(safeRedirect)});
-</script>
-</body>
-</html>`);
-}
-
 /* =========================================
    REGISTER
 ========================================= */
@@ -355,130 +323,6 @@ export const register = async (req, res) => {
   }
 };
 
-export const completeStartupRegistration = async (req, res) => {
-  const connection = await db.getConnection();
-  let transactionStarted = false;
-
-  try {
-    const userId = req.user?.id;
-    const orgnr = String(req.body.orgnr || "").trim();
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: "Not authenticated"
-      });
-    }
-
-    if (!orgnr) {
-      return res.status(400).json({
-        success: false,
-        error: "Organisasjonsnummer er påkrevd"
-      });
-    }
-
-    const [users] = await connection.execute(
-      `SELECT id, name, email, role, vipps_sub
-       FROM users
-       WHERE id = ?
-       LIMIT 1`,
-      [userId]
-    );
-
-    if (!users.length) {
-      return res.status(404).json({
-        success: false,
-        error: "Bruker ikke funnet"
-      });
-    }
-
-    const user = users[0];
-
-    if (!user.vipps_sub) {
-      return res.status(403).json({
-        success: false,
-        error: "Startup-registrering krever verifisert innlogging med Vipps i steg 1."
-      });
-    }
-
-    const roleCheck = await checkCompanyRoleMatch({
-      fullName: user.name,
-      orgnr
-    });
-    const company = roleCheck.company;
-
-    if (!roleCheck.matched) {
-      logAuditEvent("startup_orgnr_match_failed", {
-        userId,
-        orgnr,
-        name: user.name,
-        ip: getClientIp(req)
-      });
-      return res.status(400).json({
-        success: false,
-        error: "Vi fant ingen registrert rolle i virksomheten som matcher navnet fra Vipps.",
-        code: "COMPANY_ROLE_MATCH_NOT_FOUND"
-      });
-    }
-
-    await connection.beginTransaction();
-    transactionStarted = true;
-
-    await connection.execute(
-      `UPDATE users
-       SET role = 'startup',
-           email_verified = 1,
-           company_role_check_status = 'matched',
-           company_role_check_checked_at = NOW(),
-           company_role_check_orgnr = ?,
-           startup_identity_provider = 'vipps'
-       WHERE id = ?`,
-      [company.orgnr, userId]
-    );
-
-    await ensureCompanyAndMembership(connection, {
-      userId,
-      orgnr: company.orgnr,
-      companyName: company.name
-    });
-
-    await connection.commit();
-
-    const normalizedUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: "startup"
-    };
-
-    logAuditEvent("startup_registration_completed", {
-      userId,
-      orgnr: company.orgnr,
-      companyName: company.name,
-      ip: getClientIp(req)
-    });
-
-    res.json({
-      success: true,
-      message: "Startup er registrert og verifisert.",
-      token: createAuthToken(normalizedUser),
-      user: normalizedUser,
-      company
-    });
-  } catch (error) {
-    if (transactionStarted) {
-      await connection.rollback();
-    }
-    console.error("completeStartupRegistration error:", error);
-    res.status(error.status || 500).json({
-      success: false,
-      error: error.message || "Serverfeil"
-    });
-  } finally {
-    connection.release();
-  }
-};
-
 export const companyRoleCheck = async (req, res) => {
   try {
     const fullName = String(req.body.name || "").trim();
@@ -557,7 +401,7 @@ export const login = async (req, res) => {
       });
       return res.status(400).json({
         success: false,
-        error: "Denne brukeren er opprettet med Vipps. Logg inn med Vipps, eller bruk glemt passord for å sette passord."
+        error: "Denne brukeren har ikke passord satt. Bruk glemt passord for å sette et."
       });
     }
 
@@ -626,163 +470,6 @@ await db.execute(
       success: false,
       error: "Serverfeil"
     });
-  }
-};
-
-export const vippsStart = async (req, res) => {
-  try {
-    if (!isVippsLoginConfigured()) {
-      return res.status(503).json({
-        success: false,
-        error: "Vipps Login er ikke konfigurert i dette miljøet"
-      });
-    }
-
-    const redirect = String(req.query.redirect || "profile.html").trim() || "profile.html";
-    const role = String(req.query.role || "investor").toLowerCase() === "startup" ? "startup" : "investor";
-    const state = createVippsState({ redirect, role });
-    const authorizationUrl = await buildVippsAuthorizationUrl({ state });
-    logAuditEvent("vipps_login_started", {
-      role,
-      redirect,
-      ip: getClientIp(req)
-    });
-
-    res.redirect(authorizationUrl);
-  } catch (error) {
-    console.error("vippsStart error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Kunne ikke starte Vipps Login"
-    });
-  }
-};
-
-export const vippsCallback = async (req, res) => {
-  try {
-    const code = String(req.query.code || "").trim();
-    const state = String(req.query.state || "").trim();
-    const error = String(req.query.error || "").trim();
-
-    if (error) {
-      return res.redirect(`/login.html?vipps_error=${encodeURIComponent(error)}`);
-    }
-
-    if (!code || !state) {
-      return res.redirect("/login.html?vipps_error=missing_code");
-    }
-
-    const decodedState = verifyVippsState(state);
-    const { config, tokens } = await exchangeVippsCodeForTokens(code);
-    const idClaims = await verifyVippsIdToken({ idToken: tokens.id_token, config });
-    const userinfo = await fetchVippsUserinfo({
-      accessToken: tokens.access_token,
-      userinfoEndpoint: config.userinfo_endpoint
-    });
-
-    const vippsSub = String(userinfo?.sub || idClaims.sub || "").trim();
-    const email = String(userinfo?.email || idClaims.email || "").trim().toLowerCase();
-    const name = String(userinfo?.name || [userinfo?.given_name, userinfo?.family_name].filter(Boolean).join(" ") || "").trim();
-    const phone = String(userinfo?.phone_number || idClaims.phone_number || "").trim();
-
-    if (!vippsSub) {
-      return res.redirect("/login.html?vipps_error=missing_identity");
-    }
-
-    const connection = await db.getConnection();
-    try {
-      await connection.beginTransaction();
-
-      const [byVipps] = await connection.execute(
-        "SELECT * FROM users WHERE vipps_sub = ? LIMIT 1",
-        [vippsSub]
-      );
-      const [byEmail] = email
-        ? await connection.execute("SELECT * FROM users WHERE email = ? LIMIT 1", [email])
-        : [[]];
-
-      let user = byVipps[0] || byEmail[0];
-
-      if (!user) {
-        if (!email) {
-          await connection.rollback();
-          return res.redirect("/login.html?vipps_error=missing_email");
-        }
-
-        const role = decodedState.role === "startup" ? "startup" : "investor";
-        const vippsPasswordPlaceholder = await bcrypt.hash(`vipps:${vippsSub}:${Date.now()}`, 10);
-        const [result] = await connection.execute(
-          `INSERT INTO users
-           (name, email, password, role, email_verified, vipps_sub, vipps_phone, last_login_provider)
-           VALUES (?, ?, ?, ?, 1, ?, ?, 'vipps')`,
-          [name || email, email, vippsPasswordPlaceholder, role, vippsSub, phone || null]
-        );
-
-        user = {
-          id: result.insertId,
-          name: name || email,
-          email,
-          role
-        };
-      } else {
-        await connection.execute(
-          `
-          UPDATE users
-          SET vipps_sub = COALESCE(vipps_sub, ?),
-              vipps_phone = ?,
-              email_verified = 1,
-              last_login_provider = 'vipps',
-              last_login_at = NOW(),
-              last_login_ip = ?
-          WHERE id = ?
-          `,
-          [vippsSub, phone || user.vipps_phone || null, getClientIp(req), user.id]
-        );
-      }
-
-      await connection.execute(
-        `UPDATE users
-         SET last_login_provider = 'vipps',
-             last_login_at = NOW(),
-             last_login_ip = ?
-         WHERE id = ?`,
-        [getClientIp(req), user.id]
-      );
-
-      await connection.commit();
-
-      const normalizedUser = {
-        id: user.id,
-        name: user.name || name || email || "Vipps-bruker",
-        email: user.email || email,
-        role: String(user.role || decodedState.role || "investor").toLowerCase()
-      };
-
-      const token = createAuthToken(normalizedUser);
-      logAuditEvent("vipps_login_succeeded", {
-        userId: normalizedUser.id,
-        role: normalizedUser.role,
-        redirect: decodedState.redirect,
-        ip: getClientIp(req)
-      });
-      sendVippsLoginResult(res, {
-        token,
-        user: normalizedUser,
-        redirect: decodedState.redirect
-      });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error("vippsCallback error:", error);
-    logAuditEvent("vipps_login_failed", {
-      reason: error.message,
-      ip: getClientIp(req)
-    });
-    res.redirect("/login.html?vipps_error=callback_failed");
   }
 };
 

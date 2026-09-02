@@ -4,7 +4,6 @@ import {
     register,
     sendStartupRegistrationCode,
     verifyStartupRegistrationCode,
-    completeStartupRegistration,
     login,
     companyRoleCheck,
     getMe,
@@ -13,9 +12,7 @@ import {
     forgotPassword,
     resetPassword,
     verifyEmail,
-    resendVerification,
-    vippsStart,
-    vippsCallback
+    resendVerification
 } from "../controllers/authController.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
 
@@ -102,14 +99,6 @@ router.post("/startup-email-code/verify", publicAuthLimiter, async (req, res, ne
     }
 });
 
-router.post("/startup/complete", authMiddleware, publicAuthLimiter, async (req, res, next) => {
-    try {
-        await completeStartupRegistration(req, res);
-    } catch (err) {
-        next(err);
-    }
-});
-
 router.post("/company-role-check", companyRoleCheckLimiter, async (req, res, next) => {
     try {
         await companyRoleCheck(req, res);
@@ -124,22 +113,6 @@ router.post("/company-role-check", companyRoleCheckLimiter, async (req, res, nex
 router.post("/login", loginLimiter, async (req, res, next) => {
     try {
         await login(req, res);
-    } catch (err) {
-        next(err);
-    }
-});
-
-router.get("/vipps/start", publicAuthLimiter, async (req, res, next) => {
-    try {
-        await vippsStart(req, res);
-    } catch (err) {
-        next(err);
-    }
-});
-
-router.get("/vipps/callback", publicAuthLimiter, async (req, res, next) => {
-    try {
-        await vippsCallback(req, res);
     } catch (err) {
         next(err);
     }
