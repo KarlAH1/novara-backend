@@ -847,6 +847,33 @@ router.post("/conversion/existing-shareholders/:id(\\d+)", auth, async (req, res
    GET DOCUMENT
 ========================================= */
 
+// Documents contain signed agreements, board minutes and the aksjeeierbok
+// (which carries fødselsnummer), so every read path must verify the caller
+// actually belongs to the owning company or is a listed signer — being
+// logged in is not enough.
+async function userCanAccessDocument(documentId, startupId, user) {
+    if (Number(startupId) === Number(user.id)) {
+        return true;
+    }
+
+    if (await isUserInSameCompany(pool, user.id, startupId)) {
+        return true;
+    }
+
+    const [signerRows] = await pool.query(
+        `
+        SELECT id
+        FROM document_signers
+        WHERE document_id = ?
+          AND (user_id = ? OR email = ?)
+        LIMIT 1
+        `,
+        [documentId, user.id, user.email]
+    );
+
+    return signerRows.length > 0;
+}
+
 router.get("/:id/pdf", auth, async (req, res) => {
     try {
         const documentId = req.params.id;
@@ -860,24 +887,8 @@ router.get("/:id/pdf", auth, async (req, res) => {
         }
 
         const doc = rows[0];
-        const userId = req.user.id;
-        let hasAccess = Number(doc.startup_id) === Number(userId);
 
-        if (!hasAccess) {
-            const [signerRows] = await pool.query(
-                `
-                SELECT id
-                FROM document_signers
-                WHERE document_id = ?
-                  AND (user_id = ? OR email = ?)
-                LIMIT 1
-                `,
-                [documentId, userId, req.user.email]
-            );
-            hasAccess = signerRows.length > 0;
-        }
-
-        if (!hasAccess) {
+        if (!(await userCanAccessDocument(documentId, doc.startup_id, req.user))) {
             return res.status(403).json({ error: "Access denied" });
         }
 
@@ -919,6 +930,11 @@ router.get("/:id", auth, async (req, res) => {
     }
 
     const document = rows[0];
+
+    if (!(await userCanAccessDocument(req.params.id, document.startup_id, req.user))) {
+        return res.status(403).json({ error: "Access denied" });
+    }
+
     const [signers] = await pool.query(
         `
         SELECT
