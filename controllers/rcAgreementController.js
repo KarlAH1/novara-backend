@@ -188,7 +188,7 @@ export const buildRcTemplateData = (input = {}) => {
         "attachment.calc.model": input.valuation_cap ? "Cap / discount-modell" : "Discount-modell",
         "attachment.calc.discount": `${input.discount_rate || 0}%`,
         "attachment.calc.cap": input.valuation_cap ? formatNOK(input.valuation_cap) : "Ingen",
-        "attachment.calc.par_value_note": "Paribeløpet innbetales kontant ved tegning av konverteringsaksjer, mens resterende tegningsbeløp forutsettes gjort opp ved motregning av investorens rentefrie krav.",
+        "attachment.calc.par_value_note": "Hele tegningsbeløpet, både den delen som tilføres aksjekapitalen og den delen som tilføres overkursfondet, gjøres opp ved motregning av investorens rentefrie krav. Investor skal ikke foreta noen kontant tilleggsbetaling ved tegning.",
         "attachment.calc.trigger_note": "Vedlegg 2 er grunnlag for beregning ved Trigger Event og skal suppleres med runde- og transaksjonsdata når konvertering eller oppgjør faktisk gjennomføres."
     };
 };
