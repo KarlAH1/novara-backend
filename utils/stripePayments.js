@@ -269,12 +269,6 @@ async function getOpenStartupPlanSubscription(companyId) {
     return rows[0] || null;
 }
 
-function getNextAnnualExpiry() {
-    const next = new Date();
-    next.setFullYear(next.getFullYear() + 1);
-    return next;
-}
-
 // Plain Stripe Checkout on Raisium's own account — this money is Raisium's
 // own revenue (plan fees), not routed to a startup, so unlike the RC-agreement
 // checkout above this does NOT pass a connected `stripeAccount`.
@@ -345,7 +339,7 @@ export async function handlePlanCheckoutSessionCompleted(session) {
              starts_at = NOW(), expires_at = ?, activated_at = NOW(),
              stripe_payment_intent_id = ?, stripe_paid_at = NOW()
          WHERE id = ?`,
-        [getNextAnnualExpiry(), session.payment_intent || null, subscriptionId]
+        [null, session.payment_intent || null, subscriptionId]
     );
 
     sendTelegramAdminAlert("Startup-plan betalt via Stripe", [

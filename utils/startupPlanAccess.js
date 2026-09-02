@@ -4,7 +4,7 @@ export const STARTUP_PLAN_DEFINITIONS = {
   normal: {
     code: "normal",
     name: "Seed",
-    annual_price_nok: 1500,
+    price_nok: 1500,
     original_price_nok: 3000,
     available: true,
     features: [
@@ -24,7 +24,7 @@ export const STARTUP_PLAN_DEFINITIONS = {
   pro: {
     code: "pro",
     name: "Scale",
-    annual_price_nok: 4000,
+    price_nok: 4000,
     available: false,
     features: [
       "Utvidet stotte",

@@ -242,7 +242,7 @@ const statements = [
     company_id INT NOT NULL,
     user_id INT NOT NULL,
     plan_code VARCHAR(32) NOT NULL,
-    billing_period VARCHAR(32) NOT NULL DEFAULT 'annual',
+    billing_period VARCHAR(32) NOT NULL DEFAULT 'per_round',
     list_price_nok INT NOT NULL DEFAULT 0,
     final_price_nok INT NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'payment_required',

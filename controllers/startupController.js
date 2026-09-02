@@ -522,12 +522,6 @@ function buildPlanResponse(summary) {
     };
 }
 
-function getNextAnnualExpiry() {
-    const next = new Date();
-    next.setFullYear(next.getFullYear() + 1);
-    return next;
-}
-
 function buildPaymentReference(planCode, companyId) {
     const planPrefix = String(planCode || "normal").trim().toUpperCase().slice(0, 3) || "NOR";
     return `R-${planPrefix}-${companyId}`;
@@ -613,7 +607,7 @@ export const selectStartupPlan = async (req, res) => {
         }
 
         const openSubscription = await getOpenSubscriptionForCompany(company.company_id);
-        const price = Number(plan.annual_price_nok || 0);
+        const price = Number(plan.price_nok || 0);
         const finalPrice = getStartupPlanFinalPrice(planCode, price);
 
         if (openSubscription) {
@@ -633,7 +627,7 @@ export const selectStartupPlan = async (req, res) => {
                 `
                 INSERT INTO startup_plan_subscriptions
                 (company_id, user_id, plan_code, billing_period, list_price_nok, final_price_nok, status)
-                VALUES (?, ?, ?, 'annual', ?, ?, 'payment_required')
+                VALUES (?, ?, ?, 'per_round', ?, ?, 'payment_required')
                 `,
                 [company.company_id, req.user.id, planCode, price, finalPrice]
             );
@@ -732,7 +726,7 @@ export const confirmStartupPlanPayment = async (req, res) => {
                 activated_at = NOW()
             WHERE id = ?
             `,
-            [getNextAnnualExpiry(), openSubscription.id]
+            [null, openSubscription.id]
         );
 
         const summary = await getStartupPlanSummaryForUser(req.user.id);
@@ -851,7 +845,7 @@ export const applyStartupDiscountCode = async (req, res) => {
                     activated_at = NOW()
                 WHERE id = ?
                 `,
-                [STARTUP_PLAN_DEFINITIONS.normal.annual_price_nok, code.id, getNextAnnualExpiry(), subscriptionId]
+                [STARTUP_PLAN_DEFINITIONS.normal.price_nok, code.id, null, subscriptionId]
             );
         } else {
             const [insertResult] = await connection.query(
@@ -859,9 +853,9 @@ export const applyStartupDiscountCode = async (req, res) => {
                 INSERT INTO startup_plan_subscriptions
                 (company_id, user_id, plan_code, billing_period, list_price_nok, final_price_nok,
                  status, activation_source, discount_code_id, starts_at, expires_at, activated_at)
-                VALUES (?, ?, 'normal', 'annual', ?, 0, 'active', 'discount_code', ?, NOW(), ?, NOW())
+                VALUES (?, ?, 'normal', 'per_round', ?, 0, 'active', 'discount_code', ?, NOW(), ?, NOW())
                 `,
-                [company.company_id, req.user.id, STARTUP_PLAN_DEFINITIONS.normal.annual_price_nok, code.id, getNextAnnualExpiry()]
+                [company.company_id, req.user.id, STARTUP_PLAN_DEFINITIONS.normal.price_nok, code.id, null]
             );
 
             subscriptionId = insertResult.insertId;
