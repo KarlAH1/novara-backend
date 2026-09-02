@@ -1,6 +1,7 @@
 import pool from "../config/db.js";
 import { fetchBrregCompany, fetchBrregRoles } from "../utils/brreg.js";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
@@ -12,6 +13,7 @@ import {
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import {
     getCompanyStartupProfile,
+    isUserInSameCompany,
     resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
 import {
@@ -23,7 +25,6 @@ import { isStripeConfigured } from "../utils/stripeClient.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const frontendUploadsDir = path.resolve(__dirname, "../../frontend/uploads/startup-documents");
 const STARTUP_TEXT_MAX_LENGTH = 500;
 
 function validateStartupText(value, fieldLabel, { required = false } = {}) {
@@ -393,33 +394,94 @@ export const uploadStartupPitchDeck = async (req, res) => {
             return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
         }
 
-        const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
-        const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
-        const absolutePath = path.join(frontendUploadsDir, storedFileName);
-        const publicPath = `/uploads/startup-documents/${storedFileName}`;
+        const fileBuffer = Buffer.from(match[1], "base64");
 
-        await fs.mkdir(frontendUploadsDir, { recursive: true });
-        await fs.writeFile(absolutePath, Buffer.from(match[1], "base64"));
-
-        await pool.query(
+        const [result] = await pool.query(
             `
             INSERT INTO startup_documents
-            (startup_id, filename, url, document_type, mime_type, uploaded_by_user_id, status, visible_in_document_room, used_for_conversion, parse_status)
-            VALUES (?, ?, ?, 'pitch_deck', 'application/pdf', ?, 'uploaded', 1, 0, 'not_started')
+            (startup_id, filename, url, document_type, mime_type, uploaded_by_user_id, status, visible_in_document_room, used_for_conversion, parse_status, file_data, file_size)
+            VALUES (?, ?, NULL, 'pitch_deck', 'application/pdf', ?, 'uploaded', 1, 0, 'not_started', ?, ?)
             `,
-            [targetStartupUserId, fileName, publicPath, req.user.id]
+            [targetStartupUserId, fileName, req.user.id, fileBuffer, fileBuffer.length]
         );
+
+        const fileUrl = `/api/startup/documents/${result.insertId}/file`;
+        await pool.query("UPDATE startup_documents SET url = ? WHERE id = ?", [fileUrl, result.insertId]);
 
         res.json({
             success: true,
             file: {
+                id: result.insertId,
                 filename: fileName,
-                url: publicPath
+                url: fileUrl
             }
         });
     } catch (err) {
         console.error("Upload startup pitch deck error:", err);
         res.status(500).json({ error: "Kunne ikke laste opp pitch deck." });
+    }
+};
+
+// Uploaded files live in the database, not on disk — Render's container
+// filesystem is wiped on every deploy, and anything served statically would
+// be world-readable. Access is checked per request instead.
+export const getStartupDocumentFile = async (req, res) => {
+    try {
+        const documentId = Number(req.params.id || 0);
+        if (!documentId) {
+            return res.status(400).json({ error: "Ugyldig dokument." });
+        }
+
+        const [rows] = await pool.query(
+            `SELECT id, startup_id, filename, mime_type, document_type, file_data
+             FROM startup_documents WHERE id = ? LIMIT 1`,
+            [documentId]
+        );
+
+        const doc = rows[0];
+        if (!doc || !doc.file_data) {
+            return res.status(404).json({ error: "Fant ikke filen." });
+        }
+
+        const userId = req.user.id;
+        let hasAccess =
+            Number(doc.startup_id) === Number(userId) ||
+            (await isUserInSameCompany(pool, userId, doc.startup_id));
+
+        // Invited investors may read the pitch deck of a startup they have a
+        // live relationship with — never its internal legal documents.
+        if (!hasAccess && doc.document_type === "pitch_deck") {
+            const [linkRows] = await pool.query(
+                `
+                SELECT 1
+                FROM rc_agreements a
+                JOIN emission_rounds e ON e.id = a.round_id
+                WHERE a.investor_id = ? AND e.startup_id = ?
+                UNION
+                SELECT 1
+                FROM rc_invites i
+                JOIN emission_rounds e ON e.id = i.round_id
+                WHERE i.claimed_by_user_id = ? AND e.startup_id = ?
+                LIMIT 1
+                `,
+                [userId, doc.startup_id, userId, doc.startup_id]
+            );
+            hasAccess = linkRows.length > 0;
+        }
+
+        if (!hasAccess) {
+            return res.status(403).json({ error: "Ingen tilgang til denne filen." });
+        }
+
+        res.setHeader("Content-Type", doc.mime_type || "application/pdf");
+        res.setHeader(
+            "Content-Disposition",
+            `inline; filename="${String(doc.filename || `dokument-${documentId}.pdf`).replace(/["\\]/g, "")}"`
+        );
+        res.send(doc.file_data);
+    } catch (err) {
+        console.error("Get startup document file error:", err);
+        res.status(500).json({ error: "Kunne ikke hente filen." });
     }
 };
 
@@ -443,40 +505,46 @@ export const uploadStartupArticlesOfAssociation = async (req, res) => {
             return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
         }
 
-        const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, "-");
-        const storedFileName = `${targetStartupUserId}-${Date.now()}-${safeName}`;
-        const absolutePath = path.join(frontendUploadsDir, storedFileName);
-        const publicPath = `/uploads/startup-documents/${storedFileName}`;
+        const fileBuffer = Buffer.from(match[1], "base64");
 
-        await fs.mkdir(frontendUploadsDir, { recursive: true });
-        await fs.writeFile(absolutePath, Buffer.from(match[1], "base64"));
-
-        const extractedText = await extractArticlesTextFromFile(absolutePath, "application/pdf");
-        const parsed = parseArticlesText(extractedText);
+        // The text extractor works on a path, so parse via a temp file that is
+        // removed immediately — the durable copy is the blob in the database.
+        const tempPath = path.join(os.tmpdir(), `raisium-articles-${Date.now()}.pdf`);
+        let parsed;
+        try {
+            await fs.writeFile(tempPath, fileBuffer);
+            parsed = parseArticlesText(await extractArticlesTextFromFile(tempPath, "application/pdf"));
+        } finally {
+            await fs.unlink(tempPath).catch(() => {});
+        }
 
         const [result] = await pool.query(
             `
             INSERT INTO startup_documents
-            (startup_id, filename, url, document_type, mime_type, uploaded_by_user_id, status, visible_in_document_room, used_for_conversion, parse_status, parsed_fields_json, extracted_text)
-            VALUES (?, ?, ?, 'current_articles_of_association', 'application/pdf', ?, 'uploaded', 1, 1, ?, ?, ?)
+            (startup_id, filename, url, document_type, mime_type, uploaded_by_user_id, status, visible_in_document_room, used_for_conversion, parse_status, parsed_fields_json, extracted_text, file_data, file_size)
+            VALUES (?, ?, NULL, 'current_articles_of_association', 'application/pdf', ?, 'uploaded', 1, 1, ?, ?, ?, ?, ?)
             `,
             [
                 targetStartupUserId,
                 fileName,
-                publicPath,
                 req.user.id,
                 parsed.parseStatus,
                 JSON.stringify(parsed.parsedFields || {}),
-                parsed.extractedText || null
+                parsed.extractedText || null,
+                fileBuffer,
+                fileBuffer.length
             ]
         );
+
+        const fileUrl = `/api/startup/documents/${result.insertId}/file`;
+        await pool.query("UPDATE startup_documents SET url = ? WHERE id = ?", [fileUrl, result.insertId]);
 
         res.json({
             success: true,
             file: {
                 id: result.insertId,
                 filename: fileName,
-                url: publicPath,
+                url: fileUrl,
                 document_type: "current_articles_of_association",
                 status: "uploaded",
                 parse_status: parsed.parseStatus,

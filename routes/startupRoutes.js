@@ -9,6 +9,7 @@ import {
   getMyOrganization,
   uploadStartupPitchDeck,
   uploadStartupArticlesOfAssociation,
+  getStartupDocumentFile,
   getStartupPlanStatus,
   selectStartupPlan,
   startStartupPlanPayment,
@@ -35,6 +36,7 @@ router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
 router.post("/improve-pitch", authMiddleware, improveStartupPitchCopy);
 router.post("/pitch-deck", authMiddleware, uploadStartupPitchDeck);
 router.post("/articles-of-association", authMiddleware, uploadStartupArticlesOfAssociation);
+router.get("/documents/:id(\\d+)/file", authMiddleware, getStartupDocumentFile);
 router.get("/plan", authMiddleware, getStartupPlanStatus);
 router.post("/plan/select", authMiddleware, selectStartupPlan);
 router.post("/plan/payment/start", authMiddleware, startStartupPlanPayment);
