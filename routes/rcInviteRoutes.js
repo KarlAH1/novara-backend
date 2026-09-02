@@ -8,6 +8,13 @@ import { getInvite } from "../controllers/rcInviteController.js";
 import { createExpiry, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
 import { isEmailVerificationRequired, sendInvestorInviteAccessCodeEmail, sendVerificationEmail } from "../utils/authEmailFlow.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import {
+  INVITE_TAKEN_ERROR,
+  claimInviteForUser,
+  getOptionalUserFromRequest,
+  inviteIsAvailableTo,
+  loadInviteClaim
+} from "../utils/inviteClaim.js";
 
 const router = express.Router();
 
@@ -104,6 +111,15 @@ router.get("/validate/:token", async (req, res) => {
   try {
 
     const token = req.params.token;
+
+    const inviteClaim = await loadInviteClaim(pool, token);
+    if (!inviteClaim) {
+      return res.status(404).json({ error: "Ugyldig invitasjon." });
+    }
+
+    if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
 
     const [rows] = await pool.query(
       `
@@ -220,6 +236,11 @@ router.post("/access-code/send/:token", async (req, res) => {
       return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
     }
 
+    const inviteClaim = await loadInviteClaim(connection, token);
+    if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
     const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
     if (!availability?.canInvest) {
       return res.status(409).json({
@@ -308,6 +329,11 @@ router.post("/access-code/verify/:token", async (req, res) => {
       return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
     }
 
+    const inviteClaim = await loadInviteClaim(connection, token);
+    if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
     const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
     if (!availability?.canInvest) {
       return res.status(409).json({
@@ -384,6 +410,13 @@ router.post("/access-code/verify/:token", async (req, res) => {
       [record.id]
     );
 
+    // Bind the invite to this investor — anyone else with the link is now locked out.
+    if (!(await claimInviteForUser(connection, token, result.insertId))) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
     await connection.commit();
     transactionStarted = false;
 
@@ -441,6 +474,11 @@ router.post("/access/:token", async (req, res) => {
       return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
     }
 
+    const inviteClaim = await loadInviteClaim(connection, token);
+    if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
     const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
     if (!availability?.canInvest) {
       return res.status(409).json({
@@ -493,6 +531,13 @@ router.post("/access/:token", async (req, res) => {
     } else {
       await connection.rollback();
       return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
+    }
+
+    // Bind the invite to this investor — anyone else with the link is now locked out.
+    if (!(await claimInviteForUser(connection, token, user.id))) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
     }
 
     await connection.commit();
