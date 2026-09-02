@@ -43,12 +43,6 @@ async function attachIssueMessages(issues = []) {
     }));
 }
 
-function getNextAnnualExpiry() {
-    const next = new Date();
-    next.setFullYear(next.getFullYear() + 1);
-    return next;
-}
-
 //
 // ADMIN: GET ALL USERS
 //
@@ -57,6 +51,68 @@ export const adminGetUsers = async (req, res) => {
         "SELECT id, name, email, role, created_at FROM users ORDER BY id DESC"
     );
     res.json(rows);
+};
+
+//
+// ADMIN: IDENTITY REVIEW QUEUE
+// Startups whose typed name did not match any role registered on the orgnr in
+// Brønnøysund. A match is only a name check against public data, so these need
+// a human to confirm the person actually represents the company.
+//
+export const adminGetRoleChecks = async (req, res) => {
+    const status = String(req.query.status || "pending_manual_review").trim().toLowerCase();
+    const allowed = ["pending_manual_review", "matched", "approved_manually", "all"];
+
+    if (!allowed.includes(status)) {
+        return res.status(400).json({ error: "Invalid status filter" });
+    }
+
+    const [rows] = await pool.query(
+        `
+        SELECT
+            u.id,
+            u.name,
+            u.email,
+            u.created_at,
+            u.company_role_check_status AS status,
+            u.company_role_check_checked_at AS checked_at,
+            u.company_role_check_orgnr AS orgnr,
+            c.company_name
+        FROM users u
+        LEFT JOIN companies c ON c.orgnr = u.company_role_check_orgnr
+        WHERE u.role = 'startup'
+          ${status === "all" ? "" : "AND u.company_role_check_status = ?"}
+        ORDER BY u.id DESC
+        `,
+        status === "all" ? [] : [status]
+    );
+
+    res.json(rows);
+};
+
+export const adminApproveRoleCheck = async (req, res) => {
+    const { id } = req.params;
+
+    const [rows] = await pool.query(
+        "SELECT id, role FROM users WHERE id = ? LIMIT 1",
+        [id]
+    );
+
+    if (!rows.length) {
+        return res.status(404).json({ error: "User not found" });
+    }
+
+    await pool.query(
+        `
+        UPDATE users
+        SET company_role_check_status = 'approved_manually',
+            company_role_check_checked_at = NOW()
+        WHERE id = ?
+        `,
+        [id]
+    );
+
+    res.json({ message: "Identitet bekreftet manuelt." });
 };
 
 //
@@ -382,7 +438,7 @@ export const adminApprovePlanPayment = async (req, res) => {
             payment_admin_note = ?
         WHERE id = ?
         `,
-        [getNextAnnualExpiry(), req.user.id, note || null, subscriptionId]
+        [null, req.user.id, note || null, subscriptionId]
     );
 
     const [companyRows] = await pool.query(

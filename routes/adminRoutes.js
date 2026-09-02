@@ -6,6 +6,8 @@ import {
     adminGetUsers,
     adminDeleteUser,
     adminChangeRole,
+    adminGetRoleChecks,
+    adminApproveRoleCheck,
     adminGetStartups,
     adminDeleteStartup,
     adminGetEmissions,
@@ -34,6 +36,9 @@ const router = express.Router();
 router.get("/users", authMiddleware, isAdmin, adminGetUsers);
 router.delete("/user/:id", authMiddleware, isAdmin, adminDeleteUser);
 router.patch("/user/:id/role", authMiddleware, isAdmin, adminChangeRole);
+
+router.get("/role-checks", authMiddleware, isAdmin, adminGetRoleChecks);
+router.post("/role-checks/:id/approve", authMiddleware, isAdmin, adminApproveRoleCheck);
 
 router.get("/startups", authMiddleware, isAdmin, adminGetStartups);
 router.delete("/startup/:id", authMiddleware, isAdmin, adminDeleteStartup);
