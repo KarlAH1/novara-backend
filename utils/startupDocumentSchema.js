@@ -49,7 +49,9 @@ export async function ensureStartupDocumentSchema() {
       ["used_for_conversion", "ALTER TABLE startup_documents ADD COLUMN used_for_conversion TINYINT(1) NOT NULL DEFAULT 0"],
       ["parse_status", "ALTER TABLE startup_documents ADD COLUMN parse_status VARCHAR(32) NOT NULL DEFAULT 'not_started'"],
       ["parsed_fields_json", "ALTER TABLE startup_documents ADD COLUMN parsed_fields_json LONGTEXT NULL"],
-      ["extracted_text", "ALTER TABLE startup_documents ADD COLUMN extracted_text LONGTEXT NULL"]
+      ["extracted_text", "ALTER TABLE startup_documents ADD COLUMN extracted_text LONGTEXT NULL"],
+      ["file_data", "ALTER TABLE startup_documents ADD COLUMN file_data LONGBLOB NULL"],
+      ["file_size", "ALTER TABLE startup_documents ADD COLUMN file_size INT NULL"]
     ];
 
     for (const [columnName, sql] of additions) {

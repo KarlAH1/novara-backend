@@ -85,7 +85,7 @@ const statements = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     startup_id INT NOT NULL,
     filename VARCHAR(255) NOT NULL,
-    url TEXT NOT NULL,
+    url TEXT NULL,
     document_type VARCHAR(64) NOT NULL DEFAULT 'pitch_deck',
     mime_type VARCHAR(128) NULL,
     uploaded_by_user_id INT NULL,
@@ -95,6 +95,8 @@ const statements = [
     parse_status VARCHAR(32) NOT NULL DEFAULT 'not_started',
     parsed_fields_json LONGTEXT NULL,
     extracted_text LONGTEXT NULL,
+    file_data LONGBLOB NULL,
+    file_size INT NULL,
     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_startup_documents_user FOREIGN KEY (startup_id) REFERENCES users(id) ON DELETE CASCADE
   )
@@ -192,6 +194,8 @@ const statements = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     round_id INT NOT NULL,
     token VARCHAR(128) NOT NULL UNIQUE,
+    claimed_by_user_id INT NULL,
+    claimed_at DATETIME NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_rc_invites_round FOREIGN KEY (round_id) REFERENCES emission_rounds(id) ON DELETE CASCADE
   )
