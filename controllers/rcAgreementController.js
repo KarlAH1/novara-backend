@@ -5,6 +5,21 @@ import {
     syncEmissionRoundAvailability
 } from "../utils/emissionRoundState.js";
 import { sendRcAgreementCreatedEmails } from "../utils/notificationEmailFlow.js";
+import {
+    claimInviteForUser,
+    INVITE_TAKEN_ERROR,
+    inviteIsAvailableTo
+} from "../utils/inviteClaim.js";
+import {
+    RAISIUM_RC_LEGAL_MODEL_VERSION,
+    RC_CALCULATION_VERSION
+} from "../utils/rcConversionCalculator.js";
+
+/*
+  Version of the RC agreement template. Recorded on every executed agreement so
+  it stays possible to tell which wording a given investor actually signed.
+*/
+export const RC_TEMPLATE_VERSION = "RC-NO-1.1";
 
 const formatNOK = (value) =>
     Number(value || 0).toLocaleString("no-NO") + " NOK";
@@ -141,7 +156,8 @@ export const buildRcTemplateData = (input = {}) => {
         bank_account: input.bank_account || "Legges inn av startup",
         "rc.id": input.rc_id || "-",
         "round.id": roundId,
-        "template.version": input.template_version || "RC-NO-1.0",
+        "template.version": input.template_version || RC_TEMPLATE_VERSION,
+        "legal_model.version": RAISIUM_RC_LEGAL_MODEL_VERSION,
         "company.legal_name": companyName,
         "company.org_no": input.company_org_no || "-",
         "company.address": input.company_address || "Ikke registrert i systemet",
@@ -173,6 +189,13 @@ export const buildRcTemplateData = (input = {}) => {
         "document.hash": input.document_hash || input.agreement_document_hash || "-",
         "document.generated_at": formatDateTimeLabel(generatedAt),
         "document.locked_at": formatDateTimeLabel(input.document_locked_at),
+        "attachment.snapshot.capitalization_base": input.capitalization_base_share_count
+            ? Number(input.capitalization_base_share_count).toLocaleString("no-NO")
+            : "Registreres av selskapet",
+        "attachment.snapshot.par_value": input.par_value_per_share
+            ? `${Number(input.par_value_per_share).toLocaleString("no-NO")} NOK`
+            : "Registreres av selskapet",
+        "attachment.snapshot.calculation_version": RC_CALCULATION_VERSION,
         "attachment.snapshot.round_status": input.round_open === 1 ? "Privat runde aktiv" : "Utkast",
         "attachment.snapshot.deadline": formatDateLabel(paymentDeadline),
         "attachment.snapshot.round_target": formatNOK(input.target_amount),
@@ -188,7 +211,7 @@ export const buildRcTemplateData = (input = {}) => {
         "attachment.calc.model": input.valuation_cap ? "Cap / discount-modell" : "Discount-modell",
         "attachment.calc.discount": `${input.discount_rate || 0}%`,
         "attachment.calc.cap": input.valuation_cap ? formatNOK(input.valuation_cap) : "Ingen",
-        "attachment.calc.par_value_note": "Hele tegningsbeløpet, både den delen som tilføres aksjekapitalen og den delen som tilføres overkursfondet, gjøres opp ved motregning av investorens rentefrie krav. Investor skal ikke foreta noen kontant tilleggsbetaling ved tegning.",
+        "attachment.calc.par_value_note": "Ved utøvelse innbetaler investor aksjenes samlede pålydende (Paribeløpet) som aksjeinnskudd i penger til selskapet. Dette er det eneste beløpet investor betaler ved utøvelse. Investeringsbeløpet motregnes ikke, men er hensyntatt i beregningen av antall aksjer.",
         "attachment.calc.trigger_note": "Vedlegg 2 er grunnlag for beregning ved Trigger Event og skal suppleres med runde- og transaksjonsdata når konvertering eller oppgjør faktisk gjennomføres."
     };
 };
@@ -221,7 +244,7 @@ export const investViaInvite = async (req, res) => {
         await connection.beginTransaction();
 
         const [inviteRows] = await connection.query(`
-            SELECT round_id
+            SELECT id, round_id, claimed_by_user_id
             FROM rc_invites
             WHERE token=? 
             FOR UPDATE
@@ -230,6 +253,20 @@ export const investViaInvite = async (req, res) => {
         if (!inviteRows.length){
             await connection.rollback();
             return res.status(404).json({ error:"Invalid invite" });
+        }
+
+        // An invite is single-use and bound to whoever claimed it. This is the
+        // endpoint that actually creates the agreement, so it has to enforce
+        // that itself — the earlier validate/access-code steps are a UI flow,
+        // not an authorisation boundary, and this route is callable directly.
+        if (!inviteIsAvailableTo(inviteRows[0], investorId)) {
+            await connection.rollback();
+            return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+        }
+
+        if (!(await claimInviteForUser(connection, token, investorId))) {
+            await connection.rollback();
+            return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
         }
 
         const roundId = inviteRows[0].round_id;
@@ -294,18 +331,46 @@ export const investViaInvite = async (req, res) => {
 
         const rcId = `RC-${Date.now()}`;
 
-        const [result] = await connection.query(`
-            INSERT INTO rc_agreements
-            (rc_id, round_id, startup_id, investor_id,
-             investment_amount, status, document_hash)
-            VALUES (?, ?, ?, ?, ?, 'Pending Signatures', '')
-        `, [
-            rcId,
-            roundId,
-            round.startup_id,
-            investorId,
-            requestedAmount
-        ]);
+        // Snapshot the terms this agreement is executed under. The share basis
+        // in particular is editable in the startup profile, and must not be
+        // able to re-price an agreement after the fact.
+        const [[shareBasisRow]] = await connection.query(
+            `SELECT nominal_value_per_share, current_share_count
+             FROM startup_profiles WHERE user_id = ? LIMIT 1`,
+            [round.startup_id]
+        );
+
+        const [snapshotColumnRows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
+        const hasTermsSnapshot = snapshotColumnRows.some((c) => c.Field === "terms_snapshot_at");
+
+        const baseColumns = "rc_id, round_id, startup_id, investor_id, investment_amount, status, document_hash";
+        const baseValues = "?, ?, ?, ?, ?, 'Pending Signatures', ''";
+        const baseParams = [rcId, roundId, round.startup_id, investorId, requestedAmount];
+
+        const snapshotColumns = hasTermsSnapshot
+            ? `, terms_valuation_cap, terms_discount_rate, terms_trigger_period_years,
+                 terms_par_value_per_share, terms_capitalization_base_share_count,
+                 terms_snapshot_at, legal_model_version, calculation_version, agreement_template_version`
+            : "";
+        const snapshotValues = hasTermsSnapshot ? ", ?, ?, ?, ?, ?, NOW(), ?, ?, ?" : "";
+        const snapshotParams = hasTermsSnapshot
+            ? [
+                round.valuation_cap ?? null,
+                round.discount_rate ?? null,
+                round.trigger_period ?? round.conversion_years ?? null,
+                shareBasisRow?.nominal_value_per_share ?? null,
+                shareBasisRow?.current_share_count ?? null,
+                RAISIUM_RC_LEGAL_MODEL_VERSION,
+                RC_CALCULATION_VERSION,
+                RC_TEMPLATE_VERSION
+              ]
+            : [];
+
+        const [result] = await connection.query(
+            `INSERT INTO rc_agreements (${baseColumns}${snapshotColumns})
+             VALUES (${baseValues}${snapshotValues})`,
+            [...baseParams, ...snapshotParams]
+        );
 
         const agreementId = result.insertId;
 
@@ -325,7 +390,9 @@ export const investViaInvite = async (req, res) => {
             amount_raised: round.amount_raised,
             discount_rate: round.discount_rate,
             valuation_cap: round.valuation_cap,
-            conversion_years: round.conversion_years,
+            conversion_years: round.trigger_period || round.conversion_years,
+            capitalization_base_share_count: shareBasisRow?.current_share_count ?? null,
+            par_value_per_share: shareBasisRow?.nominal_value_per_share ?? null,
             bank_account: round.bank_account,
             deadline: round.deadline,
             round_open: round.open,

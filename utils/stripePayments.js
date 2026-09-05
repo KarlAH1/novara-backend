@@ -241,13 +241,19 @@ export async function handleParValueCheckoutSessionCompleted(session) {
         return;
     }
 
-    await pool.query(
+    // Idempotent: a redelivered webhook must not rewrite the confirmation
+    // timestamp of a payment that is already recorded.
+    const [update] = await pool.query(
         `UPDATE conversion_par_value_requests
          SET status = 'paid_confirmed', paid_confirmed_at = NOW(),
              stripe_payment_intent_id = ?, stripe_paid_at = NOW()
-         WHERE id = ?`,
+         WHERE id = ? AND paid_confirmed_at IS NULL`,
         [session.payment_intent || null, requestId]
     );
+
+    if (!update.affectedRows) {
+        return;
+    }
 
     const feeSplit = await fetchStripeFeeSplit(session.payment_intent, request.stripe_account_id);
     if (feeSplit) {

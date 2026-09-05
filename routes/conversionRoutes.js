@@ -9,7 +9,8 @@ import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import {
   aggregateRcConversions,
-  calculateRcConversion
+  calculateRcConversion,
+  RC_CALCULATION_VERSION
 } from "../utils/rcConversionCalculator.js";
 import { ensureStartupArticlesParsed } from "../utils/startupArticlesBasis.js";
 import { buildUpdatedArticlesDraft } from "../utils/updatedArticlesBuilder.js";
@@ -656,109 +657,6 @@ function isExistingShareholderTaskComplete(rows = []) {
   );
 }
 
-/*
-  Styrets redegjørelse etter aksjeloven § 10-2 jf. § 2-6.
-
-  Required because the subscription is settled by set-off rather than cash,
-  which counts as an aksjeinnskudd in something other than money. It must be
-  dated and signed by every board member personally — this is an assertion each
-  of them carries liability for, so it cannot be delegated by fullmakt — and
-  then confirmed by the auditor.
-
-  Board members are stored per conversion rather than per company, because what
-  matters legally is the board as constituted when the redegjørelse is signed.
-*/
-function parseBoardMembers(conversion) {
-  try {
-    const parsed = JSON.parse(conversion?.board_members_json || "[]");
-    return Array.isArray(parsed) ? parsed.filter((m) => m && m.name) : [];
-  } catch {
-    return [];
-  }
-}
-
-async function buildRedegjorelseDocument(connection, {
-  conversion, round, startupContext, companyName, orgnr, today, basis, calculations
-}) {
-  const templatePath = path.join(templatesDir, "redegjorelse-template.html");
-  let html = fs.readFileSync(templatePath, "utf8");
-
-  const nominalValue = Number(basis.nominal_value_per_share || 0);
-  const totalInvestmentAmount = Number(calculations.totals?.total_investment_amount || 0);
-  const totalNewShares = Number(calculations.totals?.total_conversion_share_count || 0);
-  const totalNominalAmount = Number(calculations.totals?.total_nominal_amount || 0);
-  const totalSharePremium = Number(calculations.totals?.total_share_premium || 0);
-
-  const claimRows = (calculations.investors || []).map((item) => {
-    const name = escapeHtml(item.investor_name || item.investor_email || "Investor");
-    const shares = Number(item.conversion_share_count || 0);
-    return `
-        <tr>
-          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0;">${name}</td>
-          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0;">RC-${escapeHtml(String(item.agreement_id))}</td>
-          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0; text-align: right;">${escapeHtml(formatCurrency(item.investment_amount))}</td>
-          <td style="padding: 10px 14px; border-top: 1px solid #e6ddd0; text-align: right;">${shares.toLocaleString("no-NO")}</td>
-        </tr>`;
-  }).join("");
-
-  const boardMembers = parseBoardMembers(conversion);
-  const boardSignatureRows = boardMembers.length
-    ? boardMembers.map((member) => `
-        <div style="margin: 0 0 22px;">
-          <div style="height: 1px; background: #111827; margin-bottom: 6px;"></div>
-          <p style="margin: 0;">${escapeHtml(member.name)}${member.role ? ` – ${escapeHtml(member.role)}` : ""}</p>
-        </div>`).join("")
-    : `<p style="margin:0; color:#b91c1c;">Styrets sammensetning er ikke registrert. Redegjørelsen kan ikke signeres før samtlige styremedlemmer er lagt inn.</p>`;
-
-  html = html
-    .replace(/{{company_name}}/g, escapeHtml(companyName))
-    .replace(/{{orgnr}}/g, escapeHtml(orgnr))
-    .replace(/{{date}}/g, escapeHtml(today))
-    .replace(/{{trigger_type}}/g, escapeHtml(getTriggerLabel(conversion.trigger_type)))
-    .replace(/{{total_subscription_amount}}/g, escapeHtml(formatCurrency(totalInvestmentAmount)))
-    .replace(/{{increase_amount}}/g, escapeHtml(formatCurrency(totalNominalAmount)))
-    .replace(/{{total_share_premium}}/g, escapeHtml(formatCurrency(totalSharePremium)))
-    .replace(/{{new_shares}}/g, totalNewShares.toLocaleString("no-NO"))
-    .replace(/{{nominal_value}}/g, escapeHtml(formatCurrency(nominalValue)))
-    .replace(/{{claim_rows}}/g, claimRows || `<tr><td colspan="4" style="padding:10px 14px;">Ingen fordringer registrert.</td></tr>`);
-
-  const signers = boardMembers
-    .filter((member) => member.email)
-    .map((member) => ({
-      email: String(member.email).trim().toLowerCase(),
-      user_id: null,
-      role: member.role || "Styremedlem",
-      status: "INVITED"
-    }));
-
-  const documentId = await createDocument(connection, {
-    type: "CONVERSION_REDEGJORELSE",
-    startupId: startupContext.startupUserId,
-    roundId: round.id,
-    title: `Redegjørelse § 10-2 jf. § 2-6 – ${companyName}`,
-    html,
-    signers
-  });
-
-  if (signers.length) {
-    await notifyDocumentSigners({
-      type: "CONVERSION_REDEGJORELSE",
-      documentId,
-      title: `Redegjørelse § 10-2 jf. § 2-6 – ${companyName}`,
-      companyName,
-      signers
-    });
-  }
-
-  await connection.query(
-    "UPDATE conversion_events SET redegjorelse_document_id = ? WHERE id = ?",
-    [documentId, conversion.id]
-  );
-  conversion.redegjorelse_document_id = documentId;
-
-  return documentId;
-}
-
 function buildShareholderRegisterHtml({ companyName, orgnr, date, totalShareCapital, totalShareCount, nominalValue, shareClass, rows }) {
   const templatePath = path.join(templatesDir, "eierregister-template.html");
   let template = fs.readFileSync(templatePath, "utf8");
@@ -850,9 +748,39 @@ async function findUserByEmail(connection, email) {
   return rows[0] || null;
 }
 
+/*
+  Once a trigger event has been calculated, that calculation is frozen. Every
+  downstream artefact — the par value requests investors are notified about, the
+  board proposal, the GF resolution, the updated Articles, the shareholder
+  register — must be driven by the same numbers.
+
+  Recalculating on each read would let a later edit to the startup's share
+  basis silently change an investor's allocation after they had already been
+  told what to pay, and would let two documents generated minutes apart
+  disagree. So the frozen snapshot wins whenever one exists.
+*/
+function readFrozenCalculations(conversion) {
+  if (!conversion?.calculations_json) return null;
+
+  try {
+    const parsed = JSON.parse(conversion.calculations_json);
+    if (!parsed?.frozen_at || !Array.isArray(parsed.investors) || !parsed.investors.length) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 async function buildConversionCalculations(connection, startupId, round, conversion) {
   const basis = await getConversionBasis(connection, startupId);
   const participants = await getConversionParticipants(connection, round.id);
+
+  const frozen = readFrozenCalculations(conversion);
+  if (frozen) {
+    return { basis, participants, calculations: frozen, calculationError: null, wasFrozen: true };
+  }
 
   let calculations = null;
   let calculationError = null;
@@ -896,6 +824,15 @@ async function buildConversionCalculations(connection, startupId, round, convers
       };
 
       calculations.totals = aggregateRcConversions(calculations.investors);
+
+      // The share basis the whole calculation hangs off, captured alongside it
+      // so the snapshot does not depend on startup_profiles staying unchanged.
+      calculations.calculation_version = RC_CALCULATION_VERSION;
+      calculations.capitalization_denominator = Number(basis.current_share_count || 0) || null;
+      calculations.capitalization_basis = "issued_shares_current_articles";
+      calculations.par_value_per_share = Number(basis.nominal_value_per_share || 0) || null;
+      calculations.pre_share_count = Number(basis.current_share_count || 0) || null;
+      calculations.pre_share_capital_amount = Number(basis.current_share_capital_amount || 0) || null;
     } catch (error) {
       calculationError = error.message || "Kunne ikke beregne konverteringen.";
     }
@@ -905,7 +842,8 @@ async function buildConversionCalculations(connection, startupId, round, convers
     basis,
     participants,
     calculations,
-    calculationError
+    calculationError,
+    wasFrozen: false
   };
 }
 
@@ -924,15 +862,19 @@ async function syncParValueRequests(connection, conversion, calculations) {
         investor_name,
         investor_email,
         par_value_amount,
+        share_count,
+        par_value_per_share,
         reference,
         due_date,
         status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_notice')
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_notice')
       ON DUPLICATE KEY UPDATE
         investor_name = VALUES(investor_name),
         investor_email = VALUES(investor_email),
-        par_value_amount = VALUES(par_value_amount),
+        par_value_amount = IF(conversion_par_value_requests.paid_confirmed_at IS NULL, VALUES(par_value_amount), conversion_par_value_requests.par_value_amount),
+        share_count = IF(conversion_par_value_requests.paid_confirmed_at IS NULL, VALUES(share_count), conversion_par_value_requests.share_count),
+        par_value_per_share = IF(conversion_par_value_requests.paid_confirmed_at IS NULL, VALUES(par_value_per_share), conversion_par_value_requests.par_value_per_share),
         reference = COALESCE(conversion_par_value_requests.reference, VALUES(reference)),
         due_date = VALUES(due_date)
       `,
@@ -942,7 +884,9 @@ async function syncParValueRequests(connection, conversion, calculations) {
         item.investor_id,
         item.investor_name || null,
         item.investor_email || null,
-        Number(item.nominal_amount || 0),
+        Number(item.par_amount ?? item.nominal_amount ?? 0),
+        Number(item.conversion_share_count || 0),
+        Number(item.par_value_per_share ?? item.nominal_value_per_share ?? 0),
         buildParValueReference(item.agreement_id, conversion.id),
         toMysqlDateTime(conversion.par_value_due_date)
       ]
@@ -968,6 +912,7 @@ async function sendParValueNotices(connection, startupContext, conversion, reque
   const noticeDueDate = addDays(new Date(), 7);
   const noticeDueDateSql = toMysqlDateTime(noticeDueDate);
   const bankAccount = startupContext.bank_account || "Legges inn av selskapet";
+  let sentAny = false;
 
   for (const request of requests) {
     if (request.notice_sent_at || !request.investor_email) {
@@ -1001,12 +946,16 @@ async function sendParValueNotices(connection, startupContext, conversion, reque
         `,
         [noticeDueDateSql, request.id]
       );
+      sentAny = true;
     } catch (error) {
       console.error("Par value notice send failed:", error);
     }
   }
 
-  if (conversion?.id) {
+  // Only move the conversion's deadline when a notice actually went out.
+  // Updating it unconditionally pushed the payment deadline seven days into the
+  // future on every single page load, so it never arrived.
+  if (conversion?.id && sentAny) {
     await connection.query(
       `
       UPDATE conversion_events
@@ -1105,23 +1054,6 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const secretaryEmail = String(legalData.secretary_email || "").trim().toLowerCase();
     const secretaryUser = await findUserByEmail(connection, secretaryEmail);
 
-    // Aksjeinnskuddet gjøres opp ved motregning, altså i annet enn penger, så
-    // aksjeloven § 10-2 jf. § 2-6 krever en redegjørelse som skal foreligge for
-    // generalforsamlingen. Den bygges derfor før GF-protokollen, og undertegnes
-    // av samtlige styremedlemmer.
-    if (!freshConversion.redegjorelse_document_id) {
-      await buildRedegjorelseDocument(connection, {
-        conversion: freshConversion,
-        round,
-        startupContext,
-        companyName,
-        orgnr,
-        today,
-        basis,
-        calculations
-      });
-    }
-
     const gfTemplatePath = path.join(templatesDir, "gfc-template.html");
     let gfHtml = fs.readFileSync(gfTemplatePath, "utf8");
     const preShareCount = Number(basis.current_share_count || 0);
@@ -1133,19 +1065,23 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const totalSharePremium = Number(calculations.totals?.total_share_premium || 0);
     const postShareCount = preShareCount + totalNewShares;
     const postCapitalAmount = preCapitalAmount + totalNominalAmount;
-    const subscriptionPrice = totalNewShares > 0 ? totalInvestmentAmount / totalNewShares : 0;
-    const sharePremiumPerShare = subscriptionPrice > 0 && nominalValue > 0
-      ? subscriptionPrice - nominalValue
-      : 0;
+    // The exercise contribution is the aggregate par value paid in cash, so the
+    // subscription price per share is par and no premium arises. The RC
+    // Investment Amount was paid at year 0 and is not part of this settlement.
+    const subscriptionPrice = nominalValue;
+    const sharePremiumPerShare = 0;
     const paymentDueDate = formatDateLabel(freshConversion.par_value_due_date || freshConversion.conversion_date);
 
     const subscriptionRows = calculations.investors.map((item) => {
       const investorName = escapeHtml(item.investor_name || item.investor_email || "Investor");
       const shareCount = Number(item.conversion_share_count || 0);
-      const pricePerShare = Number(item.chosen_conversion_price || 0);
-      const amount = Number(item.investment_amount || 0);
+      // The subscription is at par, paid in cash. The RC Investment Amount is
+      // shown separately because it determined the share count but is not part
+      // of this settlement.
+      const parAmount = Number(item.par_amount ?? item.nominal_amount ?? 0);
+      const investmentAmount = Number(item.investment_amount || 0);
       const ownership = postShareCount > 0 ? ((shareCount / postShareCount) * 100).toFixed(2) : "0.00";
-      return `<p style="margin: 0 0 6px;">• ${investorName} tegner ${shareCount.toLocaleString("no-NO")} aksjer à ${formatCurrency(pricePerShare)} = ${formatCurrency(amount)}. Dette tilsvarer ${ownership} % eierandel.</p>`;
+      return `<p style="margin: 0 0 6px;">• ${investorName} tegner ${shareCount.toLocaleString("no-NO")} aksjer à ${formatCurrency(nominalValue)} = ${formatCurrency(parAmount)} innbetalt kontant. Antallet følger av RC-avtalen med investeringsbeløp ${formatCurrency(investmentAmount)}. Dette tilsvarer ${ownership} % eierandel.</p>`;
     }).join("");
 
     const preemptionRows = calculations.investors.map((item) => {
@@ -1160,7 +1096,6 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
       .replace(/{{round_id}}/g, String(round.id))
       .replace(/{{date}}/g, today)
-      .replace(/{{chair_name}}/g, resolvedChairName)
       .replace(/{{secretary_name}}/g, secretaryName)
       .replace(/{{pre_capital_amount}}/g, formatCurrency(preCapitalAmount))
       .replace(/{{pre_share_count}}/g, preShareCount.toLocaleString("no-NO"))
@@ -1180,6 +1115,21 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
         /{{round_raised_amount}}/g,
         `${Number(round.committed_amount ?? round.amount_raised ?? 0).toLocaleString("no-NO")} NOK`
       );
+
+    /*
+      The protocol body and the signature block must name the same person.
+      Only the authenticated user can actually sign here, so if the company has
+      designated a different chair we cannot honestly put that name in the body
+      of a document this user signs. One identity, used in both places.
+    */
+    const signingUserName = String(user.name || "").trim();
+    const chairMatchesSigner =
+      !signingUserName ||
+      resolvedChairName.trim().toLowerCase().replace(/\s+/g, " ") ===
+        signingUserName.toLowerCase().replace(/\s+/g, " ");
+
+    const gfChairName = chairMatchesSigner ? resolvedChairName : (signingUserName || resolvedChairName);
+    gfHtml = gfHtml.replace(/{{chair_name}}/g, escapeHtml(gfChairName));
 
     const gfSigners = [
       {
@@ -1223,6 +1173,28 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
   if (!freshConversion.updated_articles_document_id && basis.articles_document?.parsed_fields) {
     const nextShareCount = Number(basis.current_share_count || 0) + Number(calculations.totals?.total_conversion_share_count || 0);
     const nextCapitalAmount = Number(basis.current_share_capital_amount || 0) + Number(calculations.totals?.total_nominal_amount || 0);
+
+    // Fail closed rather than register articles that do not add up. For a
+    // company with one uniform par value the new share capital must equal the
+    // new share count times par value, and must equal the old capital plus the
+    // aggregate par amount actually being contributed.
+    const parValue = Number(basis.nominal_value_per_share || 0);
+    const expectedFromShares = nextShareCount * parValue;
+    const reconciles =
+      parValue > 0 &&
+      nextShareCount > 0 &&
+      Math.abs(expectedFromShares - nextCapitalAmount) <= 0.5 &&
+      Math.abs(
+        Number(calculations.totals?.total_par_amount || 0) -
+        Number(calculations.totals?.total_nominal_amount || 0)
+      ) <= 0.5;
+
+    if (!reconciles) {
+      throw new Error(
+        `Kapitalforhøyelsen stemmer ikke: ${nextShareCount} aksjer × ${parValue} = ${expectedFromShares}, ` +
+        `men ny aksjekapital er beregnet til ${nextCapitalAmount}. Vedtektene ble ikke generert.`
+      );
+    }
     let brregMunicipality = basis.articles_document?.parsed_fields?.municipality || "";
     if (!brregMunicipality && orgnr) {
       try {
@@ -1394,7 +1366,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       type: "CONVERSION_CAPITAL_CONFIRMATION",
       startupId: startupContext.startupUserId,
       roundId: round.id,
-      title: `Revisorbekreftelse – ${companyName}`,
+      title: `Bekreftelse på innbetalt aksjekapital – ${companyName}`,
       html: confirmationHtml,
       signers: confirmationSigners
     });
@@ -1402,7 +1374,7 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     await notifyDocumentSigners({
       type: "CONVERSION_CAPITAL_CONFIRMATION",
       documentId: confirmationId,
-      title: `Revisorbekreftelse – ${companyName}`,
+      title: `Bekreftelse på innbetalt aksjekapital – ${companyName}`,
       companyName,
       signers: confirmationSigners
     });
@@ -1420,7 +1392,6 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
     !conversion?.id ||
     conversion.altinn_package_document_id ||
     !conversion.board_document_id ||
-    !conversion.redegjorelse_document_id ||
     !conversion.gf_document_id ||
     !conversion.updated_articles_document_id ||
     !conversion.shareholder_register_document_id ||
@@ -1540,14 +1511,31 @@ export async function buildConversionState(connection, startupContext, user) {
   );
 
   if (conversion?.id && conversionData.calculations && !adminApprovalPending) {
-    await connection.query(
-      `
-      UPDATE conversion_events
-      SET calculations_json = ?
-      WHERE id = ?
-      `,
-      [JSON.stringify(conversionData.calculations), conversion.id]
-    );
+    // Freeze once. A snapshot that already exists is authoritative and must not
+    // be recomputed, or an investor's allocation could change under them after
+    // they have been told what to subscribe for and what to pay.
+    if (!conversionData.wasFrozen) {
+      conversionData.calculations.frozen_at = new Date().toISOString();
+      await connection.query(
+        `
+        UPDATE conversion_events
+        SET calculations_json = ?
+        WHERE id = ? AND (calculations_json IS NULL OR JSON_EXTRACT(calculations_json, '$.frozen_at') IS NULL)
+        `,
+        [JSON.stringify(conversionData.calculations), conversion.id]
+      );
+
+      // Another request may have frozen it first; that one wins.
+      const [[reread]] = await connection.query(
+        "SELECT calculations_json FROM conversion_events WHERE id = ? LIMIT 1",
+        [conversion.id]
+      );
+      const winner = readFrozenCalculations(reread);
+      if (winner) {
+        conversionData.calculations = winner;
+        conversionData.wasFrozen = true;
+      }
+    }
 
     const requests = hasParValueRequestsTable
       ? await syncParValueRequests(connection, conversion, conversionData.calculations)
@@ -1600,7 +1588,7 @@ export async function buildConversionState(connection, startupContext, user) {
   const [parValueRequests] = (conversion?.id && hasParValueRequestsTable)
     ? await connection.query(
         `
-        SELECT id, agreement_id, investor_id, investor_name, investor_email, par_value_amount, reference, due_date, notice_sent_at, paid_confirmed_at, status
+        SELECT id, agreement_id, investor_id, investor_name, investor_email, par_value_amount, share_count, par_value_per_share, reference, due_date, notice_sent_at, paid_confirmed_at, status
         FROM conversion_par_value_requests
         WHERE conversion_event_id = ?
         ORDER BY id ASC
@@ -1879,10 +1867,10 @@ router.post("/context", auth, requireRole(["startup"]), async (req, res) => {
 
     const nextThirdPartyEmail = String(req.body.thirdPartyEmail || "").trim().toLowerCase();
     if (nextThirdPartyEmail && nextThirdPartyEmail !== previousThirdPartyEmail) {
-      await sendTelegramAdminAlert("Revisorbekreftelse venter", [
+      await sendTelegramAdminAlert("Bekreftelse på aksjeinnskudd venter", [
         `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
         `Orgnr: ${startupContext.company?.orgnr || "-"}`,
-        `Revisor e-post: ${nextThirdPartyEmail}`
+        `Bekrefter e-post: ${nextThirdPartyEmail}`
       ]);
     }
 
@@ -2060,6 +2048,153 @@ router.post("/gf/resend-sign-link", auth, requireRole(["startup"]), async (req, 
   }
 });
 
+/*
+  The single authoritative registration-readiness check.
+
+  Everything that must be true before a capital increase may be registered lives
+  here, so the download endpoint, the completion endpoint and the UI all consume
+  the same decision rather than each carrying their own copy of the rules.
+*/
+export async function checkRegistrationReadiness(connection, conversion, calculations, basis) {
+  const blockers = [];
+
+  if (!conversion?.id) {
+    return { ready: false, blockers: ["Fant ingen aktiv konvertering."] };
+  }
+
+  // Trigger valid and calculation frozen.
+  if (!conversion.trigger_type) {
+    blockers.push("Trigger event mangler.");
+  }
+  if (Number(conversion.requires_admin_approval || 0) === 1 && !conversion.admin_approved_at) {
+    blockers.push("Trigger event venter på godkjenning fra Raisium.");
+  }
+  if (!readFrozenCalculations(conversion)) {
+    blockers.push("Beregningen er ikke låst. Konverteringen kan ikke registreres på et bevegelig grunnlag.");
+  }
+
+  // Corporate documents generated and signed. The Altinn package is only
+  // created once the board proposal, the GF protocol and the share
+  // contribution confirmation are all LOCKED, so its presence is the proof.
+  if (!conversion.board_document_id) blockers.push("Styrets forslag er ikke generert.");
+  if (!conversion.gf_document_id) blockers.push("Generalforsamlingsprotokollen er ikke generert.");
+  if (!conversion.updated_articles_document_id) blockers.push("Oppdaterte vedtekter er ikke generert.");
+  if (!conversion.shareholder_register_document_id) blockers.push("Oppdatert aksjeeierbok er ikke generert.");
+  if (!conversion.capital_confirmation_document_id) {
+    blockers.push("Bekreftelsen på innbetalt aksjekapital er ikke generert.");
+  }
+  if (!conversion.altinn_package_document_id) {
+    blockers.push(
+      "Dokumentpakken er ikke klar. Styrets forslag, generalforsamlingsprotokollen og bekreftelsen på innbetalt aksjekapital må være signert."
+    );
+  }
+
+  // The cash share contribution must actually be confirmed by an eligible
+  // external confirmer before anything is registered.
+  if (!conversion.third_party_confirmed_at) {
+    blockers.push("Den eksterne bekreftelsen på innbetalt aksjekapital er ikke fullført.");
+  }
+
+  // Every par amount received.
+  const [unpaidPar] = await connection.query(
+    `SELECT id, investor_name FROM conversion_par_value_requests
+     WHERE conversion_event_id = ? AND paid_confirmed_at IS NULL`,
+    [conversion.id]
+  );
+  if (unpaidPar.length > 0) {
+    blockers.push(
+      `Paribeløpet er ikke bekreftet betalt for alle investorer (${unpaidPar.length} gjenstår).`
+    );
+  }
+
+  // Registration data for the shareholder register.
+  const [parRequests] = await connection.query(
+    `SELECT DISTINCT investor_id FROM conversion_par_value_requests
+     WHERE conversion_event_id = ? AND investor_id IS NOT NULL`,
+    [conversion.id]
+  );
+  const investorIds = parRequests.map((r) => r.investor_id);
+  if (investorIds.length > 0) {
+    const [incompleteProfiles] = await connection.query(
+      `SELECT user_id FROM investor_legal_profiles
+       WHERE user_id IN (?) AND (full_name IS NULL OR full_name = '' OR birth_date IS NULL
+         OR digital_address IS NULL OR digital_address = ''
+         OR residential_address IS NULL OR residential_address = '')`,
+      [investorIds]
+    );
+    const [existingProfiles] = await connection.query(
+      `SELECT user_id FROM investor_legal_profiles WHERE user_id IN (?)`,
+      [investorIds]
+    );
+    const existingIds = new Set(existingProfiles.map((p) => p.user_id));
+    const missingProfiles = investorIds.filter((id) => !existingIds.has(id));
+    if (incompleteProfiles.length > 0 || missingProfiles.length > 0) {
+      blockers.push(
+        "Én eller flere investorer mangler juridisk informasjon (navn, fødselsdato, adresse) som kreves i aksjeeierbok."
+      );
+    }
+  }
+
+  const [incompleteExisting] = await connection.query(
+    `SELECT id FROM conversion_existing_shareholders
+     WHERE conversion_event_id = ? AND (
+       shareholder_name IS NULL OR shareholder_name = '' OR birth_date IS NULL OR
+       digital_address IS NULL OR digital_address = '' OR
+       residential_address IS NULL OR residential_address = '' OR
+       share_count IS NULL OR share_count <= 0
+     )`,
+    [conversion.id]
+  );
+  if (incompleteExisting.length > 0) {
+    blockers.push(
+      `${incompleteExisting.length} eksisterende aksjonær(er) mangler informasjon i aksjeeierbok.`
+    );
+  }
+
+  // Values must reconcile before anything is filed.
+  if (calculations?.totals && basis) {
+    const parValue = Number(basis.nominal_value_per_share || 0);
+    const newShares = Number(calculations.totals.total_conversion_share_count || 0);
+    const aggregatePar = Number(calculations.totals.total_par_amount || 0);
+    const newShareCount = Number(basis.current_share_count || 0) + newShares;
+    const newShareCapital = Number(basis.current_share_capital_amount || 0) + aggregatePar;
+
+    if (!(parValue > 0) || Math.abs(newShareCount * parValue - newShareCapital) > 0.5) {
+      blockers.push(
+        `Tallene stemmer ikke: ${newShareCount} aksjer × ${parValue} er ikke lik ny aksjekapital ${newShareCapital}.`
+      );
+    }
+    if (Math.abs(aggregatePar - Number(calculations.totals.total_share_capital_increase || 0)) > 0.5) {
+      blockers.push("Samlet paribeløp er ikke lik den beregnede kapitalforhøyelsen.");
+    }
+  } else {
+    blockers.push("Beregningsgrunnlaget mangler.");
+  }
+
+  return { ready: blockers.length === 0, blockers };
+}
+
+router.get("/registration-readiness", auth, requireRole(["startup"]), async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupId = startupContext.startupUserId;
+    const round = await getLatestRoundForStartup(connection, startupId);
+    if (!round) return res.status(404).json({ error: "Fant ingen runde." });
+
+    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    const data = await buildConversionCalculations(connection, startupId, round, conversion);
+    const readiness = await checkRegistrationReadiness(connection, conversion, data.calculations, data.basis);
+
+    res.json(readiness);
+  } catch (err) {
+    console.error("Registration readiness error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
+
 router.get("/package/download", auth, requireRole(["startup"]), async (req, res) => {
   const connection = await pool.getConnection();
 
@@ -2078,66 +2213,18 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     }
 
     if (!conversion.altinn_package_document_id) {
-      const state = await buildConversionState(connection, startupContext, req.user);
+      await buildConversionState(connection, startupContext, req.user);
       const [fresh] = await connection.query("SELECT * FROM conversion_events WHERE id = ? LIMIT 1", [conversion.id]);
       conversion = fresh[0] || conversion;
-      if (!conversion.altinn_package_document_id) {
-        return res.status(400).json({ error: "Konverteringspakken er ikke klar ennå. Alle dokumenter (styrets forslag, redegjørelse etter § 10-2 jf. § 2-6, GF, revisorbekreftelse, vedtekter og aksjeeierbok) må være ferdigstilt." });
-      }
     }
 
-    // Gate 1: all par value payments must be confirmed
-    const [unpaidPar] = await connection.query(
-      `SELECT id, investor_name FROM conversion_par_value_requests
-       WHERE conversion_event_id = ? AND paid_confirmed_at IS NULL`,
-      [conversion.id]
-    );
-    if (unpaidPar.length > 0) {
+    // One authoritative gate, shared with /registration-readiness and the UI.
+    const calcData = await buildConversionCalculations(connection, startupId, round, conversion);
+    const readiness = await checkRegistrationReadiness(connection, conversion, calcData.calculations, calcData.basis);
+    if (!readiness.ready) {
       return res.status(400).json({
-        error: `Paribeløpet er ikke bekreftet betalt for alle investorer (${unpaidPar.length} gjenstår). Bekreft betaling for alle investorer før pakken lastes ned.`
-      });
-    }
-
-    // Gate 2: all investors must have complete legal profiles
-    const [parRequests] = await connection.query(
-      `SELECT DISTINCT investor_id FROM conversion_par_value_requests WHERE conversion_event_id = ? AND investor_id IS NOT NULL`,
-      [conversion.id]
-    );
-    const investorIds = parRequests.map((r) => r.investor_id);
-    if (investorIds.length > 0) {
-      const [incompleteProfiles] = await connection.query(
-        `SELECT user_id FROM investor_legal_profiles
-         WHERE user_id IN (?) AND (full_name IS NULL OR full_name = '' OR birth_date IS NULL OR digital_address IS NULL OR digital_address = '' OR residential_address IS NULL OR residential_address = '')`,
-        [investorIds]
-      );
-      const [existingProfiles] = await connection.query(
-        `SELECT user_id FROM investor_legal_profiles WHERE user_id IN (?)`,
-        [investorIds]
-      );
-      const existingIds = new Set(existingProfiles.map((p) => p.user_id));
-      const missingProfiles = investorIds.filter((id) => !existingIds.has(id));
-      if (incompleteProfiles.length > 0 || missingProfiles.length > 0) {
-        return res.status(400).json({
-          error: "Én eller flere investorer mangler juridisk informasjon (navn, fødselsdato, adresse) som kreves i aksjeeierbok. Be investor logge inn og fylle ut sin profil."
-        });
-      }
-    }
-
-    // Gate 3: all existing shareholders must be complete
-    const [incompleteExisting] = await connection.query(
-      `SELECT id FROM conversion_existing_shareholders
-       WHERE conversion_event_id = ? AND (
-         shareholder_name IS NULL OR shareholder_name = '' OR
-         birth_date IS NULL OR
-         digital_address IS NULL OR digital_address = '' OR
-         residential_address IS NULL OR residential_address = '' OR
-         share_count IS NULL OR share_count <= 0
-       )`,
-      [conversion.id]
-    );
-    if (incompleteExisting.length > 0) {
-      return res.status(400).json({
-        error: `${incompleteExisting.length} eksisterende aksjonær(er) mangler informasjon i aksjeeierbok (navn, fødselsdato, adresse, aksjer). Fyll ut alle felter under «Eksisterende aksjonærer» før pakken lastes ned.`
+        error: "Konverteringspakken er ikke klar for registrering ennå.",
+        blockers: readiness.blockers
       });
     }
 
@@ -2164,17 +2251,15 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     );
 
     const docsById = Object.fromEntries(docs.map((doc) => [doc.id, doc]));
-    // Rekkefølgen følger saksgangen: styrets forslag, redegjørelsen som skal
-    // foreligge for generalforsamlingen, selve GF-vedtaket, og deretter
-    // revisors bekreftelse av motregningsoppgjøret og de oppdaterte registrene.
+    // Rekkefølgen følger saksgangen: styrets forslag, GF-vedtaket, bekreftelsen
+    // på innbetalt aksjekapital, og deretter de oppdaterte registrene.
     const orderedDocs = [
       { id: conversion.altinn_package_document_id, prefix: "01", fallback: "altinnpakke-raisium" },
       { id: conversion.board_document_id, prefix: "02", fallback: "styrets-forslag" },
-      { id: conversion.redegjorelse_document_id, prefix: "03", fallback: "redegjorelse-10-2-jf-2-6" },
-      { id: conversion.gf_document_id, prefix: "04", fallback: "generalforsamling" },
-      { id: conversion.capital_confirmation_document_id, prefix: "05", fallback: "revisorbekreftelse-motregning" },
-      { id: conversion.updated_articles_document_id, prefix: "06", fallback: "oppdaterte-vedtekter" },
-      { id: conversion.shareholder_register_document_id, prefix: "07", fallback: "aksjeeierbok" }
+      { id: conversion.gf_document_id, prefix: "03", fallback: "generalforsamling" },
+      { id: conversion.capital_confirmation_document_id, prefix: "04", fallback: "bekreftelse-aksjeinnskudd" },
+      { id: conversion.updated_articles_document_id, prefix: "05", fallback: "oppdaterte-vedtekter" },
+      { id: conversion.shareholder_register_document_id, prefix: "06", fallback: "aksjeeierbok" }
     ].filter((item) => item.id && docsById[item.id]);
 
     const companyName = startupContext.company?.company_name || "startup";
@@ -2245,6 +2330,19 @@ router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => 
       await connection.rollback();
       return res.status(400).json({ error: "Runden kan først lukkes etter at konverteringspakken er klargjort." });
     }
+
+    // Same gate as the download. Closing the round is the completion point, so
+    // it must not be reachable while anything required for registration is
+    // still outstanding.
+    const calcData = await buildConversionCalculations(connection, startupId, round, conversion);
+    const readiness = await checkRegistrationReadiness(connection, conversion, calcData.calculations, calcData.basis);
+    if (!readiness.ready) {
+      await connection.rollback();
+      return res.status(400).json({
+        error: "Konverteringen er ikke klar til å fullføres.",
+        blockers: readiness.blockers
+      });
+    }
     const columns = await getEmissionRoundColumns(connection);
     const roundUpdates = ["open = 0"];
     const roundParams = [];
@@ -2277,6 +2375,32 @@ router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => 
       `,
       [startupId]
     );
+
+    /*
+      Mark each RC fulfilled. Idempotent — converted_at is only written where it
+      is still NULL, so re-running this cannot double-record a conversion. The
+      status column is left as it is so the agreement stays visible in both
+      parties' history; converted_at is what says the RC is completed.
+    */
+    const agreementColumns = await getRcAgreementColumns(connection);
+    if (agreementColumns.has("converted_at")) {
+      for (const item of (calcData.calculations?.investors || [])) {
+        await connection.query(
+          `
+          UPDATE rc_agreements
+          SET conversion_event_id = ?, converted_at = NOW(),
+              converted_share_count = ?, converted_par_amount = ?
+          WHERE id = ? AND converted_at IS NULL
+          `,
+          [
+            conversion.id,
+            Number(item.final_share_count ?? item.conversion_share_count ?? 0),
+            Number(item.par_amount ?? 0),
+            item.agreement_id
+          ]
+        );
+      }
+    }
 
     const [[updatedRound]] = await connection.query(
       `

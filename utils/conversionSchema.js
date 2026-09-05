@@ -73,8 +73,6 @@ export async function ensureConversionSchema() {
         ["updated_articles_document_id", "ALTER TABLE conversion_events ADD COLUMN updated_articles_document_id INT NULL"],
         ["shareholder_register_document_id", "ALTER TABLE conversion_events ADD COLUMN shareholder_register_document_id INT NULL"],
         ["capital_confirmation_document_id", "ALTER TABLE conversion_events ADD COLUMN capital_confirmation_document_id INT NULL"],
-        ["redegjorelse_document_id", "ALTER TABLE conversion_events ADD COLUMN redegjorelse_document_id INT NULL"],
-        ["board_members_json", "ALTER TABLE conversion_events ADD COLUMN board_members_json LONGTEXT NULL"],
         ["altinn_package_document_id", "ALTER TABLE conversion_events ADD COLUMN altinn_package_document_id INT NULL"]
       ];
 
@@ -113,6 +111,18 @@ export async function ensureConversionSchema() {
       `);
     } else if (!(await columnExists(connection, "conversion_par_value_requests", "reference"))) {
       await connection.query("ALTER TABLE conversion_par_value_requests ADD COLUMN reference VARCHAR(128) NULL AFTER par_value_amount");
+    }
+
+    // The investor is shown what the payment consists of: share count times par
+    // value per share, rather than a bare amount.
+    for (const [column, sql] of [
+      ["share_count", "ALTER TABLE conversion_par_value_requests ADD COLUMN share_count INT NULL"],
+      ["par_value_per_share", "ALTER TABLE conversion_par_value_requests ADD COLUMN par_value_per_share DECIMAL(12,4) NULL"]
+    ]) {
+      if (await tableExists(connection, "conversion_par_value_requests")
+        && !(await columnExists(connection, "conversion_par_value_requests", column))) {
+        await connection.query(sql);
+      }
     }
 
     const existingShareholdersExists = await tableExists(connection, "conversion_existing_shareholders");

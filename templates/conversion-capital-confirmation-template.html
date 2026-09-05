@@ -3,22 +3,23 @@
     .doc-template, .doc-template * { color: #000 !important; }
   </style>
   <header style="margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #d8d0c4;">
-    <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Revisorbekreftelse</p>
-    <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Revisors bekreftelse av motregningsoppgjør ved kapitalforhøyelse</h1>
-    <p style="margin: 10px 0 0; color: #374151;">Skal signeres av revisor før Altinn-pakken brukes.</p>
+    <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Bekreftelse på aksjeinnskudd</p>
+    <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Bekreftelse på innbetalt aksjekapital ved kapitalforhøyelse</h1>
+    <p style="margin: 10px 0 0; color: #374151;">Skal signeres av den som etter aksjeloven kan bekrefte at aksjeinnskuddet er mottatt, før Altinn-pakken brukes.</p>
   </header>
   <p><strong>Selskap:</strong> {{company_name}}</p>
   <p><strong>Org.nr.:</strong> {{orgnr}}</p>
   <p><strong>Dato:</strong> {{date}}</p>
-  <p><strong>Revisor:</strong> {{third_party_name}} ({{third_party_email}})</p>
+  <p><strong>Bekreftet av:</strong> {{third_party_name}} ({{third_party_email}})</p>
   <p><strong>Trigger event:</strong> {{trigger_type}}</p>
   <p><strong>Konverteringsdato:</strong> {{conversion_date}}</p>
   <p><strong>Paribeløp forfaller:</strong> {{par_value_due_date}}</p>
-  <p style="margin-top:18px;">Undertegnede revisor bekrefter at opplysningene om kapitalforhøyelsen er kontrollert, at investorenes rentefrie krav mot selskapet er reelle og kan benyttes til motregning, og at det samlede tegningsbeløpet er gjort opp ved slik motregning i samsvar med aksjeloven § 10-2. Av tegningsbeløpet er et beløp tilsvarende de nye aksjenes samlede pålydende tilordnet aksjekapital, mens resterende beløp er tilordnet overkursfondet. Bekreftelsen gis i tilknytning til styrets redegjørelse etter § 10-2 jf. § 2-6.</p>
+  <p style="margin-top:18px;">Undertegnede bekrefter at opplysningene om kapitalforhøyelsen er kontrollert, og at aksjeinnskuddet, som utgjør de nye aksjenes samlede pålydende, er innbetalt kontant til selskapet i samsvar med aksjeloven. Det er ikke tilført overkurs ved denne kapitalforhøyelsen.</p>
   <div style="margin-top: 20px; padding: 18px; background:#f8f4ed; border:1px solid #ddd4c7; border-radius:14px;">
     <p style="margin:0 0 10px;"><strong>Totalt antall aksjer som utstedes:</strong> {{total_new_shares}}</p>
-    <p style="margin:0 0 10px;"><strong>Herav tilordnet aksjekapital:</strong> {{total_nominal_amount}}</p>
-    <p style="margin:0;"><strong>Total overkurs / motregnet krav:</strong> {{total_share_premium}}</p>
+    <p style="margin:0 0 10px;"><strong>Samlet pålydende – økning av aksjekapitalen:</strong> {{total_nominal_amount}}</p>
+    <p style="margin:0 0 10px;"><strong>Innbetalt kontant aksjeinnskudd:</strong> {{total_nominal_amount}}</p>
+    <p style="margin:0;"><strong>Samlet overkurs:</strong> {{total_share_premium}}</p>
   </div>
   <!-- digital_signature_line -->
 </section>

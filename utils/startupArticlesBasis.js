@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
+  extractArticlesTextFromBuffer,
   extractArticlesTextFromFile,
   parseArticlesText
 } from "./articlesParser.js";
@@ -39,11 +40,25 @@ export async function ensureStartupArticlesParsed(connection, document) {
     };
   }
 
-  const absolutePath = path.resolve(frontendRoot, document.url);
+  // Uploads live in startup_documents.file_data, not on disk — the container
+  // filesystem is ephemeral. Fall back to the legacy on-disk path only for rows
+  // that predate the migration.
+  let extractedText = "";
+  const mimeType = document.mime_type || "application/pdf";
 
-  try {
-    await fs.access(absolutePath);
-  } catch {
+  if (document.file_data) {
+    extractedText = await extractArticlesTextFromBuffer(document.file_data, mimeType);
+  } else if (document.url) {
+    const absolutePath = path.resolve(frontendRoot, document.url);
+    try {
+      await fs.access(absolutePath);
+      extractedText = await extractArticlesTextFromFile(absolutePath, mimeType);
+    } catch {
+      extractedText = "";
+    }
+  }
+
+  if (!extractedText) {
     return {
       ...document,
       parsed_fields_json: JSON.stringify(existingParsedFields),
@@ -51,7 +66,6 @@ export async function ensureStartupArticlesParsed(connection, document) {
     };
   }
 
-  const extractedText = await extractArticlesTextFromFile(absolutePath, document.mime_type || "application/pdf");
   const parsed = parseArticlesText(extractedText);
 
   await connection.query(

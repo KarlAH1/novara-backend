@@ -8,6 +8,7 @@ import {
     updateEmissionBankAccount,
     getActiveEmission,
     activateEmission,
+    getEmissionReadiness,
     closeEmissionEarly,
     generateInvite,
     investInEmission,
@@ -32,6 +33,9 @@ router.put("/:id/config", auth, updateEmissionConfig);
 
 // Update bank account only — allowed anytime, even after investments exist
 router.put("/:id/bank-account", auth, updateEmissionBankAccount);
+
+// Activation readiness (authoritative backend gate)
+router.get("/:id/readiness", auth, getEmissionReadiness);
 
 // Activate emission
 router.post("/:id/activate", auth, activateEmission);

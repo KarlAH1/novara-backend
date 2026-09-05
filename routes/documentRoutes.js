@@ -711,10 +711,10 @@ router.get("/startup/list", auth, async (req, res) => {
                 {
                     key: "conversion_capital_confirmation",
                     category: "Konverteringsdokumenter",
-                    title: "Revisorbekreftelse for paribeløp og motregning",
+                    title: "Bekreftelse på innbetalt aksjekapital",
                     status: conversionState?.steps?.third_party_confirmation?.status === "signed"
-                        ? "revisor_bekreftet"
-                        : (conversion?.capital_confirmation_document_id ? "avventer_revisorbekreftelse" : "ikke klar")
+                        ? "aksjeinnskudd_bekreftet"
+                        : (conversion?.capital_confirmation_document_id ? "avventer_bekreftelse_aksjeinnskudd" : "ikke klar")
                 },
                 {
                     key: "conversion_package",

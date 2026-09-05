@@ -1,4 +1,6 @@
 import fs from "fs/promises";
+import os from "os";
+import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
@@ -38,9 +40,29 @@ function extractMunicipality(sectionText) {
   return cleanClauseText(section) || null;
 }
 
+/*
+  Norwegian articles write money as "30 000", "1", "0,10" or occasionally
+  "1.000,50". Stripping every non-digit turned a par value of NOK 0,10 into 10 —
+  a hundredfold error in the share price, and therefore in every allocation.
+  Space and thin space are thousands separators; the LAST comma (or a lone dot
+  with 1-2 trailing digits) is the decimal separator.
+*/
 function normalizeNumber(value) {
-  const digits = String(value || "").replace(/[^\d]/g, "");
-  return digits ? Number(digits) : null;
+  let text = String(value || "").replace(/[\s\u00a0\u202f]/g, "").trim();
+  if (!text) return null;
+
+  if (text.includes(",")) {
+    // Any dots are thousands separators once a comma is present.
+    text = text.replace(/\./g, "").replace(/,/g, ".");
+  } else {
+    const dotMatch = text.match(/^(\d+)\.(\d{1,2})$/);
+    text = dotMatch ? `${dotMatch[1]}.${dotMatch[2]}` : text.replace(/\./g, "");
+  }
+
+  if (!/^\d+(\.\d+)?$/.test(text)) return null;
+
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function extractSection(text, sectionNumber) {
@@ -90,6 +112,33 @@ if let document = PDFDocument(url: url) {
   return "";
 }
 
+/*
+  Same extraction, for a document stored as bytes in the database rather than on
+  disk. The extractors are external commands, so the buffer is written to a
+  temporary file first and removed afterwards.
+*/
+export async function extractArticlesTextFromBuffer(buffer, mimeType) {
+  if (!buffer || !buffer.length) return "";
+
+  if (String(mimeType || "").toLowerCase() !== "application/pdf") {
+    return normalizeText(Buffer.from(buffer).toString("utf8"));
+  }
+
+  const tempPath = path.join(
+    os.tmpdir(),
+    `raisium-articles-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`
+  );
+
+  try {
+    await fs.writeFile(tempPath, buffer);
+    return await extractPdfText(tempPath);
+  } catch {
+    return "";
+  } finally {
+    await fs.unlink(tempPath).catch(() => {});
+  }
+}
+
 export async function extractArticlesTextFromFile(filePath, mimeType) {
   if (String(mimeType || "").toLowerCase() === "application/pdf") {
     return extractPdfText(filePath);
@@ -125,9 +174,9 @@ export function parseArticlesText(rawText) {
   const orgMatch = text.match(/Org\.?\s*nr\.?:?\s*([0-9 ]{9,})/i);
   const amendedMatch = text.match(/Sist endret:?\s*([^\n]+)/i);
   const purposeMatch = section3.match(/virksomhet(?:en)?(?: er)?\s+([\s\S]+)$/i);
-  const shareCapitalMatch = section4.match(/aksjekapital(?:en)?(?: er)?\s*NOK\s*([\d .]+)/i);
-  const shareCountMatch = section4.match(/fordelt på\s*([\d .]+)\s*aksjer/i);
-  const nominalValueMatch = section4.match(/pålydende\s*NOK\s*([\d .]+)/i);
+  const shareCapitalMatch = section4.match(/aksjekapital(?:en)?(?: er)?\s*NOK\s*([\d ., ]+)/i);
+  const shareCountMatch = section4.match(/fordelt på\s*([\d ., ]+?)\s*aksjer/i);
+  const nominalValueMatch = section4.match(/pålydende\s*NOK\s*([\d ., ]+)/i);
 
   const parsedFields = {
     company_name: titleMatch?.[1]?.trim() || null,

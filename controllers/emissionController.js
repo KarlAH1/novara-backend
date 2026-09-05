@@ -9,6 +9,7 @@ import { syncEmissionRoundAvailability, getEmissionRoundColumns, updateRoundClos
 import { sendRoundActivatedEmail } from "../utils/notificationEmailFlow.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
+import { checkRoundActivationReadiness } from "../utils/roundActivationReadiness.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 const emissionShareholderTableName = "emission_shareholders";
@@ -646,11 +647,23 @@ export const activateEmission = async (req, res) => {
           return res.status(404).json({ message: "Emission not found" });
       }
 
+      // Fail closed. Opening a round with an inconsistent share basis or a
+      // valuation cap that prices shares at or below par produces agreements
+      // that cannot be converted, after investors have already paid.
+      const readiness = await checkRoundActivationReadiness(pool, startupId, rows[0]);
+      if (!readiness.ready) {
+          return res.status(400).json({
+              message: "Runden kan ikke åpnes ennå.",
+              blockers: readiness.blockers,
+              warnings: readiness.warnings
+          });
+      }
+
       await pool.query(
           `
           UPDATE emission_rounds
           SET open = 1
-          WHERE id = ? AND startup_id = ?
+          WHERE id = ? AND startup_id = ? AND open = 0
           `,
           [emissionId, startupId]
       );
@@ -672,6 +685,34 @@ export const activateEmission = async (req, res) => {
   } catch (err) {
       console.error("Activate error:", err);
       res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =====================================================
+   ROUND ACTIVATION READINESS
+   The authoritative gate, exposed so the UI can show exactly what is missing
+   rather than reimplementing the rules in the browser.
+===================================================== */
+export const getEmissionReadiness = async (req, res) => {
+  try {
+    const emissionId = req.params.id;
+    const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+    const startupId = startupContext.startupUserId;
+
+    const [rows] = await pool.query(
+      `SELECT * FROM emission_rounds WHERE id = ? AND startup_id = ?`,
+      [emissionId, startupId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "Emission not found" });
+    }
+
+    const readiness = await checkRoundActivationReadiness(pool, startupId, rows[0]);
+    res.json(readiness);
+  } catch (err) {
+    console.error("Emission readiness error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 

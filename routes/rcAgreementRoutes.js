@@ -247,6 +247,8 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         investor.email AS investor_email,
         pr.id AS par_value_request_id,
         pr.par_value_amount,
+        pr.share_count AS par_value_share_count,
+        pr.par_value_per_share,
         pr.reference AS par_value_reference,
         pr.due_date AS par_value_due_date,
         pr.status AS par_value_status,
