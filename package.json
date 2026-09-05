@@ -19,6 +19,7 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.9.4",
+    "pdf-parse": "^2.4.5",
     "puppeteer": "^22.12.1",
     "stripe": "^22.5.0"
   }

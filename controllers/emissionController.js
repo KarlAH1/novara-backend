@@ -9,8 +9,25 @@ import { syncEmissionRoundAvailability, getEmissionRoundColumns, updateRoundClos
 import { sendRoundActivatedEmail } from "../utils/notificationEmailFlow.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
-import { checkRoundActivationReadiness } from "../utils/roundActivationReadiness.js";
+import {
+  checkRoundActivationReadiness,
+  resolveShareBasis
+} from "../utils/roundActivationReadiness.js";
+import {
+  getActiveArticlesConfirmation,
+  recordArticlesConfirmation
+} from "../utils/articlesConfirmation.js";
+import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
+
+/*
+  Standard long-stop for a new Raisium RC round: 24 months.
+
+  Only the default for rounds still being configured. Executed agreements read
+  their own terms snapshot (rc_agreements.terms_trigger_period_years), so this
+  never reaches back and changes what an investor already signed.
+*/
+export const STANDARD_LONG_STOP_YEARS = 2;
 
 const emissionShareholderTableName = "emission_shareholders";
 const emissionInviteTableName = "emission_invites";
@@ -451,7 +468,7 @@ export const updateEmissionConfig = async (req, res) => {
       const rawTriggerPeriod = Number(trigger_period || conversion_years || 0);
       const normalizedTriggerPeriod = Number.isFinite(rawTriggerPeriod) && rawTriggerPeriod >= 1
         ? Math.max(1, Math.round(rawTriggerPeriod))
-        : 3;
+        : STANDARD_LONG_STOP_YEARS;
       conversion_years = normalizedTriggerPeriod;
       const rawDiscountRate = discount_rate === "" || discount_rate == null ? NaN : Number(discount_rate);
       discount_rate = Number.isFinite(rawDiscountRate) && rawDiscountRate >= 1
@@ -520,6 +537,16 @@ export const updateEmissionConfig = async (req, res) => {
       }
   
       // Oppdater vilkår
+      await recordAuditEvent(pool, AUDIT_EVENTS.ROUND_TERMS_CHANGED, {
+        startupId, roundId: Number(emissionId),
+        actorUserId: req.user.id, actorRole: "startup",
+        ipAddress: getClientIp(req),
+        metadata: {
+          trigger_period_years: normalizedTriggerPeriod,
+          discount_rate, valuation_cap
+        }
+      });
+
       await pool.query(`
         UPDATE emission_rounds
         SET
@@ -668,6 +695,20 @@ export const activateEmission = async (req, res) => {
           [emissionId, startupId]
       );
 
+      await recordAuditEvent(pool, AUDIT_EVENTS.ROUND_ACTIVATED, {
+        startupId, roundId: Number(emissionId),
+        actorUserId: req.user.id, actorRole: "startup",
+        previousStatus: "DRAFT", newStatus: "LIVE",
+        ipAddress: getClientIp(req),
+        metadata: {
+          target_amount: rows[0].target_amount,
+          valuation_cap: rows[0].valuation_cap,
+          discount_rate: rows[0].discount_rate,
+          trigger_period_years: rows[0].trigger_period ?? rows[0].conversion_years,
+          par_preview: readiness.preview || null
+        }
+      });
+
       await sendRoundActivatedEmail({
         startupEmail: req.user.email,
         startupName: startupContext.company?.company_name || req.user.name || "",
@@ -712,6 +753,111 @@ export const getEmissionReadiness = async (req, res) => {
     res.json(readiness);
   } catch (err) {
     console.error("Emission readiness error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =====================================================
+   ARTICLES SHARE BASIS — read what was extracted, and confirm it
+
+   Extraction (parser, then AI for what the parser missed) proposes; a person at
+   the company disposes. Nothing here is authoritative until confirmed, and the
+   confirmation records which values, from which source, by whom.
+===================================================== */
+export const getArticlesShareBasis = async (req, res) => {
+  try {
+    const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+    const startupId = startupContext.startupUserId;
+
+    const basis = await resolveShareBasis(pool, startupId);
+    const confirmation = await getActiveArticlesConfirmation(pool, startupId);
+
+    const [docRows] = await pool.query(
+      `SELECT parsed_fields_json FROM startup_documents
+       WHERE startup_id = ? AND document_type = 'current_articles_of_association'
+       ORDER BY uploaded_at DESC, id DESC LIMIT 1`,
+      [startupId]
+    ).catch(() => [[]]);
+
+    let fieldSources = {};
+    let aiExtraction = null;
+    let parserVersion = null;
+    try {
+      const parsed = JSON.parse(docRows?.[0]?.parsed_fields_json || "{}");
+      fieldSources = parsed.field_sources || {};
+      aiExtraction = parsed.ai_extraction || null;
+      parserVersion = parsed.parser_version || null;
+    } catch { /* extraction metadata is optional */ }
+
+    res.json({
+      share_capital_amount: basis.share_capital_amount,
+      share_count: basis.share_count,
+      par_value_per_share: basis.par_value,
+      articles_document_id: basis.articles_document_id,
+      articles_parse_status: basis.articles_parse_status,
+      // Where each figure came from: read from the document, filled in by AI,
+      // or typed by the company.
+      field_sources: fieldSources,
+      ai_extraction: aiExtraction,
+      parser_version: parserVersion,
+      issues: basis.issues,
+      confirmation
+    });
+  } catch (err) {
+    console.error("Articles share basis error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const confirmArticlesShareBasis = async (req, res) => {
+  try {
+    const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+    const startupId = startupContext.startupUserId;
+
+    const { share_capital_amount, share_count, par_value_per_share, source } = req.body || {};
+
+    const basis = await resolveShareBasis(pool, startupId);
+    const result = await recordArticlesConfirmation(pool, {
+      startupId,
+      documentId: basis.articles_document_id,
+      shareCapital: share_capital_amount,
+      shareCount: share_count,
+      parValue: par_value_per_share,
+      source: ["parser", "ai", "manual"].includes(source) ? source : "manual",
+      parserVersion: null,
+      aiModel: null,
+      aiExtractionVersion: null,
+      confirmedBy: req.user.id
+    });
+
+    if (!result.ok) {
+      return res.status(400).json({ message: result.error });
+    }
+
+    // Keep the profile in step with what was confirmed, so the confirmation and
+    // the values the calculator reads cannot drift apart.
+    await pool.query(
+      `UPDATE startup_profiles
+       SET nominal_value_per_share = ?, current_share_count = ?, share_basis_temporary = 0
+       WHERE user_id = ?`,
+      [Number(par_value_per_share), Number(share_count), startupId]
+    );
+
+    await recordAuditEvent(pool, AUDIT_EVENTS.ARTICLES_CONFIRMED, {
+      startupId,
+      actorUserId: req.user.id, actorRole: "startup",
+      ipAddress: getClientIp(req),
+      metadata: {
+        share_capital_amount: Number(share_capital_amount),
+        share_count: Number(share_count),
+        par_value_per_share: Number(par_value_per_share),
+        source, articles_document_id: basis.articles_document_id
+      }
+    });
+
+    res.json({ success: true, confirmation_id: result.id });
+  } catch (err) {
+    console.error("Confirm articles share basis error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };

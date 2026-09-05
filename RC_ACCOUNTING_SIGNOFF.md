@@ -98,16 +98,25 @@ NOK 103,090.
 4. **Note and disclosure requirements.** What disclosure is required while RC
    agreements are outstanding?
 
-## One term that needs specific attention
+## There is no repayment route at all
 
-The RC agreement's Change of Control clause (clause 6.2(b)) lets the investor
-elect a **cash settlement instead of shares**, at the higher of the Investment
-Amount and the as-converted value, and clause 6.3 makes cash settlement the
-**default** if the investor does not elect within the deadline.
+An earlier draft of the agreement let the investor elect a cash settlement
+instead of shares on a change of control, at no less than the Investment
+Amount, with cash as the default if they did not respond. **That has been
+removed.** A change of control is now simply a trigger event: the shares are
+calculated, the Chapter 10 capital increase is resolved, and the investor
+subscribes.
 
-This is the one place where the instrument can pay cash back to the investor.
-It has deliberately not been changed, but the reviewer should be aware of it,
-since a guaranteed floor at the Investment Amount may affect classification.
+As the agreement now stands there is **no provision under which the company
+becomes obliged to pay the Investment Amount back to the investor** — not on a
+change of control, not at the long-stop date, not on insolvency, and not on
+breach. Breach gives the ordinary contractual remedies (performance where
+legally possible, and damages for documented loss); it does not convert the
+Investment Amount into repayable principal.
+
+The only cash the investor can receive from the company under this agreement is
+whatever they later receive **as a shareholder**, once shares have actually been
+issued to them.
 
 ## Attachments to give the reviewer
 

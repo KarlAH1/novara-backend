@@ -1,10 +1,11 @@
 import fs from "fs/promises";
-import os from "os";
-import path from "path";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { PDFParse } from "pdf-parse";
 
-const execFileAsync = promisify(execFile);
+/*
+  Version of the deterministic clause parser. Recorded with every extraction so
+  it stays possible to tell which rules read a given set of figures.
+*/
+export const ARTICLES_PARSER_VERSION = "articles-parser-1.1";
 
 function normalizeText(value) {
   return String(value || "")
@@ -71,51 +72,61 @@ function extractSection(text, sectionNumber) {
   return match ? normalizeText(match[0]) : "";
 }
 
-async function extractPdfText(filePath) {
-  try {
-    const swiftScript = `
-import Foundation
-import PDFKit
+/*
+  Maximum size we will attempt to parse. Articles of association are a few
+  pages; anything far larger is either not articles or a decompression bomb, and
+  parsing it would tie up the request for no good reason.
+*/
+const MAX_ARTICLES_BYTES = 15 * 1024 * 1024;
 
-let path = CommandLine.arguments[1]
-let url = URL(fileURLWithPath: path)
-if let document = PDFDocument(url: url) {
-    print(document.string ?? "")
-}
-`;
-    const { stdout } = await execFileAsync("/usr/bin/swift", ["-e", swiftScript, filePath], {
-      timeout: 15000,
-      maxBuffer: 1024 * 1024 * 8
-    });
-    const text = normalizeText(stdout);
-    if (text) {
-      return text;
-    }
-  } catch {}
-
-  try {
-    const { stdout } = await execFileAsync("/usr/bin/mdls", ["-raw", "-name", "kMDItemTextContent", filePath]);
-    const text = normalizeText(stdout);
-    if (text && text !== "(null)") {
-      return text;
-    }
-  } catch {}
-
-  try {
-    const { stdout } = await execFileAsync("/usr/bin/textutil", ["-convert", "txt", "-stdout", filePath]);
-    const text = normalizeText(stdout);
-    if (text) {
-      return text;
-    }
-  } catch {}
-
-  return "";
+// Every PDF starts with %PDF- . Checking it means a mislabelled upload fails
+// fast and predictably instead of somewhere inside the parser.
+function looksLikePdf(buffer) {
+  return Buffer.isBuffer(buffer) && buffer.length > 5 && buffer.subarray(0, 5).toString("latin1") === "%PDF-";
 }
 
 /*
-  Same extraction, for a document stored as bytes in the database rather than on
-  disk. The extractors are external commands, so the buffer is written to a
-  temporary file first and removed afterwards.
+  PDF text extraction.
+
+  This runs in-process through pdf-parse and is the only supported path. The
+  previous implementation shelled out to /usr/bin/swift, mdls and textutil,
+  which exist only on macOS — on the Linux container that serves production
+  every one of them failed silently and articles were never parsed at all.
+
+  Nothing here executes an external command.
+*/
+export async function extractPdfTextFromBuffer(buffer) {
+  const data = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+
+  if (!data.length) {
+    return { text: "", error: "empty_file" };
+  }
+  if (data.length > MAX_ARTICLES_BYTES) {
+    return { text: "", error: "file_too_large" };
+  }
+  if (!looksLikePdf(data)) {
+    return { text: "", error: "not_a_pdf" };
+  }
+
+  let parser = null;
+  try {
+    parser = new PDFParse({ data: new Uint8Array(data) });
+    const result = await parser.getText();
+    // pdf-parse marks page boundaries; they are noise for clause matching.
+    const text = normalizeText(String(result?.text || "").replace(/^--\s*\d+\s+of\s+\d+\s*--$/gim, ""));
+    return { text, error: text ? null : "no_text_layer" };
+  } catch (err) {
+    // A scanned (image-only) or encrypted PDF is an expected outcome, not a
+    // crash. The caller falls back to AI extraction or manual entry.
+    return { text: "", error: err?.name === "PasswordException" ? "password_protected" : "extraction_failed" };
+  } finally {
+    try { await parser?.destroy(); } catch { /* nothing useful to do */ }
+  }
+}
+
+/*
+  Extraction for a document stored as bytes in the database, which is where
+  uploads live — the container filesystem is ephemeral.
 */
 export async function extractArticlesTextFromBuffer(buffer, mimeType) {
   if (!buffer || !buffer.length) return "";
@@ -124,28 +135,15 @@ export async function extractArticlesTextFromBuffer(buffer, mimeType) {
     return normalizeText(Buffer.from(buffer).toString("utf8"));
   }
 
-  const tempPath = path.join(
-    os.tmpdir(),
-    `raisium-articles-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`
-  );
-
-  try {
-    await fs.writeFile(tempPath, buffer);
-    return await extractPdfText(tempPath);
-  } catch {
-    return "";
-  } finally {
-    await fs.unlink(tempPath).catch(() => {});
-  }
+  const { text } = await extractPdfTextFromBuffer(buffer);
+  return text;
 }
 
+// Legacy on-disk path, for rows that predate the move into the database.
 export async function extractArticlesTextFromFile(filePath, mimeType) {
-  if (String(mimeType || "").toLowerCase() === "application/pdf") {
-    return extractPdfText(filePath);
-  }
-
   try {
-    return normalizeText(await fs.readFile(filePath, "utf8"));
+    const buffer = await fs.readFile(filePath);
+    return await extractArticlesTextFromBuffer(buffer, mimeType);
   } catch {
     return "";
   }

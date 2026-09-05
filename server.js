@@ -15,6 +15,11 @@ import { ensureInvestorLegalProfileSchema } from "./utils/investorLegalProfileSc
 import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
 import { ensureStartupProfileSchema } from "./utils/startupProfileSchema.js";
 import { ensureRcAgreementSchema } from "./utils/rcAgreementSchema.js";
+import { ensureCapacityReservationSchema } from "./utils/capacityReservation.js";
+import { ensureArticlesConfirmationSchema } from "./utils/articlesConfirmation.js";
+import { ensureAuditLogSchema } from "./utils/auditLogger.js";
+import { ensureImplementationStatusSchema } from "./utils/rcImplementationStatus.js";
+import { ensureBoardRoleSchema } from "./utils/boardChairResolution.js";
 import { stripe, isStripeConfigured } from "./utils/stripeClient.js";
 import { handleCheckoutSessionCompleted, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted } from "./utils/stripePayments.js";
 
@@ -112,6 +117,11 @@ await ensureStartupDocumentSchema();
 await ensureStartupPlanSchema();
 await ensureStartupProfileSchema();
 await ensureRcAgreementSchema();
+await ensureCapacityReservationSchema();
+await ensureArticlesConfirmationSchema();
+await ensureAuditLogSchema();
+await ensureImplementationStatusSchema();
+await ensureBoardRoleSchema();
 
 /* =========================================
    CORS – Environment Controlled

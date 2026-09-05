@@ -1,4 +1,8 @@
 import { calculateRcConversion } from "./rcConversionCalculator.js";
+import {
+  confirmationMatches,
+  getActiveArticlesConfirmation
+} from "./articlesConfirmation.js";
 import { ensureStartupArticlesParsed } from "./startupArticlesBasis.js";
 
 /*
@@ -221,6 +225,28 @@ export async function checkRoundActivationReadiness(connection, startupId, round
     );
   }
 
+  /*
+    A parser reading a PDF, and a model filling in what the parser missed, are
+    both useful and neither is legal truth. Before the round opens, a person at
+    the company has to look at the three figures the whole model rests on and
+    confirm they match the current articles — and confirm the figures the system
+    actually holds, not an earlier set that has since been edited.
+  */
+  const confirmation = await getActiveArticlesConfirmation(connection, startupId);
+  if (!confirmation) {
+    blockers.push(
+      "Aksjekapital, antall aksjer og pålydende må bekreftes mot gjeldende vedtekter før runden kan åpnes."
+    );
+  } else if (!confirmationMatches(confirmation, {
+    shareCapital: basis.share_capital_amount,
+    shareCount: basis.share_count,
+    parValue: basis.par_value
+  })) {
+    blockers.push(
+      "Aksjegrunnlaget er endret etter at det ble bekreftet. Kontroller tallene mot gjeldende vedtekter og bekreft på nytt."
+    );
+  }
+
   const targetAmount = Number(round.target_amount || 0);
   const valuationCap = Number(round.valuation_cap || 0);
   const triggerPeriod = Number(round.trigger_period || round.conversion_years || 0);
@@ -264,5 +290,26 @@ export async function checkRoundActivationReadiness(connection, startupId, round
     }
   }
 
-  return { ready: blockers.length === 0, blockers, warnings, basis, preview };
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    warnings,
+    basis,
+    preview,
+    articles_confirmation: confirmation
+      ? {
+          confirmed_at: confirmation.confirmed_at,
+          confirmed_by: confirmation.confirmed_by,
+          source: confirmation.source,
+          share_capital_amount: Number(confirmation.share_capital_amount),
+          share_count: Number(confirmation.share_count),
+          par_value_per_share: Number(confirmation.par_value_per_share),
+          matches_current_basis: confirmationMatches(confirmation, {
+            shareCapital: basis.share_capital_amount,
+            shareCount: basis.share_count,
+            parValue: basis.par_value
+          })
+        }
+      : null
+  };
 }

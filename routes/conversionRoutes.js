@@ -24,6 +24,14 @@ import {
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getEmissionRoundColumns } from "../utils/emissionRoundState.js";
 import { decryptNationalId } from "../utils/nationalIdCrypto.js";
+import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
+import {
+  assertSignerMatchesBody,
+  confirmBoardRole,
+  getConfirmedBoardRole,
+  requireConfirmedChair,
+  suggestBoardChair
+} from "../utils/boardChairResolution.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -354,6 +362,14 @@ async function ensureAutoTimeElapsedConversion(connection, startupId, round) {
       toMysqlDateTime(parValueDueDate)
     ]
   );
+
+  await recordAuditEvent(connection, AUDIT_EVENTS.TRIGGER_DETECTED, {
+      startupId, roundId: round.id,
+      actorRole: "system",
+      triggerType: "time_elapsed",
+      newStatus: "triggered",
+      metadata: { conversion_event_id: result.insertId, automatic: true, deadline: round.deadline }
+    });
 
   return {
     id: result.insertId,
@@ -987,6 +1003,19 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
   const freshConversion = freshRows[0];
 
   if (!freshConversion.board_document_id) {
+    /*
+      The board proposal names a board chair, so a person must have confirmed
+      who that is. Without a confirmation the document would assert a statutory
+      office the platform never verified.
+    */
+    const chairCheck = await requireConfirmedChair(connection, freshConversion.id);
+    if (!chairCheck.ok) {
+      const error = new Error(chairCheck.error);
+      error.code = "BOARD_CHAIR_NOT_CONFIRMED";
+      throw error;
+    }
+    const confirmedChairName = chairCheck.chair.person_name;
+
     const boardTemplatePath = path.join(templatesDir, "sfc-template.html");
     let boardHtml = fs.readFileSync(boardTemplatePath, "utf8");
     boardHtml = boardHtml
@@ -995,13 +1024,15 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
       .replace(/{{round_id}}/g, String(round.id))
       .replace(/{{date}}/g, today)
-      .replace(/{{chair_name}}/g, user.name || "Styreleder");
+      .replace(/{{chair_name}}/g, escapeHtml(confirmedChairName));
 
+    // The signature block is the confirmed chair, not whoever happens to be
+    // logged in. One snapshot drives body and signature alike.
     const boardSigners = [{
-      email: user.email,
-      user_id: user.id,
+      email: chairCheck.chair.person_email || user.email,
+      user_id: chairCheck.chair.person_user_id || null,
       role: "Styreleder",
-      status: "ACCEPTED"
+      status: chairCheck.chair.person_user_id ? "ACCEPTED" : "INVITED"
     }];
 
     const boardId = await createDocument(connection, {
@@ -1535,6 +1566,20 @@ export async function buildConversionState(connection, startupContext, user) {
         conversionData.calculations = winner;
         conversionData.wasFrozen = true;
       }
+
+      await recordAuditEvent(connection, AUDIT_EVENTS.CALCULATION_FROZEN, {
+        startupId, roundId: round.id,
+        actorUserId: user?.id || null, actorRole: "startup",
+        triggerType: conversion.trigger_type,
+        calculationVersion: conversionData.calculations?.calculation_version || null,
+        metadata: {
+          conversion_event_id: conversion.id,
+          share_price: conversionData.calculations?.investors?.[0]?.share_price ?? null,
+          total_new_shares: conversionData.calculations?.totals?.total_conversion_share_count ?? null,
+          total_par_amount: conversionData.calculations?.totals?.total_par_amount ?? null,
+          investor_count: conversionData.calculations?.investors?.length ?? 0
+        }
+      });
     }
 
     const requests = hasParValueRequestsTable
@@ -1544,7 +1589,19 @@ export async function buildConversionState(connection, startupContext, user) {
       await sendParValueNotices(connection, { ...startupContext, bank_account: round.bank_account || null }, conversion, requests);
     }
     if (hasConversionExistingShareholdersTable) {
-      await ensureConversionArtifacts(connection, startupContext, user, round, conversion, conversionData.basis, conversionData.calculations);
+      /*
+        Document generation can legitimately refuse: the board chair may not be
+        confirmed yet, or the capital increase may not reconcile. Neither is a
+        server fault, and neither should take down the conversion page — the
+        reason is surfaced as a blocker the company can act on.
+      */
+      try {
+        await ensureConversionArtifacts(connection, startupContext, user, round, conversion, conversionData.basis, conversionData.calculations);
+      } catch (artifactError) {
+        conversionData.artifactError = artifactError.message
+          || "Kunne ikke generere konverteringsdokumentene.";
+        conversionData.artifactErrorCode = artifactError.code || null;
+      }
     }
 
     const [updatedConversionRows] = await connection.query(
@@ -1562,6 +1619,9 @@ export async function buildConversionState(connection, startupContext, user) {
       conversion = finalConversionRows[0];
     }
   }
+
+  const artifactError = conversionData.artifactError || null;
+  const artifactErrorCode = conversionData.artifactErrorCode || null;
 
   const documentIds = [
     conversion?.board_document_id,
@@ -1640,6 +1700,8 @@ export async function buildConversionState(connection, startupContext, user) {
       : null,
     calculations: conversionData.calculations,
     calculation_error: conversionData.calculationError,
+    document_generation_error: artifactError,
+    document_generation_error_code: artifactErrorCode,
     par_value_requests: parValueRequests,
     steps: {
       trigger: { status: adminApprovalPending ? "pending_admin_approval" : (conversion ? "done" : "pending") },
@@ -1779,6 +1841,32 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
         });
       }
 
+      /*
+        Once the calculation is frozen, the inputs behind it are settled. Letting
+        a second call change the trigger type or the round price here would leave
+        the event describing one basis while the frozen allocations — which
+        investors have already been notified of — rest on another.
+      */
+      if (readFrozenCalculations(existing)) {
+        if (normalizeTriggerType(existing.trigger_type) !== triggerType) {
+          return res.status(409).json({
+            error:
+              "Beregningen for dette trigger event er allerede låst. Trigger-typen kan ikke endres i ettertid. " +
+              "Ta kontakt med Raisium hvis registreringen er feil."
+          });
+        }
+
+        await recordAuditEvent(connection, AUDIT_EVENTS.TRIGGER_ACKNOWLEDGED, {
+          startupId, roundId: round.id,
+          actorUserId: req.user.id, actorRole: "startup",
+          triggerType,
+          metadata: { conversion_event_id: existing.id, calculation_already_frozen: true }
+        });
+
+        const state = await buildConversionState(connection, startupContext, req.user);
+        return res.json(state);
+      }
+
       const updateChunks = [
         "status = ?",
         "requires_admin_approval = ?",
@@ -1807,6 +1895,18 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
         triggerRequestReason
       });
     }
+
+    await recordAuditEvent(connection, AUDIT_EVENTS.TRIGGER_DETECTED, {
+      startupId, roundId: round.id,
+      actorUserId: req.user.id, actorRole: "startup",
+      triggerType, newStatus: triggerStatus,
+      ipAddress: getClientIp(req),
+      metadata: {
+        automatic: false,
+        requires_admin_approval: triggerApproval.requiresAdminApproval,
+        conversion_date: toMysqlDateTime(timeline.conversionDate)
+      }
+    });
 
     const state = await buildConversionState(connection, startupContext, req.user);
     await sendConversionStartedEmail({
@@ -2089,6 +2189,13 @@ export async function checkRegistrationReadiness(connection, conversion, calcula
     );
   }
 
+  // The board proposal names a chair; that identity must have been confirmed
+  // by a person, not assumed from whoever was logged in.
+  const confirmedChair = await getConfirmedBoardRole(connection, conversion.id, "board_chair");
+  if (!confirmedChair?.person_name) {
+    blockers.push("Styreleder er ikke bekreftet for denne konverteringen.");
+  }
+
   // The cash share contribution must actually be confirmed by an eligible
   // external confirmer before anything is registered.
   if (!conversion.third_party_confirmed_at) {
@@ -2173,6 +2280,84 @@ export async function checkRegistrationReadiness(connection, conversion, calcula
 
   return { ready: blockers.length === 0, blockers };
 }
+
+router.get("/board-chair", auth, requireRole(["startup"]), async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupId = startupContext.startupUserId;
+    const round = await getLatestRoundForStartup(connection, startupId);
+    if (!round) return res.status(404).json({ error: "Fant ingen runde." });
+
+    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    const orgnr = startupContext.company?.orgnr || null;
+
+    const suggestion = await suggestBoardChair(orgnr);
+    const confirmed = conversion?.id
+      ? await getConfirmedBoardRole(connection, conversion.id, "board_chair")
+      : null;
+
+    res.json({
+      conversion_event_id: conversion?.id || null,
+      suggested: suggestion.suggested,
+      candidates: suggestion.candidates,
+      source: suggestion.source,
+      confirmed: confirmed
+        ? {
+            person_name: confirmed.person_name,
+            person_email: confirmed.person_email,
+            source: confirmed.source,
+            confirmed_at: confirmed.confirmed_at
+          }
+        : null
+    });
+  } catch (err) {
+    console.error("Board chair lookup error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
+
+router.post("/board-chair/confirm", auth, requireRole(["startup"]), async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupId = startupContext.startupUserId;
+    const round = await getLatestRoundForStartup(connection, startupId);
+    if (!round) return res.status(404).json({ error: "Fant ingen runde." });
+
+    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    if (!conversion?.id) return res.status(400).json({ error: "Fant ingen aktiv konvertering." });
+
+    const { person_name, person_email, source } = req.body || {};
+    const result = await confirmBoardRole(connection, {
+      conversionEventId: conversion.id,
+      startupId,
+      role: "board_chair",
+      personName: person_name,
+      personEmail: person_email || null,
+      personUserId: null,
+      source: ["brreg", "manual"].includes(source) ? source : "manual",
+      confirmedBy: req.user.id
+    });
+
+    if (!result.ok) return res.status(400).json({ error: result.error });
+
+    await recordAuditEvent(connection, AUDIT_EVENTS.BOARD_PROPOSAL_GENERATED, {
+      startupId, roundId: round.id,
+      actorUserId: req.user.id, actorRole: "startup",
+      metadata: { role: "board_chair", person_name: result.personName, source, confirmed: true }
+    });
+
+    res.json({ success: true, person_name: result.personName });
+  } catch (err) {
+    console.error("Board chair confirm error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
 
 router.get("/registration-readiness", auth, requireRole(["startup"]), async (req, res) => {
   const connection = await pool.getConnection();
@@ -2431,6 +2616,21 @@ router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => 
       await connection.rollback();
       return res.status(500).json({ error: "Runden ble ikke lukket korrekt. Prøv igjen." });
     }
+
+    await recordAuditEvent(connection, AUDIT_EVENTS.CONVERSION_COMPLETED, {
+      startupId, roundId: round.id,
+      actorUserId: req.user.id, actorRole: "startup",
+      previousStatus: "package_ready", newStatus: "conversion_downloaded",
+      triggerType: conversion.trigger_type,
+      calculationVersion: calcData.calculations?.calculation_version || null,
+      metadata: {
+        conversion_event_id: conversion.id,
+        total_new_shares: calcData.calculations?.totals?.total_conversion_share_count ?? null,
+        total_par_amount: calcData.calculations?.totals?.total_par_amount ?? null,
+        new_share_capital: Number(calcData.basis?.current_share_capital_amount || 0)
+          + Number(calcData.calculations?.totals?.total_par_amount || 0)
+      }
+    });
 
     await connection.commit();
 

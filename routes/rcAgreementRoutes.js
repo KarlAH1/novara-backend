@@ -15,6 +15,7 @@ import { activateRcAgreementPayment } from "../utils/rcPaymentActivation.js";
 import { maybeSendPaymentReminder } from "../utils/rcPaymentReminder.js";
 import { encryptNationalId, decryptNationalId } from "../utils/nationalIdCrypto.js";
 import { decodeBirthDateFromNationalId } from "../utils/norwegianNationalId.js";
+import { releaseReservationForAgreement } from "../utils/capacityReservation.js";
 
 const router = express.Router();
 
@@ -43,6 +44,10 @@ const deleteUnpaidRcAgreement = async (agreement) => {
       await connection.query("DELETE FROM document_signers WHERE document_id IN (?)", [docIds]);
       await connection.query("DELETE FROM documents WHERE id IN (?)", [docIds]);
     }
+
+    // Give the held capacity back to the round before the agreement row goes,
+    // or an abandoned checkout would keep a slot locked until it expired.
+    await releaseReservationForAgreement(connection, agreement.id, "agreement_cancelled");
 
     await connection.query("DELETE FROM rc_agreements WHERE id = ?", [agreement.id]);
 

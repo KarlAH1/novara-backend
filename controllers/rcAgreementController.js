@@ -5,6 +5,7 @@ import {
     syncEmissionRoundAvailability
 } from "../utils/emissionRoundState.js";
 import { sendRcAgreementCreatedEmails } from "../utils/notificationEmailFlow.js";
+import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
 import {
     claimInviteForUser,
     INVITE_TAKEN_ERROR,
@@ -14,6 +15,10 @@ import {
     RAISIUM_RC_LEGAL_MODEL_VERSION,
     RC_CALCULATION_VERSION
 } from "../utils/rcConversionCalculator.js";
+import {
+    attachAgreementToReservation,
+    reserveCapacity
+} from "../utils/capacityReservation.js";
 
 /*
   Version of the RC agreement template. Recorded on every executed agreement so
@@ -296,6 +301,33 @@ export const investViaInvite = async (req, res) => {
             });
         }
 
+        /*
+          Claim the capacity now, before an agreement exists and long before the
+          investor is sent to a payment page. The round row is already locked by
+          syncEmissionRoundAvailability above, so two investors racing for the
+          last slot are serialised here and exactly one of them wins.
+        */
+        const reservation = await reserveCapacity(connection, {
+            roundId,
+            investorId,
+            amount: requestedAmount,
+            inviteToken: token,
+            remainingCapacity: availability.remainingCapacity
+        });
+
+        if (!reservation.ok) {
+            await recordAuditEvent(null, AUDIT_EVENTS.CAPACITY_RESERVATION_REFUSED, {
+                roundId, investorId, actorUserId: investorId, actorRole: "investor",
+                metadata: { requested: requestedAmount, available: reservation.available ?? 0, reason: reservation.code }
+            });
+            await connection.rollback();
+            return res.status(409).json({
+                error: reservation.error,
+                code: reservation.code || "capacity_exceeded",
+                remainingCapacity: reservation.available ?? 0
+            });
+        }
+
         const [roundRows] = await connection.query(`
             SELECT
                 r.*,
@@ -373,6 +405,10 @@ export const investViaInvite = async (req, res) => {
         );
 
         const agreementId = result.insertId;
+        await attachAgreementToReservation(connection, {
+            reservationId: reservation.reservationId,
+            agreementId
+        });
 
         const html = buildRcDocumentHtml(buildRcTemplateData({
             agreement_id: agreementId,
@@ -434,6 +470,33 @@ export const investViaInvite = async (req, res) => {
                 `${investorRows[0].name || investorRows[0].email || "Investor"} har registrert ${formatNOK(requestedAmount)} i den private runden.`
             ]
         ).catch(() => {});
+
+        await recordAuditEvent(connection, AUDIT_EVENTS.CAPACITY_RESERVED, {
+            startupId: round.startup_id, roundId, agreementId, investorId,
+            actorUserId: investorId, actorRole: "investor",
+            metadata: { amount: requestedAmount, reservation_id: reservation.reservationId }
+        });
+
+        await recordAuditEvent(connection, AUDIT_EVENTS.RC_GENERATED, {
+            startupId: round.startup_id, roundId, agreementId, investorId,
+            actorUserId: investorId, actorRole: "investor",
+            newStatus: "Pending Signatures",
+            documentId,
+            legalModelVersion: RAISIUM_RC_LEGAL_MODEL_VERSION,
+            calculationVersion: RC_CALCULATION_VERSION,
+            ipAddress: getClientIp(req),
+            metadata: {
+                investment_amount: requestedAmount,
+                template_version: RC_TEMPLATE_VERSION,
+                terms: {
+                    valuation_cap: round.valuation_cap ?? null,
+                    discount_rate: round.discount_rate ?? null,
+                    trigger_period_years: round.trigger_period ?? round.conversion_years ?? null,
+                    par_value_per_share: shareBasisRow?.nominal_value_per_share ?? null,
+                    capitalization_base_share_count: shareBasisRow?.current_share_count ?? null
+                }
+            }
+        });
 
         await connection.commit();
 

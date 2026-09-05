@@ -1,4 +1,6 @@
 import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "./emissionRoundState.js";
+import { commitReservationForAgreement } from "./capacityReservation.js";
+import { AUDIT_EVENTS, recordAuditEvent } from "./auditLogger.js";
 
 const getRcPaymentColumns = async (connection) => {
     const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
@@ -53,7 +55,31 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
             return { ok: false, code: 400, error: "Agreement not ready for activation" };
         }
 
-        if (!availability?.canInvest || agreement.investment_amount > (availability?.remainingCapacity ?? 0)) {
+        /*
+          The investor's own reservation still counts against the round here, so
+          compare against remaining capacity plus what they are holding —
+          otherwise the reservation that guaranteed them the slot would be the
+          very thing that blocks their payment.
+        */
+        const [ownReservationRows] = await connection.query(
+            `SELECT COALESCE(SUM(amount), 0) AS held
+             FROM round_capacity_reservations
+             WHERE agreement_id = ? AND status = 'reserved'`,
+            [agreementId]
+        ).catch(() => [[{ held: 0 }]]);
+        const heldByThisAgreement = Number(ownReservationRows?.[0]?.held || 0);
+
+        if (!availability?.canInvest && !heldByThisAgreement) {
+            await connection.rollback();
+            return {
+                ok: false,
+                code: 400,
+                error: getCapacityExceededMessage(availability?.remainingCapacity ?? 0),
+                max_available_amount: availability?.remainingCapacity ?? 0
+            };
+        }
+
+        if (agreement.investment_amount > (Number(availability?.remainingCapacity ?? 0) + heldByThisAgreement)) {
             await connection.rollback();
             return {
                 ok: false,
@@ -83,6 +109,10 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
             `,
             [agreement.investment_amount, agreement.round_id]
         );
+
+        // The hold becomes a committed investment. Idempotent, so a redelivered
+        // webhook cannot double-count it.
+        await commitReservationForAgreement(connection, agreementId);
 
         await syncEmissionRoundAvailability(connection, agreement.round_id, { lock: true });
 
@@ -135,6 +165,19 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
                 [agreementId]
             );
         }
+
+        await recordAuditEvent(connection, AUDIT_EVENTS.INVESTMENT_CONFIRMED, {
+            startupId: agreement.startup_id,
+            roundId: agreement.round_id,
+            agreementId,
+            investorId: agreement.investor_id,
+            actorUserId: expectedStartupId || null,
+            actorRole: expectedStartupId ? "startup" : "system",
+            previousStatus: "Awaiting Payment",
+            newStatus: "Active RC",
+            paymentReference: agreement.rc_id || null,
+            metadata: { amount: agreement.investment_amount, confirmed_via: expectedStartupId ? "manual" : "webhook" }
+        });
 
         await connection.commit();
         return { ok: true, agreement };

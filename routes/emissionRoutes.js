@@ -9,6 +9,8 @@ import {
     getActiveEmission,
     activateEmission,
     getEmissionReadiness,
+    getArticlesShareBasis,
+    confirmArticlesShareBasis,
     closeEmissionEarly,
     generateInvite,
     investInEmission,
@@ -24,6 +26,10 @@ router.post("/start", auth, startEmission);
 router.get("/active", auth, getActiveEmission);
 
 router.get("/history", auth, getPreviousEmissions);
+
+// Share basis read from the articles, and the company's confirmation of it
+router.get("/articles/share-basis", auth, getArticlesShareBasis);
+router.post("/articles/share-basis/confirm", auth, confirmArticlesShareBasis);
 
 // Get emission
 router.get("/:id", auth, getEmissionById);

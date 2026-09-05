@@ -70,6 +70,40 @@ export function applySignatureBlockToHtml(htmlContent = "", signers = []) {
   return updatedHtml;
 }
 
+const normalizeName = (value) =>
+  String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/*
+  Checks that a person the document body presents in a named role also appears
+  as the signer for that role. Only roles the templates actually state in the
+  body are checked; a role the body does not name cannot contradict anything.
+*/
+export function findSignerRoleMismatch(html, signers = []) {
+  const text = String(html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+  const BODY_ROLE_PATTERNS = [
+    { role: "Styreleder", pattern: /Styrets leder:\s*([^.,;<]{2,80}?)\s*(?:Dato|Sted|$)/i },
+    { role: "Møteleder", pattern: /M[øo]teleder:\s*([^.,;<]{2,80}?)\s*(?:Protokollunderskriver|Dato|Sted|$)/i }
+  ];
+
+  for (const { role, pattern } of BODY_ROLE_PATTERNS) {
+    const match = text.match(pattern);
+    if (!match) continue;
+
+    const bodyName = normalizeName(match[1]);
+    if (!bodyName) continue;
+
+    const signer = signers.find((entry) => normalizeName(entry.role) === normalizeName(role));
+    if (!signer) continue;
+
+    if (normalizeName(signer.signer_name) !== bodyName) {
+      return `Dokumentet oppgir «${match[1].trim()}» som ${role}, men signaturfeltet er «${signer.signer_name}». Dokumentet ble ikke låst.`;
+    }
+  }
+
+  return null;
+}
+
 export async function lockDocumentWithSignatures(connection, documentId) {
   const [[doc]] = await connection.query(
     `
@@ -95,6 +129,19 @@ export async function lockDocumentWithSignatures(connection, documentId) {
     `,
     [documentId]
   );
+
+  /*
+    A document must not be locked while its body names one person as an office
+    holder and its signature block records another. That contradiction is
+    invisible until someone reads the filed document, so it is caught here,
+    before the hash is taken and the document becomes immutable.
+  */
+  const bodyMismatch = findSignerRoleMismatch(doc.html_content, signers);
+  if (bodyMismatch) {
+    const error = new Error(bodyMismatch);
+    error.code = "SIGNER_BODY_MISMATCH";
+    throw error;
+  }
 
   const updatedHtml = applySignatureBlockToHtml(doc.html_content, signers);
 
