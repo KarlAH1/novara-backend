@@ -141,6 +141,58 @@ async function buildInviteParEstimate(connection, invite) {
   }
 }
 
+/*
+  What this investor's own amount would mean at conversion.
+
+  The generic example on the terms page is not enough: the second payment is the
+  most surprising part of the model, and someone deciding to put in NOK 5,000
+  needs to see the figure for NOK 5,000, next to the field where they type it.
+
+  Calculated here, by the same calculator that will later produce the binding
+  allocation. The browser never derives an allocation of its own.
+*/
+router.get("/:token/par-estimate", async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const token = String(req.params.token || "").trim();
+    const amount = Number(req.query.amount);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.json({ estimate: null });
+    }
+
+    const [rows] = await connection.query(
+      `SELECT r.startup_id, r.valuation_cap
+       FROM rc_invites i
+       JOIN emission_rounds r ON i.round_id = r.id
+       WHERE i.token = ? LIMIT 1`,
+      [token]
+    );
+    const round = rows[0];
+    if (!round) return res.status(404).json({ error: "Fant ikke invitasjonen." });
+
+    const [[profile]] = await connection.query(
+      `SELECT nominal_value_per_share, current_share_count
+       FROM startup_profiles WHERE user_id = ? LIMIT 1`,
+      [round.startup_id]
+    );
+
+    const preview = buildParPreview({
+      valuationCap: Number(round.valuation_cap || 0),
+      shareCount: Number(profile?.current_share_count || 0),
+      parValue: Number(profile?.nominal_value_per_share || 0),
+      exampleInvestment: amount
+    });
+
+    res.json({ estimate: preview && !preview.blocked ? preview : null });
+  } catch (err) {
+    console.error("Par estimate error:", err);
+    res.json({ estimate: null });
+  } finally {
+    connection.release();
+  }
+});
+
 router.get("/validate/:token", async (req, res) => {
   try {
 
