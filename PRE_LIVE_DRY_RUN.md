@@ -25,7 +25,7 @@ already webhook-authoritative; what the dry run proves is the workflow.
 | Investors | 10 × NOK 10,000 |
 | Long-stop | 24 months |
 
-Expected result at conversion: share price NOK 33.33, **309 shares** and a
+Expected result at conversion: share price exactly 100/3 (displayed NOK 33.33), **309 shares** and a
 **NOK 309** par amount per investor, 3,090 new shares, NOK 3,090 aggregate par
 amount, new share capital **NOK 33,090**, 33,090 shares, ownership 0.934 % each
 and 9.34 % together. Total historical cash NOK 103,090 — which is *not* the

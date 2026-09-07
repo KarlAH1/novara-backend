@@ -20,6 +20,7 @@ import { ensureArticlesConfirmationSchema } from "./utils/articlesConfirmation.j
 import { ensureAuditLogSchema } from "./utils/auditLogger.js";
 import { ensureImplementationStatusSchema } from "./utils/rcImplementationStatus.js";
 import { ensureBoardRoleSchema } from "./utils/boardChairResolution.js";
+import { ensureAuditOutboxSchema, processAuditOutbox } from "./utils/auditOutbox.js";
 import { stripe, isStripeConfigured } from "./utils/stripeClient.js";
 import { handleCheckoutSessionCompleted, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted } from "./utils/stripePayments.js";
 
@@ -122,6 +123,18 @@ await ensureArticlesConfirmationSchema();
 await ensureAuditLogSchema();
 await ensureImplementationStatusSchema();
 await ensureBoardRoleSchema();
+await ensureAuditOutboxSchema();
+
+/*
+  Finalises critical audit events that were enqueued transactionally with the
+  business mutation they describe. Runs on a timer so a temporary failure to
+  write the durable event is retried rather than lost.
+*/
+const AUDIT_OUTBOX_INTERVAL_MS = 30000;
+setInterval(() => {
+  processAuditOutbox().catch((err) => console.error("[audit-outbox]", err?.message));
+}, AUDIT_OUTBOX_INTERVAL_MS).unref();
+processAuditOutbox().catch((err) => console.error("[audit-outbox]", err?.message));
 
 /* =========================================
    CORS – Environment Controlled

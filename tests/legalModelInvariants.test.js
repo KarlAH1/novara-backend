@@ -161,12 +161,26 @@ test("the RC agreement states one rounding rule, and it is rounding down", () =>
   );
 });
 
-test("the RC agreement defines the capitalization denominator", () => {
+test("the RC agreement defines the capitalization denominator, and says what it excludes", () => {
   const text = stripTags(readTemplate("rc-template.html"));
-  assert.match(text, /Kapitaliseringsgrunnlaget er Selskapets utstedte aksjer/);
-  // It must exclude the shares being issued and any undrawn instruments, which
-  // is what the calculator does.
-  assert.match(text, /inngår ikke i kapitaliseringsgrunnlaget/);
+
+  // The denominator turns a valuation cap into a share price, so it decides how
+  // many shares an investor gets. It has to be stated, not implied.
+  assert.match(text, /Kapitaliseringsgrunnlaget er antall aksjer som faktisk er utstedt i Selskapet/);
+  assert.match(text, /aksjegrunnlaget Selskapet har bekreftet mot gjeldende vedtekter/);
+
+  // It is issued shares only. Calling it fully diluted, or quietly including
+  // instruments, would be a different economic deal.
+  assert.match(text, /Kapitaliseringsgrunnlaget er ikke et fullt utvannet grunnlag/);
+  for (const excluded of [
+    /tildelte og ikke-tildelte opsjoner/,
+    /opsjonsprogram/,
+    /andre RC-avtaler/,
+    /konvertible instrumenter/,
+    /tegningsretter/
+  ]) {
+    assert.match(text, excluded);
+  }
 });
 
 test("the RC agreement defines a share price for each of the three triggers", () => {

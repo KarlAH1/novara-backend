@@ -32,6 +32,17 @@ const COLUMNS = [
   ["terms_trigger_period_years", "ALTER TABLE rc_agreements ADD COLUMN terms_trigger_period_years INT NULL"],
   ["terms_par_value_per_share", "ALTER TABLE rc_agreements ADD COLUMN terms_par_value_per_share DECIMAL(12,4) NULL"],
   ["terms_capitalization_base_share_count", "ALTER TABLE rc_agreements ADD COLUMN terms_capitalization_base_share_count INT NULL"],
+
+  /*
+    The capitalization denominator is an economic term, so which basis the RC
+    was signed under is recorded on the agreement rather than inferred from
+    whatever the code does today. A later model that includes options or other
+    instruments gets a different basis type and a different calculation
+    version; existing agreements keep theirs.
+  */
+  ["terms_capitalization_basis_type", "ALTER TABLE rc_agreements ADD COLUMN terms_capitalization_basis_type VARCHAR(48) NULL"],
+  ["terms_capitalization_included", "ALTER TABLE rc_agreements ADD COLUMN terms_capitalization_included VARCHAR(255) NULL"],
+  ["terms_capitalization_excluded", "ALTER TABLE rc_agreements ADD COLUMN terms_capitalization_excluded VARCHAR(500) NULL"],
   ["terms_snapshot_at", "ALTER TABLE rc_agreements ADD COLUMN terms_snapshot_at DATETIME NULL"],
   ["legal_model_version", "ALTER TABLE rc_agreements ADD COLUMN legal_model_version VARCHAR(16) NULL"],
   ["calculation_version", "ALTER TABLE rc_agreements ADD COLUMN calculation_version VARCHAR(16) NULL"],

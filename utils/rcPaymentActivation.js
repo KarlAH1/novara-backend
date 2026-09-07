@@ -1,6 +1,7 @@
 import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "./emissionRoundState.js";
 import { commitReservationForAgreement } from "./capacityReservation.js";
-import { AUDIT_EVENTS, recordAuditEvent } from "./auditLogger.js";
+import { AUDIT_EVENTS } from "./auditLogger.js";
+import { enqueueCriticalAuditEvent } from "./auditOutbox.js";
 
 const getRcPaymentColumns = async (connection) => {
     const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
@@ -166,7 +167,7 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
             );
         }
 
-        await recordAuditEvent(connection, AUDIT_EVENTS.INVESTMENT_CONFIRMED, {
+        await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.INVESTMENT_CONFIRMED, {
             startupId: agreement.startup_id,
             roundId: agreement.round_id,
             agreementId,

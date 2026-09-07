@@ -35,6 +35,24 @@ export const IMPLEMENTATION_STATUS = {
 // point is to surface neglect, not to nag.
 export const IMPLEMENTATION_GRACE_DAYS = 45;
 
+/*
+  Why an implementation is outstanding. Factual categories only — each says what
+  step has not happened, never why, and never whose fault it is.
+*/
+export const IMPLEMENTATION_REASON = {
+  TRIGGER_NOT_IMPLEMENTED: "trigger_not_implemented",
+  BOARD_PROPOSAL_OUTSTANDING: "styrets_forslag",
+  GF_OUTSTANDING: "generalforsamling",
+  CONFIRMATION_OUTSTANDING: "bekreftelse_aksjeinnskudd",
+  PACKAGE_OUTSTANDING: "dokumentpakke",
+  SUBSCRIPTION_OUTSTANDING: "tegning_ikke_fullfort",
+  PAR_PAYMENT_OUTSTANDING: "paribelop_ikke_betalt",
+  // A corporate transaction closed while the RC was still outstanding. The RC
+  // survives it; this records that the situation exists so it stays visible.
+  TRANSACTION_CLOSED_BEFORE_IMPLEMENTATION: "transaksjon_sluttfort_for_gjennomforing",
+  SUCCESSOR_ACKNOWLEDGEMENT_OUTSTANDING: "overtakende_enhet_ikke_bekreftet"
+};
+
 async function tableExists(connection, tableName) {
   const [rows] = await connection.query(
     `SELECT 1 FROM information_schema.TABLES

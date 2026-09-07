@@ -16,6 +16,8 @@ import { maybeSendPaymentReminder } from "../utils/rcPaymentReminder.js";
 import { encryptNationalId, decryptNationalId } from "../utils/nationalIdCrypto.js";
 import { decodeBirthDateFromNationalId } from "../utils/norwegianNationalId.js";
 import { releaseReservationForAgreement } from "../utils/capacityReservation.js";
+import { buildEvidencePackage, canAccessEvidence } from "../utils/evidenceExport.js";
+import { isUserInSameCompany } from "../utils/startupContext.js";
 
 const router = express.Router();
 
@@ -207,6 +209,42 @@ const getRcAgreementViewState = (agreement = {}) => {
 /* =====================================================
    CREATE RC AGREEMENT (Investor invests via invite)
 ===================================================== */
+/*
+  The factual Raisium record for one RC agreement, for the parties to it.
+
+  Contains what happened and when; contains no assessment of who is right.
+  Access is limited to the investor who is party to the agreement, authorised
+  users of the issuing company, and Raisium admin.
+*/
+router.get("/:id(\\d+)/evidence", auth, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const agreementId = Number(req.params.id);
+    if (!Number.isInteger(agreementId) || agreementId <= 0) {
+      return res.status(400).json({ error: "Ugyldig avtale-ID." });
+    }
+
+    const access = await canAccessEvidence(connection, agreementId, req.user, { isUserInSameCompany });
+    if (!access.allowed) {
+      return res.status(access.reason === "not_found" ? 404 : 403).json({
+        error: access.reason === "not_found"
+          ? "Fant ikke avtalen."
+          : "Du har ikke tilgang til dokumentasjonen for denne avtalen."
+      });
+    }
+
+    const pkg = await buildEvidencePackage(connection, agreementId, access.scope);
+    if (!pkg) return res.status(404).json({ error: "Fant ikke avtalen." });
+
+    res.json(pkg);
+  } catch (err) {
+    console.error("Evidence export error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
+
 router.post("/invest/:token", auth, investViaInvite);
 
 /* =====================================================

@@ -1,3 +1,5 @@
+import * as D from "./exactDecimal.js";
+
 /*
   Version of the authoritative conversion arithmetic. Persisted with every
   frozen calculation snapshot so a historical conversion can be reproduced
@@ -6,7 +8,7 @@
   Bump this whenever the formula, the rounding rule, the price selection or the
   capitalization denominator changes.
 */
-export const RC_CALCULATION_VERSION = "1.0";
+export const RC_CALCULATION_VERSION = "1.1";
 
 /*
   Version of the legal model the RC documents implement. Not a claim of legal
@@ -23,6 +25,45 @@ export const RAISIUM_RC_LEGAL_MODEL_VERSION = "1.0";
   calculator, the preview, the documents and the tests.
 */
 export const RC_ROUNDING_METHOD = "floor";
+
+/*
+  The capitalization denominator for the standard Raisium RC.
+
+  This is an economic term, not an implementation detail: it is the divisor that
+  turns a valuation cap into a share price, so it decides how many shares an
+  investor gets. It is therefore stated explicitly rather than inherited from
+  whatever a query happens to return.
+
+  V1 is ISSUED_SHARES_ONLY: the shares actually issued by the company, per the
+  share basis the company has confirmed against its current articles,
+  immediately before the capital increase under the RC.
+
+  It is deliberately NOT a fully diluted basis. Options, an unissued option
+  pool, other outstanding RC agreements, convertibles, warrants and other rights
+  are excluded. A fully diluted denominator is larger, which makes the share
+  price lower and hands the investor more shares — that is a different economic
+  deal, and switching to it silently would change the economics of every round.
+  If a future model includes such instruments, it gets its own basis type and
+  its own calculation version.
+*/
+export const CAPITALIZATION_BASIS_TYPE = "ISSUED_SHARES_ONLY";
+
+export const CAPITALIZATION_BASIS = {
+  type: CAPITALIZATION_BASIS_TYPE,
+  included_instrument_categories: ["issued_shares"],
+  excluded_instrument_categories: [
+    "unissued_option_pool",
+    "granted_options",
+    "other_rc_agreements",
+    "convertible_instruments",
+    "warrants",
+    "subscription_rights"
+  ],
+  description_no:
+    "Antall aksjer som faktisk er utstedt i selskapet, slik det følger av det " +
+    "aksjegrunnlaget selskapet har bekreftet mot gjeldende vedtekter, umiddelbart " +
+    "før kapitalforhøyelsen etter RC-en."
+};
 
 function toNumber(value) {
   // null, undefined and "" are absent values, not zero. Number(null) is 0,
@@ -60,45 +101,61 @@ export function calculateRcConversion(input = {}) {
     throw new Error("trigger_type mangler.");
   }
 
-  const capPrice = valuationCap && valuationCap > 0
-    ? roundMoney(valuationCap / capitalizationBaseShareCount)
+  /*
+    From here the arithmetic is exact.
+
+    The share price derived from a valuation cap is a rational number:
+    NOK 1,000,000 over 30,000 shares is exactly 100/3, not 33.33. Rounding it to
+    øre before dividing the investment by it moves the raw share count, and near
+    a whole-share boundary that costs the investor a share. So the price stays
+    an exact fraction until the one rounding the contract actually prescribes:
+    floor to a whole share.
+  */
+  const parValueExact = D.fromNumber(nominalValuePerShare);
+  const investmentExact = D.fromNumber(investmentAmount);
+
+  const capPriceExact = valuationCap && valuationCap > 0
+    ? D.divide(D.fromNumber(valuationCap), D.fromNumber(capitalizationBaseShareCount))
     : null;
 
-  let discountPrice = null;
+  let discountPriceExact = null;
   if (triggerType === "new_priced_round") {
-    const effectivePricedRoundSharePrice = (pricedRoundSharePrice == null || pricedRoundSharePrice <= 0)
-      ? capPrice
-      : pricedRoundSharePrice;
+    const roundPriceExact = (pricedRoundSharePrice == null || pricedRoundSharePrice <= 0)
+      ? capPriceExact
+      : D.fromNumber(pricedRoundSharePrice);
 
-    if (effectivePricedRoundSharePrice == null || effectivePricedRoundSharePrice <= 0) {
+    if (roundPriceExact == null || !D.isPositive(roundPriceExact)) {
       throw new Error("Kunne ikke beregne pris per aksje ved ny emisjon.");
     }
 
     if (discountPercent != null && discountPercent > 0) {
-      discountPrice = roundMoney(effectivePricedRoundSharePrice * (1 - (discountPercent / 100)));
+      discountPriceExact = D.multiply(
+        roundPriceExact,
+        D.divide(D.fromNumber(100 - discountPercent), D.fromNumber(100))
+      );
     }
   }
 
-  let chosenConversionPrice = null;
+  let sharePriceExact = null;
 
   if (triggerType === "new_priced_round") {
-    if (capPrice != null && discountPrice != null) {
-      chosenConversionPrice = Math.min(capPrice, discountPrice);
-    } else if (capPrice != null) {
-      chosenConversionPrice = capPrice;
-    } else if (discountPrice != null) {
-      chosenConversionPrice = discountPrice;
+    if (capPriceExact != null && discountPriceExact != null) {
+      sharePriceExact = D.min(capPriceExact, discountPriceExact);
+    } else if (capPriceExact != null) {
+      sharePriceExact = capPriceExact;
+    } else if (discountPriceExact != null) {
+      sharePriceExact = discountPriceExact;
     } else {
       throw new Error("Kunne ikke beregne konverteringspris. valuation_cap eller discount må være satt.");
     }
   } else {
-    if (capPrice == null || capPrice <= 0) {
+    if (capPriceExact == null || !D.isPositive(capPriceExact)) {
       throw new Error("valuation_cap må være satt for denne trigger-typen.");
     }
-    chosenConversionPrice = capPrice;
+    sharePriceExact = capPriceExact;
   }
 
-  if (!chosenConversionPrice || chosenConversionPrice <= 0) {
+  if (!D.isPositive(sharePriceExact)) {
     throw new Error("chosen_conversion_price må være større enn 0.");
   }
 
@@ -114,60 +171,48 @@ export function calculateRcConversion(input = {}) {
     The Investment Amount is not set off against the subscription obligation —
     it is accounted for through the share count.
   */
-  const sharePrice = chosenConversionPrice;
+  const priceAboveParExact = D.subtract(sharePriceExact, parValueExact);
 
-  if (sharePrice <= nominalValuePerShare) {
+  if (!D.isPositive(priceAboveParExact)) {
     const error = new Error(
       "Tegningskursen er lik eller lavere enn aksjenes pålydende. Rundens vilkår eller selskapets aksjestruktur må gjennomgås før konvertering kan gjennomføres."
     );
     error.code = "SHARE_PRICE_NOT_ABOVE_PAR";
     error.details = {
-      share_price: roundMoney(sharePrice),
+      share_price: D.toRoundedNumber(sharePriceExact, 2),
       par_value_per_share: roundMoney(nominalValuePerShare)
     };
     throw error;
   }
 
-  /*
-    Done in øre as integers. Subtracting two prices in floating point loses
-    precision exactly where it hurts: 1.01 - 1 evaluates to 0.010000000000000009,
-    which floors the share count one share short. Prices are already money at
-    two decimals, so integer øre is both exact and consistent with the rest of
-    the system.
-  */
-  const toOre = (value) => Math.round(value * 100);
-  const priceAboveParOre = toOre(sharePrice) - toOre(nominalValuePerShare);
+  const rawShareCountExact = D.divide(investmentExact, priceAboveParExact);
 
-  if (priceAboveParOre <= 0) {
-    const error = new Error(
-      "Tegningskursen er lik eller lavere enn aksjenes pålydende. Rundens vilkår eller selskapets aksjestruktur må gjennomgås før konvertering kan gjennomføres."
-    );
-    error.code = "SHARE_PRICE_NOT_ABOVE_PAR";
-    throw error;
-  }
+  // The single contractual rounding: down to a whole share, applied once.
+  const conversionShareCount = Number(D.floorToInteger(rawShareCountExact));
 
-  const rawShareCount = toOre(investmentAmount) / priceAboveParOre;
-
-  if (!Number.isFinite(rawShareCount)) {
-    throw new Error("Kunne ikke beregne antall aksjer. Sjekk inputverdiene.");
-  }
-
-  const conversionShareCount = Math.floor(rawShareCount);
-
-  if (conversionShareCount <= 0) {
+  if (!Number.isSafeInteger(conversionShareCount) || conversionShareCount <= 0) {
     throw new Error("Konverteringen gir 0 aksjer. Sjekk inputverdiene.");
   }
 
+  const sharesExact = D.rational(BigInt(conversionShareCount));
+
   // The only cash the investor pays on exercise. It equals the aggregate par
-  // value, so the capital increase carries no share premium.
-  const parAmount = roundMoney(conversionShareCount * nominalValuePerShare);
-  const investmentApplied = roundMoney(conversionShareCount * (sharePrice - nominalValuePerShare));
+  // value, so the capital increase carries no share premium. Calculated only
+  // after the final whole-share allocation.
+  const parAmount = D.toRoundedNumber(D.multiply(sharesExact, parValueExact), 2);
+  const investmentApplied = D.toRoundedNumber(D.multiply(sharesExact, priceAboveParExact), 2);
   const roundingDifference = roundMoney(investmentAmount - investmentApplied);
+
+  const capPrice = capPriceExact == null ? null : D.toRoundedNumber(capPriceExact, 2);
+  const discountPrice = discountPriceExact == null ? null : D.toRoundedNumber(discountPriceExact, 2);
+  const sharePrice = D.toRoundedNumber(sharePriceExact, 2);
+  const rawShareCount = Number(D.toExactString(rawShareCountExact, 12));
 
   return {
     // Inputs, echoed back so the snapshot alone is enough to reproduce the
     // result without re-reading the round or the startup profile.
     calculation_version: RC_CALCULATION_VERSION,
+    capitalization_basis_type: CAPITALIZATION_BASIS_TYPE,
     investment_amount: roundMoney(investmentAmount),
     valuation_cap: valuationCap == null ? null : roundMoney(valuationCap),
     discount_percent: discountPercent == null ? null : discountPercent,
@@ -182,7 +227,13 @@ export function calculateRcConversion(input = {}) {
     discount_price: discountPrice,
     share_price: roundMoney(sharePrice),
     chosen_conversion_price: roundMoney(sharePrice),
+    // Full precision, for reproducing the calculation exactly. share_price is
+    // the value shown to people; share_price_exact is the value it was
+    // calculated from, and they are deliberately not the same field.
+    share_price_exact: D.toExactString(sharePriceExact, 12),
+    share_price_fraction: D.toFractionString(sharePriceExact),
     raw_share_count: rawShareCount,
+    raw_share_count_exact: D.toExactString(rawShareCountExact, 12),
     rounding_method: RC_ROUNDING_METHOD,
     final_share_count: conversionShareCount,
     conversion_share_count: conversionShareCount,

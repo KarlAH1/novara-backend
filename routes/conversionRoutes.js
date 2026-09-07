@@ -10,6 +10,8 @@ import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import {
   aggregateRcConversions,
   calculateRcConversion,
+  CAPITALIZATION_BASIS,
+  CAPITALIZATION_BASIS_TYPE,
   RC_CALCULATION_VERSION
 } from "../utils/rcConversionCalculator.js";
 import { ensureStartupArticlesParsed } from "../utils/startupArticlesBasis.js";
@@ -25,6 +27,11 @@ import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getEmissionRoundColumns } from "../utils/emissionRoundState.js";
 import { decryptNationalId } from "../utils/nationalIdCrypto.js";
 import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
+import { enqueueCriticalAuditEvent } from "../utils/auditOutbox.js";
+import {
+  deriveImplementationStatus,
+  getOpenImplementationIssues
+} from "../utils/rcImplementationStatus.js";
 import {
   assertSignerMatchesBody,
   confirmBoardRole,
@@ -363,7 +370,7 @@ async function ensureAutoTimeElapsedConversion(connection, startupId, round) {
     ]
   );
 
-  await recordAuditEvent(connection, AUDIT_EVENTS.TRIGGER_DETECTED, {
+  await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.TRIGGER_DETECTED, {
       startupId, roundId: round.id,
       actorRole: "system",
       triggerType: "time_elapsed",
@@ -844,8 +851,13 @@ async function buildConversionCalculations(connection, startupId, round, convers
       // The share basis the whole calculation hangs off, captured alongside it
       // so the snapshot does not depend on startup_profiles staying unchanged.
       calculations.calculation_version = RC_CALCULATION_VERSION;
+      /*
+        One denominator, recorded once, used by every document downstream. No
+        template and no later step recomputes it — they read this snapshot.
+      */
       calculations.capitalization_denominator = Number(basis.current_share_count || 0) || null;
-      calculations.capitalization_basis = "issued_shares_current_articles";
+      calculations.capitalization_basis_type = CAPITALIZATION_BASIS_TYPE;
+      calculations.capitalization_basis = CAPITALIZATION_BASIS;
       calculations.par_value_per_share = Number(basis.nominal_value_per_share || 0) || null;
       calculations.pre_share_count = Number(basis.current_share_count || 0) || null;
       calculations.pre_share_capital_amount = Number(basis.current_share_capital_amount || 0) || null;
@@ -1567,7 +1579,7 @@ export async function buildConversionState(connection, startupContext, user) {
         conversionData.wasFrozen = true;
       }
 
-      await recordAuditEvent(connection, AUDIT_EVENTS.CALCULATION_FROZEN, {
+      await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.CALCULATION_FROZEN, {
         startupId, roundId: round.id,
         actorUserId: user?.id || null, actorRole: "startup",
         triggerType: conversion.trigger_type,
@@ -1619,6 +1631,35 @@ export async function buildConversionState(connection, startupContext, user) {
       conversion = finalConversionRows[0];
     }
   }
+
+  /*
+    A factual, staged description of where the Chapter 10 process has actually
+    reached. Deliberately not a single "converted / not converted" flag:
+    subscription is not registration, and telling an investor they own shares
+    before the increase is registered would be wrong.
+  */
+  const openIssues = conversion?.id ? await getOpenImplementationIssues(connection, round.id) : [];
+  const implementationStatus = deriveImplementationStatus(conversion, { openIssues });
+
+  const conversionStage = (() => {
+    if (!conversion?.id) return { key: "not_triggered", label: "Ingen utløsende hendelse registrert" };
+    if (String(round.closed_reason || "") === "conversion_downloaded") {
+      return { key: "completed", label: "Gjennomført" };
+    }
+    if (conversion.altinn_package_document_id) {
+      return { key: "registration_in_progress", label: "Registrering pågår" };
+    }
+    if (conversion.third_party_confirmed_at) {
+      return { key: "contribution_confirmed", label: "Aksjeinnskudd bekreftet" };
+    }
+    if (conversion.gf_document_id) {
+      return { key: "gf_resolved", label: "Kapitalforhøyelse vedtatt" };
+    }
+    if (conversion.board_document_id) {
+      return { key: "board_proposed", label: "Styrets forslag utarbeidet" };
+    }
+    return { key: "triggered", label: "Utløsende hendelse registrert" };
+  })();
 
   const artifactError = conversionData.artifactError || null;
   const artifactErrorCode = conversionData.artifactErrorCode || null;
@@ -1700,6 +1741,8 @@ export async function buildConversionState(connection, startupContext, user) {
       : null,
     calculations: conversionData.calculations,
     calculation_error: conversionData.calculationError,
+    conversion_stage: conversionStage,
+    implementation_status: implementationStatus,
     document_generation_error: artifactError,
     document_generation_error_code: artifactErrorCode,
     par_value_requests: parValueRequests,
@@ -1896,7 +1939,7 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
       });
     }
 
-    await recordAuditEvent(connection, AUDIT_EVENTS.TRIGGER_DETECTED, {
+    await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.TRIGGER_DETECTED, {
       startupId, roundId: round.id,
       actorUserId: req.user.id, actorRole: "startup",
       triggerType, newStatus: triggerStatus,
@@ -2617,7 +2660,7 @@ router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => 
       return res.status(500).json({ error: "Runden ble ikke lukket korrekt. Prøv igjen." });
     }
 
-    await recordAuditEvent(connection, AUDIT_EVENTS.CONVERSION_COMPLETED, {
+    await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.CONVERSION_COMPLETED, {
       startupId, roundId: round.id,
       actorUserId: req.user.id, actorRole: "startup",
       previousStatus: "package_ready", newStatus: "conversion_downloaded",

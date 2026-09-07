@@ -8,6 +8,7 @@ import { getInvite } from "../controllers/rcInviteController.js";
 import { createExpiry, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
 import { isEmailVerificationRequired, sendInvestorInviteAccessCodeEmail, sendVerificationEmail } from "../utils/authEmailFlow.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
+import { buildParPreview } from "../utils/roundActivationReadiness.js";
 import {
   INVITE_TAKEN_ERROR,
   claimInviteForUser,
@@ -107,6 +108,39 @@ router.post(
    Returns full round + startup summary
 ===================================================== */
 
+/*
+  Illustrative par amount for an invited investor, using the long-stop scenario:
+  no discount, price set by the valuation cap over the company's issued shares.
+  Returns null whenever the share basis is not yet confirmed, rather than
+  guessing — a wrong estimate here is worse than none.
+*/
+async function buildInviteParEstimate(connection, invite) {
+  try {
+    const cap = Number(invite.valuation_cap || 0);
+    const target = Number(invite.target_amount || 0);
+    if (!cap || !target) return null;
+
+    const [[profile]] = await connection.query(
+      `SELECT nominal_value_per_share, current_share_count
+       FROM startup_profiles WHERE user_id = ? LIMIT 1`,
+      [invite.startup_id]
+    );
+
+    const preview = buildParPreview({
+      valuationCap: cap,
+      shareCount: Number(profile?.current_share_count || 0),
+      parValue: Number(profile?.nominal_value_per_share || 0),
+      // A typical single investment: one tenth of the round, so the figure is
+      // recognisable rather than the whole round's aggregate.
+      exampleInvestment: Math.max(Math.round(target / 10), 1)
+    });
+
+    return preview && !preview.blocked ? preview : null;
+  } catch {
+    return null;
+  }
+}
+
 router.get("/validate/:token", async (req, res) => {
   try {
 
@@ -125,6 +159,7 @@ router.get("/validate/:token", async (req, res) => {
       `
       SELECT 
         i.round_id,
+        r.startup_id,
         r.target_amount,
         r.amount_raised,
         r.discount_rate,
@@ -194,7 +229,11 @@ router.get("/validate/:token", async (req, res) => {
         discountRate: invite.discount_rate,
         valuationCap: invite.valuation_cap,
         conversionYears: invite.conversion_years
-      }
+      },
+      // Deterministic only for the long-stop scenario, where the valuation cap
+      // alone sets the price. Calculated here so the browser never derives a
+      // legal allocation of its own.
+      par_estimate: await buildInviteParEstimate(connection, invite)
     });
 
   } catch (err) {

@@ -64,10 +64,11 @@ Company before the RC round:
 | Investors | 10 × NOK 10,000 |
 | Long-stop | 24 months |
 
-Cap share price: 1,000,000 / 30,000 = NOK 33.33 per share.
+Cap share price: 1,000,000 / 30,000 = exactly **100/3**, i.e. NOK 33.333333…
+per share. It is displayed as NOK 33.33; the calculation uses the exact value.
 
-Per investor: 10,000 / (33.33 − 1.00) = 309.31 → **309 shares** (rounded down),
-Par Amount **NOK 309**.
+Per investor: 10,000 / (100/3 − 1.00) = 309.2783… → **309 shares** (rounded
+down to a whole share), Par Amount **NOK 309**.
 
 | | |
 |---|---|

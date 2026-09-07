@@ -6,12 +6,15 @@ import {
 } from "../utils/emissionRoundState.js";
 import { sendRcAgreementCreatedEmails } from "../utils/notificationEmailFlow.js";
 import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
+import { enqueueCriticalAuditEvent } from "../utils/auditOutbox.js";
 import {
     claimInviteForUser,
     INVITE_TAKEN_ERROR,
     inviteIsAvailableTo
 } from "../utils/inviteClaim.js";
 import {
+    CAPITALIZATION_BASIS,
+    CAPITALIZATION_BASIS_TYPE,
     RAISIUM_RC_LEGAL_MODEL_VERSION,
     RC_CALCULATION_VERSION
 } from "../utils/rcConversionCalculator.js";
@@ -24,7 +27,7 @@ import {
   Version of the RC agreement template. Recorded on every executed agreement so
   it stays possible to tell which wording a given investor actually signed.
 */
-export const RC_TEMPLATE_VERSION = "RC-NO-1.1";
+export const RC_TEMPLATE_VERSION = "RC-NO-1.2";
 
 const formatNOK = (value) =>
     Number(value || 0).toLocaleString("no-NO") + " NOK";
@@ -201,6 +204,9 @@ export const buildRcTemplateData = (input = {}) => {
             ? `${Number(input.par_value_per_share).toLocaleString("no-NO")} NOK`
             : "Registreres av selskapet",
         "attachment.snapshot.calculation_version": RC_CALCULATION_VERSION,
+        "attachment.snapshot.capitalization_basis_type": `${CAPITALIZATION_BASIS_TYPE} – ${CAPITALIZATION_BASIS.description_no}`,
+        "attachment.snapshot.capitalization_excluded":
+            "Opsjoner og opsjonsprogram, andre RC-avtaler, konvertible instrumenter, tegningsretter og øvrige rettigheter til å tegne aksjer.",
         "attachment.snapshot.round_status": input.round_open === 1 ? "Privat runde aktiv" : "Utkast",
         "attachment.snapshot.deadline": formatDateLabel(paymentDeadline),
         "attachment.snapshot.round_target": formatNOK(input.target_amount),
@@ -382,9 +388,11 @@ export const investViaInvite = async (req, res) => {
         const snapshotColumns = hasTermsSnapshot
             ? `, terms_valuation_cap, terms_discount_rate, terms_trigger_period_years,
                  terms_par_value_per_share, terms_capitalization_base_share_count,
+                 terms_capitalization_basis_type, terms_capitalization_included,
+                 terms_capitalization_excluded,
                  terms_snapshot_at, legal_model_version, calculation_version, agreement_template_version`
             : "";
-        const snapshotValues = hasTermsSnapshot ? ", ?, ?, ?, ?, ?, NOW(), ?, ?, ?" : "";
+        const snapshotValues = hasTermsSnapshot ? ", ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?" : "";
         const snapshotParams = hasTermsSnapshot
             ? [
                 round.valuation_cap ?? null,
@@ -392,6 +400,9 @@ export const investViaInvite = async (req, res) => {
                 round.trigger_period ?? round.conversion_years ?? null,
                 shareBasisRow?.nominal_value_per_share ?? null,
                 shareBasisRow?.current_share_count ?? null,
+                CAPITALIZATION_BASIS_TYPE,
+                CAPITALIZATION_BASIS.included_instrument_categories.join(","),
+                CAPITALIZATION_BASIS.excluded_instrument_categories.join(","),
                 RAISIUM_RC_LEGAL_MODEL_VERSION,
                 RC_CALCULATION_VERSION,
                 RC_TEMPLATE_VERSION
@@ -477,7 +488,7 @@ export const investViaInvite = async (req, res) => {
             metadata: { amount: requestedAmount, reservation_id: reservation.reservationId }
         });
 
-        await recordAuditEvent(connection, AUDIT_EVENTS.RC_GENERATED, {
+        await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.RC_GENERATED, {
             startupId: round.startup_id, roundId, agreementId, investorId,
             actorUserId: investorId, actorRole: "investor",
             newStatus: "Pending Signatures",
