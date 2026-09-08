@@ -39,43 +39,13 @@ import {
   requireConfirmedChair,
   suggestBoardChair
 } from "../utils/boardChairResolution.js";
+import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapabilities.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const templatesDir = path.resolve(__dirname, "../templates");
 const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
-
-async function tableExists(connection, tableName) {
-  const [rows] = await connection.query(
-    `
-    SELECT 1
-    FROM information_schema.TABLES
-    WHERE TABLE_SCHEMA = DATABASE()
-      AND TABLE_NAME = ?
-    LIMIT 1
-    `,
-    [tableName]
-  );
-
-  return rows.length > 0;
-}
-
-async function columnExists(connection, tableName, columnName) {
-  const [rows] = await connection.query(
-    `
-    SELECT 1
-    FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE()
-      AND TABLE_NAME = ?
-      AND COLUMN_NAME = ?
-    LIMIT 1
-    `,
-    [tableName, columnName]
-  );
-
-  return rows.length > 0;
-}
 
 function getTriggerLabel(triggerType) {
   if (triggerType === "new_round" || triggerType === "new_priced_round") return "Ny emisjon";
@@ -165,8 +135,7 @@ function parseRequestedDate(value) {
 }
 
 async function getRcAgreementColumns(connection) {
-  const [rows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
-  return new Set(rows.map((row) => row.Field));
+  return getTableColumns(connection, "rc_agreements");
 }
 
 async function getTargetReachedAt(connection, round) {
@@ -269,18 +238,7 @@ async function getLatestRoundForStartup(connection, startupId) {
 }
 
 async function hasConversionRoundId(connection) {
-  const [rows] = await connection.query(
-    `
-    SELECT 1
-    FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE()
-      AND TABLE_NAME = 'conversion_events'
-      AND COLUMN_NAME = 'round_id'
-    LIMIT 1
-    `
-  );
-
-  return rows.length > 0;
+  return columnExists(connection, "conversion_events", "round_id");
 }
 
 async function getCurrentConversionEvent(connection, startupId, roundId) {
@@ -747,19 +705,18 @@ async function notifyDocumentSigners({ type, documentId, title, companyName, sig
   const signUrl = buildSignUrl(type, documentId);
   if (!signUrl || !Array.isArray(signers) || !signers.length) return;
 
-  await Promise.all(
-    signers
-      .filter((signer) => signer?.email)
-      .map((signer) =>
-        sendDocumentSigningRequestEmail({
+  const recipients = signers.filter((signer) => signer?.email);
+  setImmediate(() => {
+    Promise.allSettled(
+      recipients.map((signer) => sendDocumentSigningRequestEmail({
           to: signer.email,
           companyName,
           roleLabel: signer.role,
           documentTitle: title,
           signUrl
-        })
-      )
-  );
+      }))
+    ).catch((error) => console.error("Document signer notifications failed:", error));
+  });
 }
 
 async function findUserByEmail(connection, email) {
@@ -1031,9 +988,9 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const boardTemplatePath = path.join(templatesDir, "sfc-template.html");
     let boardHtml = fs.readFileSync(boardTemplatePath, "utf8");
     boardHtml = boardHtml
-      .replace(/{{company_name}}/g, companyName)
-      .replace(/{{orgnr}}/g, orgnr)
-      .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
+      .replace(/{{company_name}}/g, escapeHtml(companyName))
+      .replace(/{{orgnr}}/g, escapeHtml(orgnr))
+      .replace(/{{trigger_type}}/g, escapeHtml(getTriggerLabel(freshConversion.trigger_type)))
       .replace(/{{round_id}}/g, String(round.id))
       .replace(/{{date}}/g, today)
       .replace(/{{chair_name}}/g, escapeHtml(confirmedChairName));
@@ -1134,12 +1091,12 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     }).join("");
 
     gfHtml = gfHtml
-      .replace(/{{company_name}}/g, companyName)
-      .replace(/{{orgnr}}/g, orgnr)
-      .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
+      .replace(/{{company_name}}/g, escapeHtml(companyName))
+      .replace(/{{orgnr}}/g, escapeHtml(orgnr))
+      .replace(/{{trigger_type}}/g, escapeHtml(getTriggerLabel(freshConversion.trigger_type)))
       .replace(/{{round_id}}/g, String(round.id))
       .replace(/{{date}}/g, today)
-      .replace(/{{secretary_name}}/g, secretaryName)
+      .replace(/{{secretary_name}}/g, escapeHtml(secretaryName))
       .replace(/{{pre_capital_amount}}/g, formatCurrency(preCapitalAmount))
       .replace(/{{pre_share_count}}/g, preShareCount.toLocaleString("no-NO"))
       .replace(/{{nominal_value}}/g, formatCurrency(nominalValue))
@@ -1386,12 +1343,12 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     const templatePath = path.join(templatesDir, "conversion-capital-confirmation-template.html");
     let confirmationHtml = fs.readFileSync(templatePath, "utf8");
     confirmationHtml = confirmationHtml
-      .replace(/{{company_name}}/g, companyName)
-      .replace(/{{orgnr}}/g, orgnr)
+      .replace(/{{company_name}}/g, escapeHtml(companyName))
+      .replace(/{{orgnr}}/g, escapeHtml(orgnr))
       .replace(/{{date}}/g, today)
-      .replace(/{{third_party_name}}/g, freshConversion.third_party_name || "Revisor registreres før innsending")
-      .replace(/{{third_party_email}}/g, freshConversion.third_party_email || "Registreres før innsending")
-      .replace(/{{trigger_type}}/g, getTriggerLabel(freshConversion.trigger_type))
+      .replace(/{{third_party_name}}/g, escapeHtml(freshConversion.third_party_name || "Revisor registreres før innsending"))
+      .replace(/{{third_party_email}}/g, escapeHtml(freshConversion.third_party_email || "Registreres før innsending"))
+      .replace(/{{trigger_type}}/g, escapeHtml(getTriggerLabel(freshConversion.trigger_type)))
       .replace(/{{conversion_date}}/g, formatDateLabel(freshConversion.conversion_date))
       .replace(/{{par_value_due_date}}/g, formatDateLabel(freshConversion.par_value_due_date))
       .replace(/{{total_new_shares}}/g, escapeHtml(Number(calculations.totals?.total_conversion_share_count || 0).toLocaleString("no-NO")))
@@ -1475,8 +1432,8 @@ async function ensureAltinnPackageIfReady(connection, startupContext, round, con
   const templatePath = path.join(templatesDir, "altinn-package-template.html");
   let packageHtml = fs.readFileSync(templatePath, "utf8");
   packageHtml = packageHtml
-    .replace(/{{company_name}}/g, companyName)
-    .replace(/{{orgnr}}/g, orgnr)
+    .replace(/{{company_name}}/g, escapeHtml(companyName))
+    .replace(/{{orgnr}}/g, escapeHtml(orgnr))
     .replace(/{{date}}/g, formatDateLabel(new Date()))
     .replace(/{{conversion_date}}/g, formatDateLabel(conversion.conversion_date));
 
@@ -1952,19 +1909,6 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
     });
 
     const state = await buildConversionState(connection, startupContext, req.user);
-    await sendConversionStartedEmail({
-      startupEmail: req.user.email,
-      startupName: startupContext.company?.company_name || req.user.name || "",
-      triggerLabel: getTriggerLabel(triggerType)
-    });
-    await sendTelegramAdminAlert("Trigger event registrert", [
-      `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
-      `Orgnr: ${startupContext.company?.orgnr || "-"}`,
-      `Trigger: ${getTriggerLabel(triggerType)}`,
-      triggerApproval.requiresAdminApproval
-        ? `Status: Venter admin-godkjenning`
-        : `Status: Startet`
-    ]);
     res.status(triggerApproval.requiresAdminApproval ? 202 : 201).json({
       ...state,
       adminApproval: {
@@ -1973,6 +1917,21 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
         blockedUntil: triggerApproval.approvalBlockedUntil ? triggerApproval.approvalBlockedUntil.toISOString() : null,
         reason: triggerApproval.reason
       }
+    });
+    setImmediate(() => {
+      Promise.allSettled([
+        sendConversionStartedEmail({
+          startupEmail: req.user.email,
+          startupName: startupContext.company?.company_name || req.user.name || "",
+          triggerLabel: getTriggerLabel(triggerType)
+        }),
+        sendTelegramAdminAlert("Trigger event registrert", [
+          `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
+          `Orgnr: ${startupContext.company?.orgnr || "-"}`,
+          `Trigger: ${getTriggerLabel(triggerType)}`,
+          triggerApproval.requiresAdminApproval ? "Status: Venter admin-godkjenning" : "Status: Startet"
+        ])
+      ]).catch((error) => console.error("Conversion notifications failed:", error));
     });
   } catch (err) {
     console.error("Start conversion error:", err);
@@ -2009,16 +1968,17 @@ router.post("/context", auth, requireRole(["startup"]), async (req, res) => {
     });
 
     const nextThirdPartyEmail = String(req.body.thirdPartyEmail || "").trim().toLowerCase();
-    if (nextThirdPartyEmail && nextThirdPartyEmail !== previousThirdPartyEmail) {
-      await sendTelegramAdminAlert("Bekreftelse på aksjeinnskudd venter", [
-        `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
-        `Orgnr: ${startupContext.company?.orgnr || "-"}`,
-        `Bekrefter e-post: ${nextThirdPartyEmail}`
-      ]);
-    }
-
     const state = await buildConversionState(connection, startupContext, req.user);
     res.json(state);
+    if (nextThirdPartyEmail && nextThirdPartyEmail !== previousThirdPartyEmail) {
+      setImmediate(() => {
+        sendTelegramAdminAlert("Bekreftelse på aksjeinnskudd venter", [
+          `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
+          `Orgnr: ${startupContext.company?.orgnr || "-"}`,
+          `Bekrefter e-post: ${nextThirdPartyEmail}`
+        ]).catch((error) => console.error("Third-party confirmation alert failed:", error));
+      });
+    }
   } catch (err) {
     console.error("Update conversion context error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -2143,24 +2103,23 @@ router.post("/gf/generate", auth, requireRole(["startup"]), async (req, res) => 
 });
 
 router.post("/gf/resend-sign-link", auth, requireRole(["startup"]), async (req, res) => {
-  const connection = await pool.getConnection();
   try {
-    const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
+    const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
     const startupId = startupContext.startupUserId;
-    const round = await getLatestRoundForStartup(connection, startupId);
+    const round = await getLatestRoundForStartup(pool, startupId);
     if (!round) return res.status(404).json({ error: "Fant ingen runde." });
 
-    const conversion = await getCurrentConversionEvent(connection, startupId, round.id);
+    const conversion = await getCurrentConversionEvent(pool, startupId, round.id);
     if (!conversion?.gf_document_id) {
       return res.status(400).json({ error: "GF-dokument er ikke generert ennå." });
     }
 
-    const [docRows] = await connection.query("SELECT status FROM documents WHERE id = ?", [conversion.gf_document_id]);
+    const [docRows] = await pool.query("SELECT status FROM documents WHERE id = ?", [conversion.gf_document_id]);
     if (docRows[0]?.status === "LOCKED") {
       return res.status(400).json({ error: "Dokumentet er allerede signert og låst." });
     }
 
-    const [unsignedSigners] = await connection.query(
+    const [unsignedSigners] = await pool.query(
       `SELECT email, role FROM document_signers WHERE document_id = ? AND signed_at IS NULL`,
       [conversion.gf_document_id]
     );
@@ -2186,8 +2145,6 @@ router.post("/gf/resend-sign-link", auth, requireRole(["startup"]), async (req, 
   } catch (err) {
     console.error("Resend GF sign link error:", err);
     res.status(500).json({ error: "Intern feil ved utsending." });
-  } finally {
-    connection.release();
   }
 });
 
@@ -2425,6 +2382,7 @@ router.get("/registration-readiness", auth, requireRole(["startup"]), async (req
 
 router.get("/package/download", auth, requireRole(["startup"]), async (req, res) => {
   const connection = await pool.getConnection();
+  let connectionReleased = false;
 
   try {
     const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
@@ -2495,6 +2453,25 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
     const dateLabel = formatDateLabel(new Date()).replace(/\s+/g, "-").toLowerCase();
     const zipName = `${baseName}-konverteringspakke-${dateLabel}.zip`;
 
+    // Everything needed from MySQL is now in memory. Do not occupy a scarce
+    // pool slot while Chromium renders the files.
+    connection.release();
+    connectionReleased = true;
+
+    const renderedDocs = await Promise.all(orderedDocs.map(async (item) => {
+      const doc = docsById[item.id];
+      const safeTitle = makeSafeFilename(doc?.title, item.fallback);
+      const filename = `${item.prefix}-${safeTitle}.pdf`;
+      const pdfOptions = doc?.type === "CONVERSION_SHARE_REGISTER"
+        ? {
+            landscape: true,
+            margin: { top: "18px", right: "18px", bottom: "18px", left: "18px" }
+          }
+        : {};
+      const buffer = await renderHtmlToPdfBuffer(doc?.html_content || "", pdfOptions);
+      return { filename, buffer };
+    }));
+
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
 
@@ -2510,32 +2487,16 @@ router.get("/package/download", auth, requireRole(["startup"]), async (req, res)
 
     archive.pipe(res);
 
-    for (const item of orderedDocs) {
-      const doc = docsById[item.id];
-      const safeTitle = makeSafeFilename(doc?.title, item.fallback);
-      const filename = `${item.prefix}-${safeTitle}.pdf`;
-      // eslint-disable-next-line no-await-in-loop
-      const pdfOptions = doc?.type === "CONVERSION_SHARE_REGISTER"
-        ? {
-            landscape: true,
-            margin: {
-              top: "18px",
-              right: "18px",
-              bottom: "18px",
-              left: "18px"
-            }
-          }
-        : {};
-      const pdfBuffer = await renderHtmlToPdfBuffer(doc?.html_content || "", pdfOptions);
-      archive.append(pdfBuffer, { name: filename });
+    for (const item of renderedDocs) {
+      archive.append(item.buffer, { name: item.filename });
     }
 
-    archive.finalize();
+    await archive.finalize();
   } catch (err) {
     console.error("Download conversion package error:", err);
     res.status(500).json({ error: "Internal server error" });
   } finally {
-    connection.release();
+    if (!connectionReleased) connection.release();
   }
 });
 
@@ -2677,21 +2638,19 @@ router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => 
 
     await connection.commit();
 
-    try {
-      await sendRoundClosedEmail({
-        startupName: startupContext.company?.company_name || "Startup",
-        startupEmail: req.user.email,
-        amountRaised: Number(round.amount_raised || round.committed_amount || 0),
-        closedReason: "conversion_downloaded"
-      });
-    } catch (mailErr) {
-      console.error("Send close round email error:", mailErr);
-    }
-
     res.json({
       success: true,
       message: "Runden er nå lukket.",
       closed: true
+    });
+
+    setImmediate(() => {
+      sendRoundClosedEmail({
+        startupName: startupContext.company?.company_name || "Startup",
+        startupEmail: req.user.email,
+        amountRaised: Number(round.amount_raised || round.committed_amount || 0),
+        closedReason: "conversion_downloaded"
+      }).catch((mailErr) => console.error("Send close round email error:", mailErr));
     });
   } catch (err) {
     try {

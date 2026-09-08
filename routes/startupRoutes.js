@@ -1,5 +1,6 @@
 import express from "express";
-import { auth as authMiddleware } from "../middleware/authMiddleware.js";
+import { auth as authMiddleware, requireRole } from "../middleware/authMiddleware.js";
+import { createRateLimiter } from "../middleware/rateLimit.js";
 
 import {
   createOrUpdateStartupProfile,
@@ -20,6 +21,19 @@ import {
 } from "../controllers/startupController.js";
 
 const router = express.Router();
+const aiLimiter = createRateLimiter({
+  keyPrefix: "startup-ai",
+  windowMs: 10 * 60 * 1000,
+  maxRequests: 20,
+  message: "For mange AI-forespørsler. Vent litt og prøv igjen."
+});
+const uploadLimiter = createRateLimiter({
+  keyPrefix: "startup-upload",
+  windowMs: 10 * 60 * 1000,
+  maxRequests: 12,
+  message: "For mange filopplastinger. Vent litt og prøv igjen."
+});
+const startupOnly = requireRole(["startup"]);
 
 /* =========================================
    HEALTH CHECK
@@ -32,28 +46,28 @@ router.get("/ping", (req, res) =>
    CREATE OR UPDATE MY STARTUP
    (One startup per user)
 ========================================= */
-router.post("/profile", authMiddleware, createOrUpdateStartupProfile);
-router.post("/improve-pitch", authMiddleware, improveStartupPitchCopy);
-router.post("/pitch-deck", authMiddleware, uploadStartupPitchDeck);
-router.post("/articles-of-association", authMiddleware, uploadStartupArticlesOfAssociation);
+router.post("/profile", authMiddleware, startupOnly, createOrUpdateStartupProfile);
+router.post("/improve-pitch", authMiddleware, startupOnly, aiLimiter, improveStartupPitchCopy);
+router.post("/pitch-deck", authMiddleware, startupOnly, uploadLimiter, uploadStartupPitchDeck);
+router.post("/articles-of-association", authMiddleware, startupOnly, uploadLimiter, uploadStartupArticlesOfAssociation);
 router.get("/documents/:id(\\d+)/file", authMiddleware, getStartupDocumentFile);
-router.get("/plan", authMiddleware, getStartupPlanStatus);
-router.post("/plan/select", authMiddleware, selectStartupPlan);
-router.post("/plan/payment/start", authMiddleware, startStartupPlanPayment);
-router.post("/plan/discount-code", authMiddleware, applyStartupDiscountCode);
-router.post("/plan/codes/generate", authMiddleware, generateStartupDiscountCode);
-router.post("/issues", authMiddleware, reportStartupIssue);
+router.get("/plan", authMiddleware, startupOnly, getStartupPlanStatus);
+router.post("/plan/select", authMiddleware, startupOnly, selectStartupPlan);
+router.post("/plan/payment/start", authMiddleware, startupOnly, startStartupPlanPayment);
+router.post("/plan/discount-code", authMiddleware, startupOnly, applyStartupDiscountCode);
+router.post("/plan/codes/generate", authMiddleware, startupOnly, generateStartupDiscountCode);
+router.post("/issues", authMiddleware, startupOnly, reportStartupIssue);
 
 /* =========================================
    GET MY STARTUP
 ========================================= */
-router.get("/my", authMiddleware, getStartupByUser);
-router.get("/organization", authMiddleware, getMyOrganization);
+router.get("/my", authMiddleware, startupOnly, getStartupByUser);
+router.get("/organization", authMiddleware, startupOnly, getMyOrganization);
 
 /* =========================================
    DELETE MY STARTUP
 ========================================= */
-router.delete("/my", authMiddleware, deleteMyStartup);
+router.delete("/my", authMiddleware, startupOnly, deleteMyStartup);
 
 /* =========================================
    PUBLIC – GET ALL RAISING STARTUPS

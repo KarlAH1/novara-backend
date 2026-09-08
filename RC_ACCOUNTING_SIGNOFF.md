@@ -1,127 +1,185 @@
-# RC — accounting classification, for external professional sign-off
+# RC-avtalen — regnskapsmessig klassifisering
 
-> `ACCOUNTING_CLASSIFICATION_REQUIRES_PROFESSIONAL_SIGNOFF`
->
-> Raisium does not answer the questions below in code, does not post journal
-> entries, and does not specify account numbers. This document exists so the
-> company's accountant or auditor can review the exact remaining question
-> without reading the codebase.
+**Grunnlag for vurdering hos regnskapsfører eller revisor**
 
-## What the instrument is
+---
 
-Raisium RC is a contractual, equity-oriented investment framework intended to
-result in a later share capital increase under Chapter 10 of the Norwegian
-Private Limited Liability Companies Act (aksjeloven).
+Dette dokumentet beskriver hvordan et RC-instrument er bygget opp, og hvilke
+regnskapsspørsmål vi ber om en profesjonell vurdering av.
 
-It is **not** implemented as a loan, a convertible loan, an interest-bearing
-instrument, a debt claim, a claim intended for later set-off, a freestanding
-subscription right under § 11-12, or a warrant. No set-off (motregning) occurs
-at any point.
+Raisium tar ikke stilling til den regnskapsmessige klassifiseringen, foreslår
+ingen kontoer og genererer ingen bilag. Dokumentet er skrevet slik at det kan
+leses uten kjennskap til systemet.
 
-## Year 0
+---
 
-- The investor signs the RC agreement and pays the **Investment Amount** to the
-  company.
-- **No shares are issued.** No share capital increase occurs. No share premium
-  arises from a Chapter 10 capital increase at this point.
-- The investor is **not** entered in the shareholder register and is **not** a
-  shareholder.
-- No loan claim is created and no amount is reserved for later set-off.
-- What the investor holds is a contractual right concerning a possible future
-  Chapter 10 process.
+## 1. Hva instrumentet er
 
-## Trigger and conversion (Year 2 in the example)
+Et RC-instrument er en kontraktsrettslig, egenkapitalorientert
+investeringsavtale mellom et aksjeselskap og en investor. Avtalen er ment å
+resultere i en senere kapitalforhøyelse etter aksjeloven kapittel 10.
 
-1. A Trigger Event occurs (a new capital increase, a corporate transaction, or
-   the long-stop date).
-2. The number of RC shares is calculated and frozen.
-3. The company proposes, and the general meeting resolves, a capital increase
-   under Chapter 10.
-4. The investor subscribes for the allocated shares.
-5. The investor pays the **Par Amount** — the aggregate par value of the new
-   shares — in cash, as the share contribution.
-6. The capital increase is completed and registered.
+Instrumentet er **ikke** utformet som:
 
-The Investment Amount is **not** applied as consideration in the later
-subscription. It is reflected in how many shares the investor is allocated:
+- et lån eller et konvertibelt lån
+- et rentebærende instrument
+- en fordring på selskapet
+- en fordring som er ment å motregnes mot en senere tegningsforpliktelse
+- gjeldskonvertering
+- en frittstående tegningsrett etter aksjeloven § 11-12
+- en tegningsrett eller warrant
+
+Det skjer ingen motregning på noe tidspunkt.
+
+---
+
+## 2. År 0 — inngåelse og innbetaling
+
+Investoren signerer RC-avtalen og betaler **investeringsbeløpet** direkte til
+selskapets konto.
+
+På dette tidspunktet:
+
+- **Det utstedes ingen aksjer.**
+- Det skjer **ingen kapitalforhøyelse**.
+- Det oppstår **ingen overkurs** som følge av en kapitalforhøyelse.
+- Investoren blir **ikke** aksjeeier, og føres **ikke** inn i aksjeeierboken.
+- Det oppstår **ingen låne- eller tilbakebetalingsforpliktelse**.
+- Det avsettes **ikke** noe beløp til senere motregning.
+
+Det investoren har, er en kontraktsrettslig rett knyttet til en mulig framtidig
+prosess etter aksjeloven kapittel 10.
+
+---
+
+## 3. Utløsende hendelse og konvertering
+
+Når en utløsende hendelse inntreffer — en ny kapitalforhøyelse, en
+kontrollendring, eller utløpet av avtalens løpetid — skjer følgende:
+
+1. Antall RC-aksjer beregnes etter avtalens formel, og beregningen låses.
+2. Styret fremmer forslag, og generalforsamlingen beslutter en kapitalforhøyelse
+   etter aksjeloven kapittel 10.
+3. Investoren tegner de tildelte aksjene.
+4. Investoren innbetaler **paribeløpet** — aksjenes samlede pålydende — som
+   aksjeinnskudd i penger.
+5. Kapitalforhøyelsen gjennomføres og meldes til registrering.
+
+Investeringsbeløpet inngår **ikke** som vederlag i tegningen. Det er hensyntatt
+i hvor mange aksjer investoren tildeles:
 
 ```
-RC Shares  = Investment Amount / (Share Price − Par Value)
-Par Amount = RC Shares × Par Value
+Antall RC-aksjer = Investeringsbeløp / (Aksjepris − Pålydende)
+Paribeløp        = Antall RC-aksjer × Pålydende
 ```
 
-## Worked example
+Aksjeinnskuddet ved kapitalforhøyelsen er dermed lik aksjenes samlede pålydende,
+og det oppstår ingen overkurs ved denne beslutningen.
 
-Company before the RC round:
+---
+
+## 4. Talleksempel
+
+Selskapet før RC-runden:
 
 | | |
 |---|---|
-| Share capital | NOK 30,000 |
-| Shares | 30,000 |
-| Par value | NOK 1.00 |
-| Valuation cap | NOK 1,000,000 |
-| Round target | NOK 100,000 |
-| Investors | 10 × NOK 10,000 |
-| Long-stop | 24 months |
+| Aksjekapital | 30 000 kr |
+| Antall aksjer | 30 000 |
+| Pålydende per aksje | 1,00 kr |
+| Valuation cap | 1 000 000 kr |
+| Målbeløp for runden | 100 000 kr |
+| Investorer | 10 × 10 000 kr |
+| Løpetid (long-stop) | 24 måneder |
 
-Cap share price: 1,000,000 / 30,000 = exactly **100/3**, i.e. NOK 33.333333…
-per share. It is displayed as NOK 33.33; the calculation uses the exact value.
+**Aksjepris:** 1 000 000 / 30 000 = nøyaktig **100/3**, altså 33,3333… kr per
+aksje. Beløpet vises avrundet som 33,33 kr, men beregningen bruker den eksakte
+verdien.
 
-Per investor: 10,000 / (100/3 − 1.00) = 309.2783… → **309 shares** (rounded
-down to a whole share), Par Amount **NOK 309**.
+**Per investor:** 10 000 / (100/3 − 1,00) = 309,2783… → **309 aksjer**
+(nedrundet til nærmeste hele aksje). Paribeløp: **309 kr**.
 
 | | |
 |---|---|
-| Year 0 — Investment Amounts received | NOK 100,000 |
-| Year 2 — Par Amounts received | NOK 3,090 |
-| **Total historical cash received** | **NOK 103,090** |
-| Increase in registered share capital | NOK 3,090 |
-| Share capital after conversion | NOK 33,090 (30,000 + 3,090) |
-| Shares after conversion | 33,090 |
-| Ownership per RC investor | 309 / 33,090 ≈ 0.934 % |
-| All RC investors together | 3,090 / 33,090 ≈ 9.34 % |
+| År 0 — mottatte investeringsbeløp | 100 000 kr |
+| Ved konvertering — mottatte paribeløp | 3 090 kr |
+| **Sum kontanter mottatt historisk** | **103 090 kr** |
+| Økning i registrert aksjekapital | 3 090 kr |
+| Aksjekapital etter konvertering | 33 090 kr (30 000 + 3 090) |
+| Antall aksjer etter konvertering | 33 090 |
+| Eierandel per RC-investor | 309 / 33 090 ≈ 0,934 % |
+| RC-investorene samlet | 3 090 / 33 090 ≈ 9,34 % |
 
-Note that the registered share capital increases by **NOK 3,090**, not by
-NOK 103,090.
+Legg særlig merke til at den registrerte aksjekapitalen øker med **3 090 kr**,
+ikke med 103 090 kr.
 
-## What we are asking the reviewer to confirm
+---
 
-1. **Classification of the Investment Amount during the active RC period.** How
-   should the NOK 100,000 be classified in the accounts between Year 0 and
-   conversion, given that no shares have been issued, no loan claim exists, and
-   there is no obligation of ordinary repayment?
-2. **Presentation in the financial statements.** Where does the amount belong,
-   and under what caption?
-3. **Accounting treatment at conversion.** How are the Investment Amount and the
-   Par Amount treated when the Chapter 10 capital increase is completed, given
-   that the increase in share capital equals only the Par Amount and no share
-   premium arises from that resolution?
-4. **Note and disclosure requirements.** What disclosure is required while RC
-   agreements are outstanding?
+## 5. Det er ingen tilbakebetalingsadgang
 
-## There is no repayment route at all
+Et tidligere utkast til avtalen ga investoren rett til å velge kontantoppgjør
+i stedet for aksjer ved en kontrollendring, med investeringsbeløpet som
+nedre grense, og med kontantoppgjør som standardvalg dersom investoren ikke
+svarte. **Dette er fjernet.**
 
-An earlier draft of the agreement let the investor elect a cash settlement
-instead of shares on a change of control, at no less than the Investment
-Amount, with cash as the default if they did not respond. **That has been
-removed.** A change of control is now simply a trigger event: the shares are
-calculated, the Chapter 10 capital increase is resolved, and the investor
-subscribes.
+En kontrollendring er nå utelukkende en utløsende hendelse: aksjene beregnes,
+kapitalforhøyelsen besluttes, og investoren tegner.
 
-As the agreement now stands there is **no provision under which the company
-becomes obliged to pay the Investment Amount back to the investor** — not on a
-change of control, not at the long-stop date, not on insolvency, and not on
-breach. Breach gives the ordinary contractual remedies (performance where
-legally possible, and damages for documented loss); it does not convert the
-Investment Amount into repayable principal.
+Slik avtalen nå lyder finnes det **ingen bestemmelse som forplikter selskapet
+til å betale investeringsbeløpet tilbake** — verken ved kontrollendring, ved
+utløpet av løpetiden, ved insolvens eller ved mislighold.
 
-The only cash the investor can receive from the company under this agreement is
-whatever they later receive **as a shareholder**, once shares have actually been
-issued to them.
+Ved vesentlig mislighold gjelder alminnelige misligholdsbeføyelser: krav om
+oppfyllelse så langt dette er rettslig mulig, og erstatning for dokumentert
+økonomisk tap. Dette gjør ikke investeringsbeløpet om til en
+tilbakebetalingspliktig hovedstol.
 
-## Attachments to give the reviewer
+Den eneste kontantstrømmen investoren kan motta fra selskapet etter denne
+avtalen, er det vedkommende eventuelt mottar **som aksjeeier**, etter at aksjer
+faktisk er utstedt.
 
-- The signed RC agreement (Raisium → Dokumenter).
-- The payment overview for the round (Investment Amounts, Year 0).
-- Where a conversion has occurred: the frozen calculation summary, the general
-  meeting resolution, and the Par Amount payment records.
+Avtalen presiserer også uttrykkelig at forretningsmessig svikt — verdifall,
+manglende lønnsomhet eller insolvens — ikke i seg selv utgjør mislighold, og
+ikke gir investoren krav på å få investeringsbeløpet tilbake.
+
+---
+
+## 6. Spørsmålene vi ber om en vurdering av
+
+1. **Klassifisering av investeringsbeløpet i perioden RC-en løper.**
+   Hvordan bør de 100 000 kronene klassifiseres i regnskapet mellom år 0 og
+   konverteringstidspunktet, gitt at det ikke er utstedt aksjer, at det ikke
+   foreligger en låne- eller tilbakebetalingsforpliktelse, og at det ikke er
+   avtalt ordinær tilbakebetaling?
+
+2. **Presentasjon i årsregnskapet.**
+   Hvor hører beløpet hjemme, og under hvilken post?
+
+3. **Regnskapsmessig behandling ved konvertering.**
+   Hvordan behandles investeringsbeløpet og paribeløpet når kapitalforhøyelsen
+   etter aksjeloven kapittel 10 gjennomføres, gitt at økningen i aksjekapitalen
+   tilsvarer paribeløpet alene, og at det ikke oppstår overkurs ved denne
+   beslutningen?
+
+4. **Noteopplysninger.**
+   Hvilke opplysninger bør gis i note så lenge det foreligger utestående
+   RC-avtaler?
+
+---
+
+## 7. Dokumentasjon som kan legges ved
+
+- Signert RC-avtale
+- Betalingsoversikt for runden (investeringsbeløp, år 0)
+- Der konvertering er gjennomført: låst beregningsgrunnlag,
+  generalforsamlingsprotokoll og dokumentasjon på innbetalte paribeløp
+
+---
+
+## 8. Om Raisium
+
+Raisium er programvare som standardiserer og dokumenterer prosessen. Raisium er
+ikke part i avtalen, er ikke rådgiver for noen av partene, og gir verken
+juridisk eller regnskapsmessig rådgivning.
+
+*Intern referanse: `ACCOUNTING_CLASSIFICATION_REQUIRES_PROFESSIONAL_SIGNOFF`*

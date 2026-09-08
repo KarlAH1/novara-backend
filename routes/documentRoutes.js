@@ -10,49 +10,12 @@ import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 import { lockDocumentWithSignatures, applySignatureBlockToHtml } from "../utils/documentSigning.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 import { buildConversionState } from "./conversionRoutes.js";
+import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapabilities.js";
 
 const router = express.Router();
 
-const tableExists = async (connection, tableName) => {
-    const [rows] = await connection.query(
-        `
-        SELECT 1
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = ?
-        LIMIT 1
-        `,
-        [tableName]
-    );
-
-    return rows.length > 0;
-};
-
-const columnExists = async (connection, tableName, columnName) => {
-    const [rows] = await connection.query(
-        `
-        SELECT 1
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = ?
-          AND COLUMN_NAME = ?
-        LIMIT 1
-        `,
-        [tableName, columnName]
-    );
-
-    return rows.length > 0;
-};
-
-const getRcAgreementColumns = async (connection) => {
-    const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
-    return new Set(columnRows.map((column) => column.Field));
-};
-
-const getRcPaymentColumns = async (connection) => {
-    const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
-    return new Set(columnRows.map((column) => column.Field));
-};
+const getRcAgreementColumns = (connection) => getTableColumns(connection, "rc_agreements");
+const getRcPaymentColumns = (connection) => getTableColumns(connection, "rc_payments");
 
 function buildExistingShareholderSeedRows(shareholders, currentShareCount) {
     const normalizedCurrentShareCount = Number(currentShareCount || 0);
@@ -874,7 +837,30 @@ async function userCanAccessDocument(documentId, startupId, user) {
     return signerRows.length > 0;
 }
 
-router.get("/:id/pdf", auth, async (req, res) => {
+router.get("/latest-gf", auth, async (req, res) => {
+    try {
+        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+        const [rows] = await pool.query(
+            `SELECT id
+             FROM documents
+             WHERE type = 'GF' AND startup_id = ?
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [startupContext.startupUserId]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "No GF document found" });
+        }
+
+        res.json({ documentId: rows[0].id });
+    } catch (err) {
+        console.error("Error fetching latest GF:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+router.get("/:id(\\d+)/pdf", auth, async (req, res) => {
     try {
         const documentId = req.params.id;
         const [rows] = await pool.query(
@@ -919,7 +905,7 @@ router.get("/:id/pdf", auth, async (req, res) => {
     }
 });
 
-router.get("/:id", auth, async (req, res) => {
+router.get("/:id(\\d+)", auth, async (req, res) => {
     const [rows] = await pool.query(
         "SELECT * FROM documents WHERE id=?",
         [req.params.id]
@@ -981,7 +967,7 @@ router.get("/:id", auth, async (req, res) => {
    SIGN DOCUMENT
 ========================================= */
 
-router.post("/:id/sign", auth, async (req, res) => {
+router.post("/:id(\\d+)/sign", auth, async (req, res) => {
 
     const connection = await pool.getConnection();
 
@@ -991,7 +977,7 @@ router.post("/:id/sign", auth, async (req, res) => {
         const documentId = req.params.id;
 
         const [docRows] = await connection.query(
-            "SELECT type, startup_id, html_content FROM documents WHERE id=?",
+            "SELECT type, startup_id, html_content, status FROM documents WHERE id=? FOR UPDATE",
             [documentId]
         );
 
@@ -1001,6 +987,11 @@ router.post("/:id/sign", auth, async (req, res) => {
         }
 
         const doc = docRows[0];
+
+        if (doc.status === "LOCKED") {
+            await connection.rollback();
+            return res.status(409).json({ error: "Dokumentet er allerede signert og låst." });
+        }
 
         if (doc.type === "RC") {
             const agreementMatch = doc.html_content.match(/rc_agreement_id:(\d+)/i);
@@ -1033,9 +1024,11 @@ router.post("/:id/sign", auth, async (req, res) => {
         const [result] = await connection.query(
             `UPDATE document_signers
              SET signed_at = NOW(),
+                 status = 'SIGNED',
                  ip_address = ?,
                  user_id = ?
              WHERE document_id = ?
+             AND signed_at IS NULL
              AND (
                  user_id = ?
                  OR email = ?
@@ -1050,7 +1043,15 @@ router.post("/:id/sign", auth, async (req, res) => {
         );
 
         if (result.affectedRows === 0) {
+            const [existingSigner] = await connection.query(
+                `SELECT signed_at FROM document_signers
+                 WHERE document_id = ? AND (user_id = ? OR email = ?) LIMIT 1`,
+                [documentId, req.user.id, req.user.email]
+            );
             await connection.rollback();
+            if (existingSigner[0]?.signed_at) {
+                return res.json({ success: true, alreadySigned: true });
+            }
             return res.status(400).json({
                 error: "You are not a signer for this document"
             });
@@ -1215,34 +1216,5 @@ router.post("/:id/sign", auth, async (req, res) => {
     }
 });
 
-
-/* =========================================
-   GET LATEST GF
-========================================= */
-
-router.get("/latest-gf", auth, async (req, res) => {
-    try {
-        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
-
-        const [rows] = await pool.query(
-            `SELECT id
-             FROM documents
-             WHERE type = 'GF' AND startup_id = ?
-             ORDER BY created_at DESC
-             LIMIT 1`,
-            [startupContext.startupUserId]
-        );
-
-        if (rows.length === 0) {
-            return res.status(404).json({ error: "No GF document found" });
-        }
-
-        res.json({ documentId: rows[0].id });
-
-    } catch (err) {
-        console.error("Error fetching latest GF:", err);
-        res.status(500).json({ error: "Server error" });
-    }
-});
 
 export default router;

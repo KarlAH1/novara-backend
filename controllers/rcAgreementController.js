@@ -22,6 +22,7 @@ import {
     attachAgreementToReservation,
     reserveCapacity
 } from "../utils/capacityReservation.js";
+import { getTableColumns } from "../utils/schemaCapabilities.js";
 
 /*
   Version of the RC agreement template. Recorded on every executed agreement so
@@ -378,8 +379,8 @@ export const investViaInvite = async (req, res) => {
             [round.startup_id]
         );
 
-        const [snapshotColumnRows] = await connection.query("SHOW COLUMNS FROM rc_agreements");
-        const hasTermsSnapshot = snapshotColumnRows.some((c) => c.Field === "terms_snapshot_at");
+        const snapshotColumnsAvailable = await getTableColumns(connection, "rc_agreements");
+        const hasTermsSnapshot = snapshotColumnsAvailable.has("terms_snapshot_at");
 
         const baseColumns = "rc_id, round_id, startup_id, investor_id, investment_amount, status, document_hash";
         const baseValues = "?, ?, ?, ?, ?, 'Pending Signatures', ''";

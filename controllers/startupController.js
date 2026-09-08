@@ -1,9 +1,6 @@
 import pool from "../config/db.js";
+import { randomBytes } from "crypto";
 import { fetchBrregCompany, fetchBrregRoles } from "../utils/brreg.js";
-import fs from "fs/promises";
-import os from "os";
-import path from "path";
-import { fileURLToPath } from "url";
 import {
     STARTUP_PLAN_DEFINITIONS,
     getCompanyForUser,
@@ -17,15 +14,14 @@ import {
     resolveCompanyStartupOwner
 } from "../utils/startupContext.js";
 import {
-    extractArticlesTextFromFile,
+    extractArticlesTextFromBuffer,
     parseArticlesText
 } from "../utils/articlesParser.js";
 import { improveStartupPitchText } from "../utils/openaiPitchAssistant.js";
 import { isStripeConfigured } from "../utils/stripeClient.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const STARTUP_TEXT_MAX_LENGTH = 500;
+const MAX_ARTICLES_PDF_BYTES = 7 * 1024 * 1024;
 
 function validateStartupText(value, fieldLabel, { required = false } = {}) {
     const normalized = String(value || "").trim();
@@ -384,6 +380,10 @@ export const uploadStartupPitchDeck = async (req, res) => {
             return res.status(400).json({ error: "Filnavn og filinnhold mangler." });
         }
 
+        if (fileName.length > 240) {
+            return res.status(400).json({ error: "Filnavnet er for langt." });
+        }
+
         if (!/\.pdf$/i.test(fileName)) {
             return res.status(400).json({ error: "Pitch deck må være en PDF." });
         }
@@ -394,7 +394,14 @@ export const uploadStartupPitchDeck = async (req, res) => {
             return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
         }
 
+        if (match[1].length > Math.ceil(MAX_ARTICLES_PDF_BYTES * 4 / 3) + 8) {
+            return res.status(413).json({ error: "PDF-filen er for stor. Maks størrelse er 7 MB." });
+        }
+
         const fileBuffer = Buffer.from(match[1], "base64");
+        if (fileBuffer.length > MAX_ARTICLES_PDF_BYTES || fileBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+            return res.status(400).json({ error: "Filen er ikke en gyldig PDF eller er for stor." });
+        }
 
         const [result] = await pool.query(
             `
@@ -496,6 +503,10 @@ export const uploadStartupArticlesOfAssociation = async (req, res) => {
             return res.status(400).json({ error: "Filnavn og filinnhold mangler." });
         }
 
+        if (fileName.length > 240) {
+            return res.status(400).json({ error: "Filnavnet er for langt." });
+        }
+
         if (!/\.pdf$/i.test(fileName)) {
             return res.status(400).json({ error: "Vedtekter må lastes opp som PDF." });
         }
@@ -505,18 +516,18 @@ export const uploadStartupArticlesOfAssociation = async (req, res) => {
             return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
         }
 
-        const fileBuffer = Buffer.from(match[1], "base64");
-
-        // The text extractor works on a path, so parse via a temp file that is
-        // removed immediately — the durable copy is the blob in the database.
-        const tempPath = path.join(os.tmpdir(), `raisium-articles-${Date.now()}.pdf`);
-        let parsed;
-        try {
-            await fs.writeFile(tempPath, fileBuffer);
-            parsed = parseArticlesText(await extractArticlesTextFromFile(tempPath, "application/pdf"));
-        } finally {
-            await fs.unlink(tempPath).catch(() => {});
+        if (match[1].length > Math.ceil(MAX_ARTICLES_PDF_BYTES * 4 / 3) + 8) {
+            return res.status(413).json({ error: "PDF-filen er for stor. Maks størrelse er 7 MB." });
         }
+
+        const fileBuffer = Buffer.from(match[1], "base64");
+        if (fileBuffer.length > MAX_ARTICLES_PDF_BYTES || fileBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+            return res.status(400).json({ error: "Filen er ikke en gyldig PDF eller er for stor." });
+        }
+
+        const parsed = parseArticlesText(
+            await extractArticlesTextFromBuffer(fileBuffer, "application/pdf")
+        );
 
         const [result] = await pool.query(
             `
@@ -604,7 +615,7 @@ function getStartupPlanFinalPrice(planCode, listPrice) {
 }
 
 function generateDiscountCodeValue(planCode = "normal") {
-    const suffix = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const suffix = randomBytes(5).toString("hex").toUpperCase();
     return `RAISIUM-${String(planCode || "normal").toUpperCase()}-${suffix}`;
 }
 
@@ -745,16 +756,18 @@ export const startStartupPlanPayment = async (req, res) => {
 
         const summary = await getStartupPlanSummaryForUser(req.user.id);
 
-        await sendTelegramAdminAlert("Startup venter planbetaling", [
-            `Selskap: ${company.company_name || "-"}`,
-            `Orgnr: ${company.orgnr || "-"}`,
-            `Plan: ${openSubscription.plan_code || "normal"}`,
-            `Referanse: ${buildPaymentReference(openSubscription.plan_code, company.company_id)}`
-        ]);
-
         res.json({
             message: "Betalingsinformasjon er klar. Planen aktiveres når Raisium har bekreftet betalingen.",
             ...buildPlanResponse(summary)
+        });
+
+        setImmediate(() => {
+            sendTelegramAdminAlert("Startup venter planbetaling", [
+                `Selskap: ${company.company_name || "-"}`,
+                `Orgnr: ${company.orgnr || "-"}`,
+                `Plan: ${openSubscription.plan_code || "normal"}`,
+                `Referanse: ${buildPaymentReference(openSubscription.plan_code, company.company_id)}`
+            ]).catch((error) => console.error("Plan payment alert failed:", error));
         });
     } catch (err) {
         console.error("Start startup plan payment error:", err);

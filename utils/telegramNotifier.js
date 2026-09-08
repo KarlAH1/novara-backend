@@ -19,7 +19,7 @@ export async function sendTelegramAdminAlert(title, lines = []) {
   const text = [title, ...lines.filter(Boolean)].map((line) => escapeTelegramText(line)).join("\n");
 
   try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -30,11 +30,11 @@ export async function sendTelegramAdminAlert(title, lines = []) {
         parse_mode: "HTML",
         disable_web_page_preview: true
       })
-    });
+    }, { timeoutMs: Number(process.env.TELEGRAM_TIMEOUT_MS || 6000) });
 
     if (!response.ok) {
-      const body = await response.text();
-      console.error("Telegram admin alert failed:", body);
+      await response.body?.cancel().catch(() => {});
+      console.error("Telegram admin alert failed:", response.status);
       return false;
     }
 
@@ -44,3 +44,4 @@ export async function sendTelegramAdminAlert(title, lines = []) {
     return false;
   }
 }
+import { fetchWithTimeout } from "./fetchWithTimeout.js";

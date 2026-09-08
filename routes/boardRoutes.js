@@ -7,6 +7,7 @@ import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
 import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import { sendDocumentSigningRequestEmail } from "../utils/notificationEmailFlow.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
+import { escapeHtml } from "../utils/html.js";
 
 const router = express.Router();
 const MAX_EMISSION_AMOUNT = 2147483647;
@@ -54,8 +55,6 @@ router.post(
   requireRole(["startup"]),
   async (req, res) => {
 
-    console.log("BOARD BODY:", req.body);
-
     try {
       const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
       const startupId = startupContext.startupUserId;
@@ -69,15 +68,24 @@ router.post(
 
       const {
         amount,
-        chairName,
-        secretaryName,
-        secretaryEmail
+        chairName: rawChairName,
+        secretaryName: rawSecretaryName,
+        secretaryEmail: rawSecretaryEmail
       } = req.body;
+      const chairName = String(rawChairName || "").trim();
+      const secretaryName = String(rawSecretaryName || "").trim();
+      const secretaryEmail = String(rawSecretaryEmail || "").trim().toLowerCase();
       
       if (!amount || !chairName || !secretaryName || !secretaryEmail) {
         return res.status(400).json({
           error: "Missing required fields"
         });
+      }
+
+      if (chairName.length > 160 || secretaryName.length > 160
+          || secretaryEmail.length > 254
+          || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(secretaryEmail)) {
+        return res.status(400).json({ error: "Ugyldig navn eller e-postadresse." });
       }
 
       const numericAmount = Number(amount);
@@ -151,13 +159,13 @@ router.post(
       const rcRoundName = `${companyName} RC-runde`;
 
       const html = template
-        .replace(/{{company_name}}/g, companyName)
-        .replace(/{{orgnr}}/g, orgnr)
-        .replace(/{{board_date}}/g, today)
+        .replace(/{{company_name}}/g, escapeHtml(companyName))
+        .replace(/{{orgnr}}/g, escapeHtml(orgnr))
+        .replace(/{{board_date}}/g, escapeHtml(today))
         .replace(/{{amount}}/g, numericAmount.toLocaleString("no-NO"))
         .replace(/{{round_target_amount}}/g, `${numericAmount.toLocaleString("no-NO")} NOK`)
-        .replace(/{{chair_name}}/g, chairName)
-        .replace(/{{rc_round_name}}/g, rcRoundName);
+        .replace(/{{chair_name}}/g, escapeHtml(chairName))
+        .replace(/{{rc_round_name}}/g, escapeHtml(rcRoundName));
 
       // 3️⃣ Lag dokument
       const [docResult] = await pool.query(

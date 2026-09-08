@@ -1,5 +1,6 @@
 import { createExpiry, createRawToken, hashToken } from "./authSecurity.js";
 import { sendEmail } from "./emailService.js";
+import { escapeHtml } from "./html.js";
 
 export function isEmailVerificationRequired() {
   const explicit = String(process.env.AUTH_REQUIRE_EMAIL_VERIFICATION || "").trim().toLowerCase();
@@ -39,11 +40,11 @@ export async function sendVerificationEmail(executor, { userId, email, name }) {
     subject: "Bekreft e-posten din for Raisium",
     text: `${greeting}\n\nBekreft e-posten din ved å åpne denne lenken:\n${verifyUrl}\n\nLenken utløper om 24 timer.`,
     html: `
-      <p>${greeting}</p>
+      <p>${escapeHtml(greeting)}</p>
       <p>Bekreft e-posten din for å aktivere innloggingen i Raisium.</p>
-      <p><a href="${verifyUrl}">Bekreft e-post</a></p>
+      <p><a href="${escapeHtml(verifyUrl)}">Bekreft e-post</a></p>
       <p>Hvis knappen ikke virker, bruk denne lenken:</p>
-      <p>${verifyUrl}</p>
+      <p>${escapeHtml(verifyUrl)}</p>
       <p>Lenken utløper om 24 timer.</p>
     `
   });
@@ -71,11 +72,11 @@ export async function sendPasswordResetEmail(executor, { userId, email, name }) 
     subject: "Tilbakestill passordet ditt i Raisium",
     text: `${greeting}\n\nDu kan sette et nytt passord her:\n${resetUrl}\n\nLenken utløper om 1 time.`,
     html: `
-      <p>${greeting}</p>
+      <p>${escapeHtml(greeting)}</p>
       <p>Du ba om å tilbakestille passordet ditt i Raisium.</p>
-      <p><a href="${resetUrl}">Sett nytt passord</a></p>
+      <p><a href="${escapeHtml(resetUrl)}">Sett nytt passord</a></p>
       <p>Hvis knappen ikke virker, bruk denne lenken:</p>
-      <p>${resetUrl}</p>
+      <p>${escapeHtml(resetUrl)}</p>
       <p>Lenken utløper om 1 time.</p>
     `
   });
@@ -92,7 +93,7 @@ export async function sendStartupRegistrationCodeEmail({ email, code }) {
     html: `
       <p>Hei,</p>
       <p>Koden din for å fortsette startup-registreringen i Raisium er:</p>
-      <p style="font-size:28px; font-weight:700; letter-spacing:0.18em;">${safeCode}</p>
+      <p style="font-size:28px; font-weight:700; letter-spacing:0.18em;">${escapeHtml(safeCode)}</p>
       <p>Koden utløper om 15 minutter.</p>
     `
   });
@@ -109,7 +110,7 @@ export async function sendInvestorInviteAccessCodeEmail({ email, code }) {
     html: `
       <p>Hei,</p>
       <p>Koden din for å åpne investorportalen i Raisium er:</p>
-      <p style="font-size:28px; font-weight:700; letter-spacing:0.18em;">${safeCode}</p>
+      <p style="font-size:28px; font-weight:700; letter-spacing:0.18em;">${escapeHtml(safeCode)}</p>
       <p>Koden utløper om 15 minutter.</p>
     `
   });

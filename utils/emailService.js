@@ -29,7 +29,7 @@ export async function sendEmail({ to, subject, html, text }) {
   }
 
   if (resendApiKey && fromEmail) {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetchWithTimeout("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -42,11 +42,12 @@ export async function sendEmail({ to, subject, html, text }) {
         html,
         text
       })
-    });
+    }, { timeoutMs: Number(process.env.RESEND_TIMEOUT_MS || 8000) });
 
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Resend error: ${errorBody}`);
+      const errorBody = await response.text().catch(() => "");
+      console.error("Resend request failed:", response.status, errorBody.slice(0, 300));
+      throw new Error(`E-postleverandøren svarte med status ${response.status}.`);
     }
 
     return { mode: "resend" };
@@ -64,3 +65,4 @@ export async function sendEmail({ to, subject, html, text }) {
 
   return { mode: "log" };
 }
+import { fetchWithTimeout } from "./fetchWithTimeout.js";

@@ -18,6 +18,7 @@ const SAFE_CLOSED_REASONS = new Set([
   "expired",
   "cancelled"
 ]);
+let emissionRoundColumnsPromise;
 
 function normalizeAmount(value) {
   const amount = Number(value || 0);
@@ -58,8 +59,15 @@ export function buildRoundAvailability(round = {}) {
 }
 
 export async function getEmissionRoundColumns(connection) {
-  const [columnRows] = await connection.query("SHOW COLUMNS FROM emission_rounds");
-  return new Set(columnRows.map((column) => column.Field));
+  if (!emissionRoundColumnsPromise) {
+    emissionRoundColumnsPromise = connection.query("SHOW COLUMNS FROM emission_rounds")
+      .then(([columnRows]) => new Set(columnRows.map((column) => column.Field)))
+      .catch((error) => {
+        emissionRoundColumnsPromise = null;
+        throw error;
+      });
+  }
+  return emissionRoundColumnsPromise;
 }
 
 export async function updateRoundClosure(connection, roundId, closedReason, columns) {
@@ -112,10 +120,9 @@ async function reopenRoundAfterCapacityDrop(connection, roundId, columns) {
 export async function syncEmissionRoundAvailability(connection, roundId, options = {}) {
   const { lock = false } = options;
   const columns = await getEmissionRoundColumns(connection);
-  const actualCommittedSelect = `(SELECT COALESCE(SUM(a.investment_amount), 0)
-      FROM rc_agreements a
-      WHERE a.round_id = er.id
-        AND a.status = 'Active RC')`;
+  const committedSelect = columns.has("committed_amount")
+    ? "er.committed_amount"
+    : "er.amount_raised";
   const select = `
     SELECT
       er.id,
@@ -126,7 +133,7 @@ export async function syncEmissionRoundAvailability(connection, roundId, options
       ${columns.has("valuation_cap") ? "er.valuation_cap" : "NULL AS valuation_cap"},
       ${columns.has("conversion_years") ? "er.conversion_years" : "NULL AS conversion_years"},
       ${columns.has("trigger_period") ? "er.trigger_period" : "NULL AS trigger_period"},
-      ${actualCommittedSelect} AS committed_amount,
+      ${committedSelect} AS committed_amount,
       er.deadline,
       er.open,
       er.bank_account,
@@ -145,16 +152,6 @@ export async function syncEmissionRoundAvailability(connection, roundId, options
   }
 
   let round = rows[0];
-  if (columns.has("committed_amount")) {
-    await connection.query(
-      `
-      UPDATE emission_rounds
-      SET committed_amount = ?
-      WHERE id = ?
-      `,
-      [normalizeAmount(round.committed_amount), roundId]
-    );
-  }
   const now = Date.now();
   const deadlineTime = round.deadline ? new Date(round.deadline).getTime() : null;
   const expired = deadlineTime && !Number.isNaN(deadlineTime) && deadlineTime < now;
@@ -166,16 +163,16 @@ export async function syncEmissionRoundAvailability(connection, roundId, options
     round.closed_reason !== "manually_closed" &&
     round.closed_reason !== "conversion_downloaded"
   ) {
-    if (!targetReached && expired && round.closed_reason !== "expired") {
+    if (lock && !targetReached && expired && round.closed_reason !== "expired") {
       await updateRoundClosure(connection, roundId, "expired", columns);
     }
   }
 
-  if (
-    (!targetReached && expired && round.closed_reason !== "expired")
-  ) {
+  if (lock && !targetReached && expired && round.closed_reason !== "expired") {
     const [updatedRows] = await connection.query(select, [roundId]);
     round = updatedRows[0];
+  } else if (!lock && !targetReached && expired && !round.closed_reason) {
+    round = { ...round, open: 0, closed_reason: "expired" };
   }
 
   return {

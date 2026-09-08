@@ -1,6 +1,6 @@
-import jwt from "jsonwebtoken";
 import db from "../config/db.js";
 import { getClientIp, logAuditEvent } from "../utils/auditLogger.js";
+import { verifyAuthToken } from "../utils/authToken.js";
 
 /* =========================================
    MAIN AUTH MIDDLEWARE
@@ -37,7 +37,7 @@ export const auth = async (req, res, next) => {
     const token = parts[1];
 
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyAuthToken(token);
         const [users] = await db.execute(
             "SELECT id, name, email, role, email_verified FROM users WHERE id = ? LIMIT 1",
             [decoded.id]

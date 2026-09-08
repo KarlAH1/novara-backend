@@ -16,8 +16,13 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
 
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+  connectionLimit: Math.max(2, Number(process.env.DB_POOL_SIZE || 10)),
+  maxIdle: Math.max(1, Number(process.env.DB_POOL_MAX_IDLE || process.env.DB_POOL_SIZE || 10)),
+  idleTimeout: Math.max(10000, Number(process.env.DB_POOL_IDLE_TIMEOUT_MS || 60000)),
+  queueLimit: Math.max(10, Number(process.env.DB_QUEUE_LIMIT || 100)),
+  connectTimeout: Math.max(1000, Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000)),
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
 
   ssl:
     process.env.DB_SSL === "true"
@@ -34,10 +39,10 @@ export const closePool = async () => {
 ========================================= */
 
 export const testConnection = async () => {
+  let connection;
   try {
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     await connection.ping();
-    connection.release();
 
     console.log("✅ MySQL connected successfully");
     return true;
@@ -45,6 +50,8 @@ export const testConnection = async () => {
   } catch (error) {
     console.error("❌ MySQL connection failed:", error.message);
     throw error;
+  } finally {
+    connection?.release();
   }
 };
 

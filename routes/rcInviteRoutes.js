@@ -1,12 +1,12 @@
 import express from "express";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import { generateInviteToken } from "../utils/inviteToken.js";
 import { getInvite } from "../controllers/rcInviteController.js";
 import { createExpiry, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
-import { isEmailVerificationRequired, sendInvestorInviteAccessCodeEmail, sendVerificationEmail } from "../utils/authEmailFlow.js";
+import { sendInvestorInviteAccessCodeEmail } from "../utils/authEmailFlow.js";
 import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { buildParPreview } from "../utils/roundActivationReadiness.js";
 import {
@@ -16,23 +16,19 @@ import {
   inviteIsAvailableTo,
   loadInviteClaim
 } from "../utils/inviteClaim.js";
+import { createAuthToken } from "../utils/authToken.js";
+import { createRateLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
-
-function createAuthToken(user) {
-  return jwt.sign(
-    {
-      id: user.id,
-      role: String(user.role || "").toLowerCase(),
-      email: user.email
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
-}
+const inviteAccessLimiter = createRateLimiter({
+  keyPrefix: "invite-access-code",
+  windowMs: 10 * 60 * 1000,
+  maxRequests: 8,
+  message: "For mange kodeforsøk. Vent litt og prøv igjen."
+});
 
 function createSixDigitCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(crypto.randomInt(100000, 1000000));
 }
 
 router.get("/:token", getInvite);
@@ -294,25 +290,25 @@ router.get("/validate/:token", async (req, res) => {
   }
 });
 
-router.post("/access-code/send/:token", async (req, res) => {
-  const connection = await pool.getConnection();
-
+router.post("/access-code/send/:token", inviteAccessLimiter, async (req, res) => {
   try {
     const token = String(req.params.token || "").trim();
     const name = String(req.body.name || "").trim();
     const email = String(req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: "Navn, e-post og passord er påkrevd." });
+    if (!name || !email) {
+      return res.status(400).json({ error: "Navn og e-post er påkrevd." });
     }
 
-    const passwordError = validatePasswordRequirements(password);
-    if (passwordError) {
-      return res.status(400).json({ error: passwordError });
+    if (password) {
+      const passwordError = validatePasswordRequirements(password);
+      if (passwordError) {
+        return res.status(400).json({ error: passwordError });
+      }
     }
 
-    const [inviteRows] = await connection.query(
+    const [inviteRows] = await pool.query(
       `
       SELECT r.id
       FROM rc_invites i
@@ -327,12 +323,12 @@ router.post("/access-code/send/:token", async (req, res) => {
       return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
     }
 
-    const inviteClaim = await loadInviteClaim(connection, token);
+    const inviteClaim = await loadInviteClaim(pool, token);
     if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
       return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
     }
 
-    const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
+    const availability = await syncEmissionRoundAvailability(pool, inviteRows[0].id);
     if (!availability?.canInvest) {
       return res.status(409).json({
         error: availability?.message || "Den private runden er avsluttet.",
@@ -340,7 +336,7 @@ router.post("/access-code/send/:token", async (req, res) => {
       });
     }
 
-    const [userRows] = await connection.query(
+    const [userRows] = await pool.query(
       "SELECT id, role FROM users WHERE email = ? LIMIT 1",
       [email]
     );
@@ -356,7 +352,7 @@ router.post("/access-code/send/:token", async (req, res) => {
     const code = createSixDigitCode();
     const expiresAt = createExpiry(0.25);
 
-    await connection.query(
+    await pool.query(
       `
       INSERT INTO startup_email_verifications (email, code_hash, verification_token_hash, expires_at)
       VALUES (?, ?, NULL, ?)
@@ -380,13 +376,11 @@ router.post("/access-code/send/:token", async (req, res) => {
       environment: process.env.NODE_ENV || "development"
     });
     res.status(500).json({ error: "Kunne ikke sende kode akkurat nå." });
-  } finally {
-    connection.release();
   }
 });
 
-router.post("/access-code/verify/:token", async (req, res) => {
-  const connection = await pool.getConnection();
+router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) => {
+  let connection;
   let transactionStarted = false;
 
   try {
@@ -405,7 +399,7 @@ router.post("/access-code/verify/:token", async (req, res) => {
       return res.status(400).json({ error: passwordError });
     }
 
-    const [inviteRows] = await connection.query(
+    const [inviteRows] = await pool.query(
       `
       SELECT r.id
       FROM rc_invites i
@@ -420,12 +414,12 @@ router.post("/access-code/verify/:token", async (req, res) => {
       return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
     }
 
-    const inviteClaim = await loadInviteClaim(connection, token);
+    const inviteClaim = await loadInviteClaim(pool, token);
     if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
       return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
     }
 
-    const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
+    const availability = await syncEmissionRoundAvailability(pool, inviteRows[0].id);
     if (!availability?.canInvest) {
       return res.status(409).json({
         error: availability?.message || "Den private runden er avsluttet.",
@@ -433,9 +427,9 @@ router.post("/access-code/verify/:token", async (req, res) => {
       });
     }
 
-    const [verificationRows] = await connection.query(
+    const [verificationRows] = await pool.query(
       `
-      SELECT id, code_hash, expires_at
+      SELECT id, code_hash, expires_at, attempts
       FROM startup_email_verifications
       WHERE email = ?
         AND consumed_at IS NULL
@@ -455,18 +449,25 @@ router.post("/access-code/verify/:token", async (req, res) => {
       return res.status(400).json({ error: "Koden har utløpt. Be om en ny kode." });
     }
 
+    if (Number(record.attempts || 0) >= 5) {
+      return res.status(429).json({ error: "For mange kodeforsøk. Be om en ny kode." });
+    }
+
     if (hashToken(code) !== record.code_hash) {
-      await connection.query(
+      await pool.query(
         `
         UPDATE startup_email_verifications
-        SET attempts = attempts + 1
-        WHERE id = ?
+        SET attempts = attempts + 1,
+            consumed_at = IF(attempts + 1 >= 5, NOW(), consumed_at)
+        WHERE id = ? AND consumed_at IS NULL AND attempts < 5
         `,
         [record.id]
       );
       return res.status(400).json({ error: "Koden er ugyldig." });
     }
 
+    const passwordHash = await bcrypt.hash(password, 10);
+    connection = await pool.getConnection();
     await connection.beginTransaction();
     transactionStarted = true;
 
@@ -485,21 +486,26 @@ router.post("/access-code/verify/:token", async (req, res) => {
       return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten." });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
     const [result] = await connection.query(
       "INSERT INTO users (name, email, password, role, email_verified, email_verification_token, email_verification_expires) VALUES (?, ?, ?, 'investor', 1, NULL, NULL)",
       [name, email, passwordHash]
     );
 
-    await connection.query(
+    const [verificationUpdate] = await connection.query(
       `
       UPDATE startup_email_verifications
       SET verified_at = NOW(),
           consumed_at = NOW()
-      WHERE id = ?
+      WHERE id = ? AND consumed_at IS NULL AND attempts < 5
       `,
       [record.id]
     );
+
+    if (verificationUpdate.affectedRows !== 1) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(409).json({ error: "Koden er allerede brukt eller låst." });
+    }
 
     // Bind the invite to this investor — anyone else with the link is now locked out.
     if (!(await claimInviteForUser(connection, token, result.insertId))) {
@@ -531,141 +537,15 @@ router.post("/access-code/verify/:token", async (req, res) => {
     console.error("Verify investor invite access code failed:", err);
     res.status(500).json({ error: "Kunne ikke verifisere koden." });
   } finally {
-    connection.release();
+    connection?.release();
   }
 });
 
 router.post("/access/:token", async (req, res) => {
-  const connection = await pool.getConnection();
-  let transactionStarted = false;
-  const requireEmailVerification = isEmailVerificationRequired();
-
-  try {
-    const token = req.params.token;
-    const name = String(req.body.name || "").trim();
-    const email = String(req.body.email || "").trim().toLowerCase();
-    const password = String(req.body.password || "");
-
-    if (!name || !email) {
-      return res.status(400).json({ error: "Navn og e-post er påkrevd" });
-    }
-
-    const [inviteRows] = await connection.query(
-      `
-      SELECT r.id, r.open
-      FROM rc_invites i
-      JOIN emission_rounds r ON i.round_id = r.id
-      WHERE i.token = ?
-      LIMIT 1
-      `,
-      [token]
-    );
-
-    if (!inviteRows.length) {
-      return res.status(404).json({ error: "Ugyldig eller lukket invitasjon til privat runde" });
-    }
-
-    const inviteClaim = await loadInviteClaim(connection, token);
-    if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
-      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
-    }
-
-    const availability = await syncEmissionRoundAvailability(connection, inviteRows[0].id);
-    if (!availability?.canInvest) {
-      return res.status(409).json({
-        error: availability?.message || "Den private runden er avsluttet.",
-        code: availability?.closedReason || "round_closed",
-        remainingCapacity: availability?.remainingCapacity || 0
-      });
-    }
-
-    await connection.beginTransaction();
-    transactionStarted = true;
-
-    const [userRows] = await connection.query(
-      "SELECT * FROM users WHERE email = ? LIMIT 1",
-      [email]
-    );
-
-    let user = userRows[0];
-
-    if (!user) {
-      const passwordError = validatePasswordRequirements(password);
-      if (passwordError) {
-        await connection.rollback();
-        return res.status(400).json({ error: passwordError });
-      }
-
-      const passwordHash = await bcrypt.hash(password, 10);
-      const [result] = await connection.query(
-        "INSERT INTO users (name, email, password, role, email_verified) VALUES (?, ?, ?, 'investor', ?)",
-        [name, email, passwordHash, requireEmailVerification ? 0 : 1]
-      );
-
-      user = {
-        id: result.insertId,
-        name,
-        email,
-        role: "investor"
-      };
-
-      if (requireEmailVerification) {
-        await sendVerificationEmail(connection, {
-          userId: user.id,
-          email: user.email,
-          name: user.name
-        });
-      }
-    } else if (user.role.toLowerCase() !== "investor") {
-      await connection.rollback();
-      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten" });
-    } else {
-      await connection.rollback();
-      return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
-    }
-
-    // Bind the invite to this investor — anyone else with the link is now locked out.
-    if (!(await claimInviteForUser(connection, token, user.id))) {
-      await connection.rollback();
-      transactionStarted = false;
-      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
-    }
-
-    await connection.commit();
-
-    const authToken = jwt.sign(
-      {
-        id: user.id,
-        role: "investor",
-        email: user.email
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.json({
-      success: true,
-      message: requireEmailVerification
-        ? "Investor-tilgang opprettet. Bekreft e-posten din for fremtidige innlogginger."
-        : "Investor-tilgang opprettet. Du kan logge inn med en gang i dev.",
-      requiresEmailVerification: requireEmailVerification,
-      token: authToken,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: "investor"
-      }
-    });
-  } catch (err) {
-    if (transactionStarted) {
-      await connection.rollback();
-    }
-    console.error("Invite access failed:", err);
-    res.status(500).json({ error: "Internal server error" });
-  } finally {
-    connection.release();
-  }
+  res.status(410).json({
+    success: false,
+    error: "Bruk kodeverifisering for å opprette investortilgang."
+  });
 });
 
 /* =====================================================

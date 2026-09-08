@@ -107,7 +107,7 @@ export function findSignerRoleMismatch(html, signers = []) {
 export async function lockDocumentWithSignatures(connection, documentId) {
   const [[doc]] = await connection.query(
     `
-    SELECT id, html_content
+    SELECT id, html_content, status, document_hash
     FROM documents
     WHERE id = ?
     LIMIT 1
@@ -117,6 +117,10 @@ export async function lockDocumentWithSignatures(connection, documentId) {
 
   if (!doc) {
     throw new Error("Document not found");
+  }
+
+  if (doc.status === "LOCKED") {
+    return { documentHash: doc.document_hash, htmlContent: doc.html_content, alreadyLocked: true };
   }
 
   const [signers] = await connection.query(
@@ -157,7 +161,7 @@ export async function lockDocumentWithSignatures(connection, documentId) {
         document_hash = ?,
         locked_at = NOW(),
         html_content = ?
-    WHERE id = ?
+    WHERE id = ? AND (status IS NULL OR status <> 'LOCKED')
     `,
     [documentHash, updatedHtml, documentId]
   );

@@ -29,12 +29,22 @@ export async function getOrCreateConnectedAccount(userId) {
         business_type: "company",
         company: company.orgnr ? { registration_number: company.orgnr } : undefined,
         business_profile: company.company_name ? { name: company.company_name } : undefined
+    }, {
+        idempotencyKey: `raisium:connect:company:${company.company_id}`
     });
 
-    await pool.query(
-        "UPDATE companies SET stripe_account_id = ? WHERE id = ?",
+    const [update] = await pool.query(
+        "UPDATE companies SET stripe_account_id = ? WHERE id = ? AND stripe_account_id IS NULL",
         [account.id, company.company_id]
     );
+
+    if (!update.affectedRows) {
+        const [winnerRows] = await pool.query(
+            "SELECT stripe_account_id FROM companies WHERE id = ? LIMIT 1",
+            [company.company_id]
+        );
+        return { company, accountId: winnerRows[0]?.stripe_account_id || account.id };
+    }
 
     return { company, accountId: account.id };
 }
@@ -68,7 +78,18 @@ export async function refreshConnectedAccountStatus(companyId, accountId) {
     };
 }
 
-export async function getConnectStatusForUser(userId) {
+export async function handleConnectedAccountUpdated(account) {
+    if (!account?.id) return;
+    await pool.query(
+        `UPDATE companies
+         SET stripe_charges_enabled = ?, stripe_payouts_enabled = ?,
+             stripe_onboarded_at = CASE WHEN ? THEN COALESCE(stripe_onboarded_at, NOW()) ELSE stripe_onboarded_at END
+         WHERE stripe_account_id = ?`,
+        [account.charges_enabled ? 1 : 0, account.payouts_enabled ? 1 : 0, account.charges_enabled ? 1 : 0, account.id]
+    );
+}
+
+export async function getConnectStatusForUser(userId, { refresh = false } = {}) {
     const company = await getCompanyForUserWithConnection(pool, userId);
     if (!company?.company_id) {
         return { connected: false, chargesEnabled: false, payoutsEnabled: false };
@@ -84,8 +105,16 @@ export async function getConnectStatusForUser(userId) {
         return { connected: false, chargesEnabled: false, payoutsEnabled: false };
     }
 
-    // Live-refresh from Stripe so the badge reflects reality even if the
-    // account.updated webhook hasn't arrived yet (e.g. in local dev).
+    if (!refresh) {
+        return {
+            connected: true,
+            accountId: row.stripe_account_id,
+            chargesEnabled: Boolean(row.stripe_charges_enabled),
+            payoutsEnabled: Boolean(row.stripe_payouts_enabled),
+            detailsSubmitted: Boolean(row.stripe_charges_enabled || row.stripe_payouts_enabled)
+        };
+    }
+
     const status = await refreshConnectedAccountStatus(company.company_id, row.stripe_account_id);
 
     return { connected: true, accountId: row.stripe_account_id, ...status };

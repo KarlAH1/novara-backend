@@ -2,11 +2,9 @@ import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "./emi
 import { commitReservationForAgreement } from "./capacityReservation.js";
 import { AUDIT_EVENTS } from "./auditLogger.js";
 import { enqueueCriticalAuditEvent } from "./auditOutbox.js";
+import { getTableColumns } from "./schemaCapabilities.js";
 
-const getRcPaymentColumns = async (connection) => {
-    const [columnRows] = await connection.query("SHOW COLUMNS FROM rc_payments");
-    return new Set(columnRows.map((column) => column.Field));
-};
+const getRcPaymentColumns = (connection) => getTableColumns(connection, "rc_payments");
 
 // Shared by the manual "Bekreft betaling mottatt" endpoint (startup-confirmed)
 // and the Stripe webhook (Stripe-confirmed) so both paths activate an
@@ -105,10 +103,11 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
         await connection.query(
             `
             UPDATE emission_rounds
-            SET amount_raised = amount_raised + ?
+            SET amount_raised = amount_raised + ?,
+                committed_amount = committed_amount + ?
             WHERE id = ?
             `,
-            [agreement.investment_amount, agreement.round_id]
+            [agreement.investment_amount, agreement.investment_amount, agreement.round_id]
         );
 
         // The hold becomes a committed investment. Idempotent, so a redelivered

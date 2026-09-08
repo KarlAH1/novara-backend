@@ -18,6 +18,7 @@ import {
   recordArticlesConfirmation
 } from "../utils/articlesConfirmation.js";
 import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
+import { tableExists } from "../utils/schemaCapabilities.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 /*
@@ -33,13 +34,11 @@ const emissionShareholderTableName = "emission_shareholders";
 const emissionInviteTableName = "emission_invites";
 
 const hasEmissionShareholderTable = async () => {
-  const [rows] = await pool.query("SHOW TABLES LIKE ?", [emissionShareholderTableName]);
-  return rows.length > 0;
+  return tableExists(pool, emissionShareholderTableName);
 };
 
 const hasEmissionInviteTable = async () => {
-  const [rows] = await pool.query("SHOW TABLES LIKE ?", [emissionInviteTableName]);
-  return rows.length > 0;
+  return tableExists(pool, emissionInviteTableName);
 };
 
 const getEmissionShareholders = async (emissionId) => {
@@ -70,8 +69,9 @@ const normalizeShareholders = (rawShareholders) => {
   }
 
   return rawShareholders
+    .slice(0, 200)
     .map((item) => ({
-      name: String(item?.name || "").trim(),
+      name: String(item?.name || "").trim().slice(0, 200),
       ownership_percent: Number(item?.ownership_percent)
     }))
     .filter((item) => item.name && Number.isFinite(item.ownership_percent) && item.ownership_percent > 0);
@@ -90,10 +90,16 @@ const getRcAgreementColumns = async () => {
 };
 
 export const startEmission = async (req, res) => {
+    const connection = await pool.getConnection();
+    let transactionStarted = false;
     try {
-      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      await connection.beginTransaction();
+      transactionStarted = true;
+      await connection.query("SELECT id FROM users WHERE id = ? FOR UPDATE", [req.user.id]);
+
+      const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
       const startup_id = startupContext.startupUserId;
-      const legalResetCutoff = await getLegalResetCutoff(pool, startup_id);
+      const legalResetCutoff = await getLegalResetCutoff(connection, startup_id);
 
       if (!(await canStartupCreateRaise(startup_id))) {
         return res.status(403).json({
@@ -105,7 +111,7 @@ export const startEmission = async (req, res) => {
          VERIFY LEGAL SIGNED
       ========================= */
   
-      const [board] = await pool.query(`
+      const [board] = await connection.query(`
         SELECT id
         FROM documents
         WHERE startup_id=? AND type='BOARD' AND status='LOCKED'
@@ -113,7 +119,7 @@ export const startEmission = async (req, res) => {
         ORDER BY id DESC LIMIT 1
       `, [startup_id, legalResetCutoff, legalResetCutoff]);
   
-      const [gf] = await pool.query(`
+      const [gf] = await connection.query(`
         SELECT id
         FROM documents
         WHERE startup_id=? AND type='GF' AND status='LOCKED'
@@ -131,7 +137,7 @@ export const startEmission = async (req, res) => {
          GET APPROVED AMOUNT
       ========================= */
   
-      const [capitalRows] = await pool.query(`
+      const [capitalRows] = await connection.query(`
         SELECT id, approved_amount, created_at
         FROM capital_decisions
         WHERE startup_id=?
@@ -149,7 +155,7 @@ export const startEmission = async (req, res) => {
       let approvedAmount = Number(capitalRows[0].approved_amount);
 
       if (!Number.isFinite(approvedAmount) || approvedAmount <= 0) {
-        const [legalRows] = await pool.query(`
+        const [legalRows] = await connection.query(`
           SELECT amount
           FROM startup_legal_data
           WHERE startup_id=?
@@ -166,7 +172,7 @@ export const startEmission = async (req, res) => {
           });
         }
 
-        await pool.query(`
+        await connection.query(`
           UPDATE capital_decisions
           SET approved_amount=?
           WHERE id=?
@@ -183,7 +189,7 @@ export const startEmission = async (req, res) => {
          PREVENT DUPLICATE ROUND
       ========================= */
 
-      const [latestRounds] = await pool.query(`
+      const [latestRounds] = await connection.query(`
         SELECT id, open, closed_reason
         FROM emission_rounds
         WHERE startup_id=?
@@ -198,7 +204,7 @@ export const startEmission = async (req, res) => {
         });
       }
   
-      const [existing] = await pool.query(`
+      const [existing] = await connection.query(`
         SELECT
           e.id,
           e.open,
@@ -226,7 +232,7 @@ export const startEmission = async (req, res) => {
           decisionCreatedAt > existingCreatedAt;
 
         if (Number(existingRound.open || 0) === 0 && Number(existingRound.agreement_count || 0) === 0 && hasFresherDecision) {
-          await pool.query(
+          await connection.query(
             "DELETE FROM emission_rounds WHERE id = ? AND startup_id = ? AND open = 0",
             [existingRound.id, startup_id]
           );
@@ -243,9 +249,9 @@ export const startEmission = async (req, res) => {
       ========================= */
   
       const deadline = new Date();
-      deadline.setFullYear(deadline.getFullYear() + 3);
+      deadline.setFullYear(deadline.getFullYear() + STANDARD_LONG_STOP_YEARS);
   
-      const [result] = await pool.query(`
+      const [result] = await connection.query(`
         INSERT INTO emission_rounds
         (startup_id, target_amount, deadline, open)
         VALUES (?, ?, ?, 0)
@@ -254,18 +260,27 @@ export const startEmission = async (req, res) => {
       // Link the Board/GF documents that justified this round to the round itself,
       // so the document room can group them correctly (important once a startup
       // runs multiple rounds over time).
-      await pool.query(
+      await connection.query(
         `UPDATE documents SET round_id = ? WHERE id IN (?, ?)`,
         [result.insertId, board[0].id, gf[0].id]
       );
 
+      await connection.commit();
+      transactionStarted = false;
       res.json({
         emissionId: result.insertId
       });
   
     } catch (err) {
+      if (transactionStarted) {
+        await connection.rollback();
+        transactionStarted = false;
+      }
       console.error("START EMISSION ERROR:", err);
       res.status(500).json({ message: "Server error" });
+    } finally {
+      if (transactionStarted) await connection.rollback();
+      connection.release();
     }
   };
 
@@ -292,14 +307,24 @@ export const getEmissionById = async (req, res) => {
 
         const emission = rows[0];
 
-        // Access control (startup owner OR investor)
-        if (req.user.role === "startup") {
-            const hasStartupAccess = await isUserInSameCompany(pool, userId, emission.startup_id);
-            if (!hasStartupAccess) {
-                return res.status(403).json({
-                    message: "Access denied"
-                });
-            }
+        const role = String(req.user.role || "").toLowerCase();
+        let hasAccess = role === "admin";
+
+        if (role === "startup") {
+            hasAccess = await isUserInSameCompany(pool, userId, emission.startup_id);
+        } else if (role === "investor") {
+            const [agreementRows] = await pool.query(
+                `SELECT id
+                 FROM rc_agreements
+                 WHERE round_id = ? AND investor_id = ?
+                 LIMIT 1`,
+                [emissionId, userId]
+            );
+            hasAccess = agreementRows.length > 0;
+        }
+
+        if (!hasAccess) {
+            return res.status(403).json({ message: "Access denied" });
         }
 
         const shareholders = await getEmissionShareholders(emissionId);
@@ -450,12 +475,10 @@ export const getPreviousEmissions = async (req, res) => {
    UPDATE EMISSION CONFIG (DRAFT ONLY)
 ===================================================== */
 export const updateEmissionConfig = async (req, res) => {
+    const connection = await pool.getConnection();
+    let transactionStarted = false;
     try {
-  
       const emissionId = req.params.id;
-      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
-      const startupId = startupContext.startupUserId;
-  
       let {
         conversion_years,
         trigger_period,
@@ -476,6 +499,14 @@ export const updateEmissionConfig = async (req, res) => {
         : 20;
       valuation_cap = valuation_cap === "" || valuation_cap === undefined ? null : Number(valuation_cap);
       bank_account = String(bank_account || "").trim();
+      if (Array.isArray(shareholders) && shareholders.length > 200) {
+        return res.status(400).json({ message: "For mange aksjonærer i én forespørsel." });
+      }
+      const normalizedShareholders = normalizeShareholders(shareholders);
+      const totalOwnership = normalizedShareholders.reduce(
+        (sum, item) => sum + Number(item.ownership_percent || 0),
+        0
+      );
 
        if (!Number.isFinite(normalizedTriggerPeriod) || normalizedTriggerPeriod < 1) {
         return res.status(400).json({
@@ -494,12 +525,21 @@ export const updateEmissionConfig = async (req, res) => {
           message: "Kontonummer må være satt."
         });
       }
-  
-      // Sjekk at emission tilhører startup
-      const [rows] = await pool.query(`
-        SELECT id, startup_id
+
+      if (totalOwnership > 100.0001) {
+        return res.status(400).json({
+          message: "Eierandelene kan ikke overstige 100% totalt"
+        });
+      }
+
+      await connection.beginTransaction();
+      transactionStarted = true;
+
+      const [rows] = await connection.query(`
+        SELECT id, startup_id, created_at
         FROM emission_rounds
         WHERE id = ?
+        FOR UPDATE
       `, [emissionId]);
   
       if (!rows.length) {
@@ -508,7 +548,7 @@ export const updateEmissionConfig = async (req, res) => {
         });
       }
   
-      if (!(await isUserInSameCompany(pool, req.user.id, rows[0].startup_id))) {
+      if (!(await isUserInSameCompany(connection, req.user.id, rows[0].startup_id))) {
         return res.status(403).json({
           message: "Access denied"
         });
@@ -523,7 +563,7 @@ export const updateEmissionConfig = async (req, res) => {
       deadlineBaseDate.setFullYear(deadlineBaseDate.getFullYear() + normalizedTriggerPeriod);
   
       // Lås config hvis det finnes investeringer
-      const [investments] = await pool.query(`
+      const [investments] = await connection.query(`
         SELECT id
         FROM rc_agreements
         WHERE round_id = ?
@@ -537,8 +577,9 @@ export const updateEmissionConfig = async (req, res) => {
       }
   
       // Oppdater vilkår
-      await recordAuditEvent(pool, AUDIT_EVENTS.ROUND_TERMS_CHANGED, {
-        startupId, roundId: Number(emissionId),
+      await recordAuditEvent(connection, AUDIT_EVENTS.ROUND_TERMS_CHANGED, {
+        
+        startupId: rows[0].startup_id, roundId: Number(emissionId),
         actorUserId: req.user.id, actorRole: "startup",
         ipAddress: getClientIp(req),
         metadata: {
@@ -547,7 +588,7 @@ export const updateEmissionConfig = async (req, res) => {
         }
       });
 
-      await pool.query(`
+      await connection.query(`
         UPDATE emission_rounds
         SET
           conversion_years = ?,
@@ -567,42 +608,41 @@ export const updateEmissionConfig = async (req, res) => {
         emissionId
       ]);
 
-      const normalizedShareholders = normalizeShareholders(shareholders);
-
-      if (await hasEmissionShareholderTable()) {
-        const totalOwnership = normalizedShareholders.reduce(
-          (sum, item) => sum + Number(item.ownership_percent || 0),
-          0
-        );
-
-        if (totalOwnership > 100.0001) {
-          return res.status(400).json({
-            message: "Eierandelene kan ikke overstige 100% totalt"
-          });
-        }
-
-        await pool.query(
+      if (await tableExists(connection, emissionShareholderTableName)) {
+        await connection.query(
           "DELETE FROM emission_shareholders WHERE emission_id = ?",
           [emissionId]
         );
 
-        for (const shareholder of normalizedShareholders) {
-          await pool.query(
-            `
-            INSERT INTO emission_shareholders
-            (emission_id, shareholder_name, ownership_percent)
-            VALUES (?, ?, ?)
-            `,
-            [emissionId, shareholder.name, shareholder.ownership_percent]
+        if (normalizedShareholders.length) {
+          const values = normalizedShareholders.map(() => "(?, ?, ?)").join(", ");
+          const params = normalizedShareholders.flatMap((shareholder) => [
+            emissionId,
+            shareholder.name,
+            shareholder.ownership_percent
+          ]);
+          await connection.query(
+            `INSERT INTO emission_shareholders
+             (emission_id, shareholder_name, ownership_percent)
+             VALUES ${values}`,
+            params
           );
         }
       }
-  
+
+      await connection.commit();
+      transactionStarted = false;
       res.json({ success: true });
-  
     } catch (err) {
+      if (transactionStarted) {
+        await connection.rollback();
+        transactionStarted = false;
+      }
       console.error("Update config error:", err);
       res.status(500).json({ message: "Server error" });
+    } finally {
+      if (transactionStarted) await connection.rollback();
+      connection.release();
     }
   };
 
@@ -650,25 +690,23 @@ export const updateEmissionBankAccount = async (req, res) => {
    ACTIVATE EMISSION
 ===================================================== */
 export const activateEmission = async (req, res) => {
+  const connection = await pool.getConnection();
+  let transactionStarted = false;
   try {
-
       const emissionId = req.params.id;
-      const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const startupContext = await resolveCompanyStartupOwner(connection, req.user.id);
       const startupId = startupContext.startupUserId;
 
-      console.log("ACTIVATE PARAMS:", req.params);
-      console.log("ACTIVATE USER:", startupId);
-      console.log("Checking DB for:", emissionId, startupId);
-
-      const [rows] = await pool.query(
+      const [rows] = await connection.query(
           `
           SELECT * FROM emission_rounds
           WHERE id = ? AND startup_id = ?
+          FOR UPDATE
           `,
           [emissionId, startupId]
       );
-
-      console.log("Rows found:", rows.length);
 
       if (!rows.length) {
           return res.status(404).json({ message: "Emission not found" });
@@ -677,7 +715,7 @@ export const activateEmission = async (req, res) => {
       // Fail closed. Opening a round with an inconsistent share basis or a
       // valuation cap that prices shares at or below par produces agreements
       // that cannot be converted, after investors have already paid.
-      const readiness = await checkRoundActivationReadiness(pool, startupId, rows[0]);
+      const readiness = await checkRoundActivationReadiness(connection, startupId, rows[0]);
       if (!readiness.ready) {
           return res.status(400).json({
               message: "Runden kan ikke åpnes ennå.",
@@ -686,7 +724,7 @@ export const activateEmission = async (req, res) => {
           });
       }
 
-      await pool.query(
+      const [activation] = await connection.query(
           `
           UPDATE emission_rounds
           SET open = 1
@@ -695,7 +733,11 @@ export const activateEmission = async (req, res) => {
           [emissionId, startupId]
       );
 
-      await recordAuditEvent(pool, AUDIT_EVENTS.ROUND_ACTIVATED, {
+      if (!activation.affectedRows) {
+          return res.status(409).json({ message: "Runden er allerede aktivert." });
+      }
+
+      await recordAuditEvent(connection, AUDIT_EVENTS.ROUND_ACTIVATED, {
         startupId, roundId: Number(emissionId),
         actorUserId: req.user.id, actorRole: "startup",
         previousStatus: "DRAFT", newStatus: "LIVE",
@@ -709,23 +751,35 @@ export const activateEmission = async (req, res) => {
         }
       });
 
-      await sendRoundActivatedEmail({
-        startupEmail: req.user.email,
-        startupName: startupContext.company?.company_name || req.user.name || "",
-        roundId: emissionId
-      });
-
-      await sendTelegramAdminAlert("Startup har startet runde", [
-        `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
-        `Orgnr: ${startupContext.company?.orgnr || "-"}`,
-        `Runde-ID: ${emissionId}`
-      ]);
-
+      await connection.commit();
+      transactionStarted = false;
       res.json({ success: true });
 
+      setImmediate(() => {
+        Promise.allSettled([
+          sendRoundActivatedEmail({
+            startupEmail: req.user.email,
+            startupName: startupContext.company?.company_name || req.user.name || "",
+            roundId: emissionId
+          }),
+          sendTelegramAdminAlert("Startup har startet runde", [
+            `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
+            `Orgnr: ${startupContext.company?.orgnr || "-"}`,
+            `Runde-ID: ${emissionId}`
+          ])
+        ]).catch((error) => console.error("Round activation notifications failed:", error));
+      });
+
   } catch (err) {
+      if (transactionStarted) {
+        await connection.rollback();
+        transactionStarted = false;
+      }
       console.error("Activate error:", err);
-      res.status(500).json({ message: "Server error" });
+      if (!res.headersSent) res.status(500).json({ message: "Server error" });
+  } finally {
+      if (transactionStarted) await connection.rollback();
+      connection.release();
   }
 };
 

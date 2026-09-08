@@ -9,7 +9,7 @@
     "dev": "node server.js",
     "start": "node server.js",
     "postinstall": "puppeteer browsers install chrome",
-    "test": "node --test tests/*.test.js"
+    "test": "node scripts/checkFrontendSyntax.js && node --test tests/*.test.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -20,7 +20,10 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.9.4",
     "pdf-parse": "^2.4.5",
-    "puppeteer": "^22.12.1",
+    "puppeteer": "^25.10.0",
     "stripe": "^22.5.0"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

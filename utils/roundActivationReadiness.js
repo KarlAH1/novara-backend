@@ -4,6 +4,7 @@ import {
   getActiveArticlesConfirmation
 } from "./articlesConfirmation.js";
 import { ensureStartupArticlesParsed } from "./startupArticlesBasis.js";
+import { columnExists, tableExists } from "./schemaCapabilities.js";
 
 /*
   One authoritative backend check for whether a private round may go live.
@@ -27,30 +28,6 @@ function safeParseJson(value) {
   } catch {
     return {};
   }
-}
-
-async function columnExists(connection, tableName, columnName) {
-  const [rows] = await connection.query(
-    `
-    SELECT 1 FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
-    LIMIT 1
-    `,
-    [tableName, columnName]
-  );
-  return rows.length > 0;
-}
-
-async function tableExists(connection, tableName) {
-  const [rows] = await connection.query(
-    `
-    SELECT 1 FROM information_schema.TABLES
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
-    LIMIT 1
-    `,
-    [tableName]
-  );
-  return rows.length > 0;
 }
 
 /*

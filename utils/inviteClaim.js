@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+import { verifyAuthToken } from "./authToken.js";
 
 /*
   Invite links are single-use in the sense that matters: the first investor who
@@ -25,7 +25,7 @@ export function getOptionalUserFromRequest(req) {
   }
 
   try {
-    return jwt.verify(header.slice(7).trim(), process.env.JWT_SECRET);
+    return verifyAuthToken(header.slice(7).trim());
   } catch {
     return null;
   }

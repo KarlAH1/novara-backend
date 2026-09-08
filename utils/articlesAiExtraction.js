@@ -86,7 +86,7 @@ export async function extractArticlesFieldsWithAi(articlesText, missingFields = 
 
   let response;
   try {
-    response = await fetch(OPENAI_API_URL, {
+    response = await fetchWithTimeout(OPENAI_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -100,7 +100,7 @@ export async function extractArticlesFieldsWithAi(articlesText, missingFields = 
         temperature: 0,
         max_tokens: 900
       })
-    });
+    }, { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 15000) });
   } catch {
     return null;
   }
@@ -130,3 +130,4 @@ export async function extractArticlesFieldsWithAi(articlesText, missingFields = 
     extraction_version: ARTICLES_AI_EXTRACTION_VERSION
   };
 }
+import { fetchWithTimeout } from "./fetchWithTimeout.js";

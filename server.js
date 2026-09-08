@@ -2,6 +2,7 @@ import "./config/env.js";
 import express from "express";
 import cors from "cors";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { closePool, testConnection } from "./config/db.js";
 import { getEmailProviderConfig } from "./utils/emailService.js";
@@ -22,7 +23,10 @@ import { ensureImplementationStatusSchema } from "./utils/rcImplementationStatus
 import { ensureBoardRoleSchema } from "./utils/boardChairResolution.js";
 import { ensureAuditOutboxSchema, processAuditOutbox } from "./utils/auditOutbox.js";
 import { stripe, isStripeConfigured } from "./utils/stripeClient.js";
-import { handleCheckoutSessionCompleted, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted } from "./utils/stripePayments.js";
+import { handleCheckoutSessionCompleted, handleCheckoutSessionFailed, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted } from "./utils/stripePayments.js";
+import { handleConnectedAccountUpdated } from "./utils/stripeConnect.js";
+import { closePdfBrowser } from "./utils/pdfRenderer.js";
+import { ensurePerformanceIndexes } from "./utils/performanceIndexes.js";
 
 /* =========================================
    ENVIRONMENT SAFETY CHECK
@@ -98,11 +102,39 @@ const PORT = process.env.PORT || 8080;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDir = path.resolve(__dirname, "../frontend");
+const defaultJsonParser = express.json({ limit: "256kb" });
+const uploadJsonParser = express.json({ limit: "10mb" });
+const defaultUrlEncodedParser = express.urlencoded({ extended: true, limit: "256kb" });
 
 app.disable("x-powered-by");
-if (process.env.TRUST_PROXY === "true") {
-  app.set("trust proxy", 1);
+if (isProduction || process.env.TRUST_PROXY === "true") {
+  app.set("trust proxy", Math.max(1, Number(process.env.TRUST_PROXY_HOPS || 1)));
 }
+
+app.use((req, res, next) => {
+  const requestId = String(req.headers["x-request-id"] || crypto.randomUUID()).slice(0, 128);
+  const startedAt = process.hrtime.bigint();
+  req.id = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://*.onrender.com https://ws.geonorge.no; frame-src 'self' blob:");
+
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    console.info(JSON.stringify({
+      type: "http_request",
+      requestId,
+      method: req.method,
+      path: req.originalUrl?.split("?")[0],
+      status: res.statusCode,
+      durationMs: Number(durationMs.toFixed(1)),
+      userId: req.user?.id || null
+    }));
+  });
+  next();
+});
 
 /* =========================================
    DATABASE CONNECTION TEST
@@ -124,6 +156,7 @@ await ensureAuditLogSchema();
 await ensureImplementationStatusSchema();
 await ensureBoardRoleSchema();
 await ensureAuditOutboxSchema();
+await ensurePerformanceIndexes();
 
 /*
   Finalises critical audit events that were enqueued transactionally with the
@@ -157,7 +190,8 @@ app.use(
       return callback(new Error("CORS origin not allowed"));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
+    exposedHeaders: ["X-Request-Id"],
     credentials: true
   })
 );
@@ -180,14 +214,18 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
     );
   } catch (err) {
     console.error("Stripe webhook signature verification failed:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send("Invalid webhook signature");
   }
 
   try {
-    if (event.type === "checkout.session.completed") {
+    if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) {
       await handleCheckoutSessionCompleted(event.data.object);
       await handlePlanCheckoutSessionCompleted(event.data.object);
       await handleParValueCheckoutSessionCompleted(event.data.object);
+    } else if (["checkout.session.expired", "checkout.session.async_payment_failed"].includes(event.type)) {
+      await handleCheckoutSessionFailed(event.data.object);
+    } else if (event.type === "account.updated") {
+      await handleConnectedAccountUpdated(event.data.object);
     }
     res.json({ received: true });
   } catch (err) {
@@ -199,8 +237,13 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
 /* =========================================
    MIDDLEWARE
 ========================================= */
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use((req, res, next) => {
+  const parser = req.path === "/api/startup/articles-of-association"
+    ? uploadJsonParser
+    : defaultJsonParser;
+  return parser(req, res, next);
+});
+app.use(defaultUrlEncodedParser);
 app.use(express.static(frontendDir));
 
 /* =========================================
@@ -229,9 +272,7 @@ import enheterRoutes from "./routes/enheterRoutes.js";
 app.get("/api", (req, res) => {
   res.status(200).json({
     message: "Raisium Backend is running",
-    version: "2.1.0",
-    environment: process.env.NODE_ENV || "development",
-    emailConfigured: emailProviderConfig.configured
+    version: "2.1.0"
   });
 });
 
@@ -330,11 +371,22 @@ app.use((req, res) => {
    GLOBAL ERROR HANDLER
 ========================================= */
 app.use((err, req, res, next) => {
-  console.error("Server Error:", err);
+  const status = Number(err.status || err.statusCode || 500);
+  console.error(JSON.stringify({
+    type: "server_error",
+    requestId: req.id,
+    status,
+    code: err.code || null,
+    message: err.message || String(err),
+    stack: isProduction ? undefined : err.stack
+  }));
 
-  res.status(err.status || 500).json({
+  res.status(status).json({
     success: false,
-    error: err.message || "Internal Server Error"
+    error: status >= 500 && isProduction
+      ? "En intern feil oppstod. Prøv igjen senere."
+      : (err.message || "Internal Server Error"),
+    requestId: req.id
   });
 });
 
@@ -367,7 +419,7 @@ const shutdown = async (signal) => {
 
   server.close(async () => {
     try {
-      await closePool();
+      await Promise.allSettled([closePdfBrowser(), closePool()]);
     } catch (error) {
       console.error("Error while closing DB pool:", error);
     } finally {

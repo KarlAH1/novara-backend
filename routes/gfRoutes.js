@@ -7,6 +7,7 @@ import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
 import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import { sendDocumentSigningRequestEmail } from "../utils/notificationEmailFlow.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
+import { escapeHtml } from "../utils/html.js";
 
 const router = express.Router();
 const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
@@ -130,14 +131,14 @@ router.post(
       const rcRoundName = `${data.company_name} RC-runde`;
 
       const html = template
-        .replace(/{{company_name}}/g, data.company_name)
-        .replace(/{{orgnr}}/g, data.orgnr)
-        .replace(/{{date}}/g, today)
+        .replace(/{{company_name}}/g, escapeHtml(data.company_name))
+        .replace(/{{orgnr}}/g, escapeHtml(data.orgnr))
+        .replace(/{{date}}/g, escapeHtml(today))
         .replace(/{{amount}}/g, Number(data.amount).toLocaleString("no-NO"))
         .replace(/{{round_target_amount}}/g, `${Number(data.amount).toLocaleString("no-NO")} NOK`)
-        .replace(/{{chair_name}}/g, resolvedChairName)
-        .replace(/{{secretary_name}}/g, data.secretary_name)
-        .replace(/{{rc_round_name}}/g, rcRoundName);
+        .replace(/{{chair_name}}/g, escapeHtml(resolvedChairName))
+        .replace(/{{secretary_name}}/g, escapeHtml(data.secretary_name))
+        .replace(/{{rc_round_name}}/g, escapeHtml(rcRoundName));
 
       /* =====================================================
          4️⃣ Opprett dokument

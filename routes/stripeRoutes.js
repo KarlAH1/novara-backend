@@ -7,8 +7,15 @@ import {
     getConnectStatusForUser
 } from "../utils/stripeConnect.js";
 import { createCheckoutSessionForAgreement, createCheckoutSessionForStartupPlan, createCheckoutSessionForParValue } from "../utils/stripePayments.js";
+import { createRateLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
+const checkoutLimiter = createRateLimiter({
+    keyPrefix: "stripe-checkout",
+    windowMs: 10 * 60 * 1000,
+    maxRequests: 20,
+    message: "For mange betalingsforsøk. Vent litt og prøv igjen."
+});
 
 function getFrontendBase() {
     return String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
@@ -20,7 +27,9 @@ router.get("/connect/status", auth, requireRole(["startup"]), async (req, res) =
     }
 
     try {
-        const status = await getConnectStatusForUser(req.user.id);
+        const status = await getConnectStatusForUser(req.user.id, {
+            refresh: req.query.refresh === "1"
+        });
         res.json({ configured: true, ...status });
     } catch (err) {
         console.error("Stripe connect status error:", err);
@@ -56,7 +65,7 @@ router.post("/connect/onboard", auth, requireRole(["startup"]), async (req, res)
     }
 });
 
-router.post("/checkout/plan", auth, requireRole(["startup"]), async (req, res) => {
+router.post("/checkout/plan", auth, requireRole(["startup"]), checkoutLimiter, async (req, res) => {
     if (!isStripeConfigured()) {
         return res.status(503).json({ error: "Stripe er ikke konfigurert i dette miljøet ennå." });
     }
@@ -78,7 +87,7 @@ router.post("/checkout/plan", auth, requireRole(["startup"]), async (req, res) =
     }
 });
 
-router.post("/checkout/par-value/:requestId(\\d+)", auth, requireRole(["investor"]), async (req, res) => {
+router.post("/checkout/par-value/:requestId(\\d+)", auth, requireRole(["investor"]), checkoutLimiter, async (req, res) => {
     if (!isStripeConfigured()) {
         return res.status(503).json({ error: "Stripe er ikke konfigurert i dette miljøet ennå." });
     }
@@ -101,7 +110,7 @@ router.post("/checkout/par-value/:requestId(\\d+)", auth, requireRole(["investor
     }
 });
 
-router.post("/checkout/:agreementId(\\d+)", auth, requireRole(["investor"]), async (req, res) => {
+router.post("/checkout/:agreementId(\\d+)", auth, requireRole(["investor"]), checkoutLimiter, async (req, res) => {
     if (!isStripeConfigured()) {
         return res.status(503).json({ error: "Stripe er ikke konfigurert i dette miljøet ennå." });
     }

@@ -20,7 +20,7 @@ export async function improveStartupPitchText({ whatOffers, useOfFunds }) {
         use_of_funds: useOfFunds || ""
     });
 
-    const response = await fetch(OPENAI_API_URL, {
+    const response = await fetchWithTimeout(OPENAI_API_URL, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -36,11 +36,11 @@ export async function improveStartupPitchText({ whatOffers, useOfFunds }) {
             temperature: 0.6,
             max_tokens: 600
         })
-    });
+    }, { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 15000) });
 
     if (!response.ok) {
-        const errorText = await response.text().catch(() => "");
-        throw new Error(`OpenAI API error (${response.status}): ${errorText.slice(0, 300)}`);
+        await response.body?.cancel().catch(() => {});
+        throw new Error(`Tekstforbedringen er midlertidig utilgjengelig (${response.status}).`);
     }
 
     const data = await response.json();
@@ -61,3 +61,4 @@ export async function improveStartupPitchText({ whatOffers, useOfFunds }) {
         useOfFunds: String(parsed.use_of_funds || "").trim().slice(0, PITCH_TEXT_MAX_LENGTH)
     };
 }
+import { fetchWithTimeout } from "./fetchWithTimeout.js";

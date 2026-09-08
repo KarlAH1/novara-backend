@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import db from "../config/db.js";
 import { checkCompanyRoleMatch } from "../utils/companyRoleCheck.js";
 import { ensureCompanyAndMembership } from "../utils/companyMembership.js";
@@ -12,21 +12,11 @@ import {
 import { createExpiry, createRawToken, hashToken, validatePasswordRequirements } from "../utils/authSecurity.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getClientIp, logAuditEvent } from "../utils/auditLogger.js";
-
-function createAuthToken(user) {
-  return jwt.sign(
-    {
-      id: user.id,
-      role: String(user.role || "").toLowerCase(),
-      email: user.email
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
-}
+import { createAuthToken } from "../utils/authToken.js";
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync("raisium-invalid-password", 10);
 
 function createSixDigitCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(crypto.randomInt(100000, 1000000));
 }
 
 async function consumeStartupEmailVerification(connection, email, rawVerificationToken) {
@@ -41,6 +31,7 @@ async function consumeStartupEmailVerification(connection, email, rawVerificatio
       AND verification_token_hash = ?
     ORDER BY id DESC
     LIMIT 1
+    FOR UPDATE
     `,
     [safeEmail, safeTokenHash]
   );
@@ -72,15 +63,13 @@ async function consumeStartupEmailVerification(connection, email, rawVerificatio
 }
 
 export const sendStartupRegistrationCode = async (req, res) => {
-  const connection = await db.getConnection();
-
   try {
     const email = String(req.body.email || "").trim().toLowerCase();
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ success: false, error: "Skriv inn en gyldig e-postadresse." });
     }
 
-    const [existing] = await connection.query(
+    const [existing] = await db.query(
       "SELECT id FROM users WHERE email = ? LIMIT 1",
       [email]
     );
@@ -91,7 +80,7 @@ export const sendStartupRegistrationCode = async (req, res) => {
     const code = createSixDigitCode();
     const expiresAt = createExpiry(0.25);
 
-    await connection.query(
+    await db.query(
       `
       INSERT INTO startup_email_verifications (email, code_hash, verification_token_hash, expires_at)
       VALUES (?, ?, NULL, ?)
@@ -115,8 +104,6 @@ export const sendStartupRegistrationCode = async (req, res) => {
       environment: process.env.NODE_ENV || "development"
     });
     res.status(500).json({ success: false, error: "Kunne ikke sende kode akkurat nå." });
-  } finally {
-    connection.release();
   }
 };
 
@@ -153,13 +140,18 @@ export const verifyStartupRegistrationCode = async (req, res) => {
       return res.status(400).json({ success: false, error: "Koden har utløpt. Be om en ny kode." });
     }
 
+    if (Number(record.attempts || 0) >= 5) {
+      return res.status(429).json({ success: false, error: "For mange kodeforsøk. Be om en ny kode." });
+    }
+
     const providedHash = hashToken(code);
     if (providedHash !== record.code_hash) {
       await connection.query(
         `
         UPDATE startup_email_verifications
-        SET attempts = attempts + 1
-        WHERE id = ?
+        SET attempts = attempts + 1,
+            consumed_at = IF(attempts + 1 >= 5, NOW(), consumed_at)
+        WHERE id = ? AND consumed_at IS NULL AND attempts < 5
         `,
         [record.id]
       );
@@ -167,15 +159,19 @@ export const verifyStartupRegistrationCode = async (req, res) => {
     }
 
     const verificationToken = createRawToken();
-    await connection.query(
+    const [verifyResult] = await connection.query(
       `
       UPDATE startup_email_verifications
       SET verified_at = NOW(),
           verification_token_hash = ?
-      WHERE id = ?
+      WHERE id = ? AND consumed_at IS NULL AND attempts < 5
       `,
       [hashToken(verificationToken), record.id]
     );
+
+    if (verifyResult.affectedRows !== 1) {
+      return res.status(409).json({ success: false, error: "Koden er allerede brukt eller låst." });
+    }
 
     res.json({
       success: true,
@@ -194,7 +190,7 @@ export const verifyStartupRegistrationCode = async (req, res) => {
    REGISTER
 ========================================= */
 export const register = async (req, res) => {
-  const connection = await db.getConnection();
+  let connection;
   let transactionStarted = false;
 
   try {
@@ -239,7 +235,7 @@ export const register = async (req, res) => {
       });
     }
 
-    const [existing] = await connection.execute(
+    const [existing] = await db.execute(
       "SELECT id FROM users WHERE email = ?",
       [email]
     );
@@ -252,6 +248,7 @@ export const register = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    connection = await db.getConnection();
     await connection.beginTransaction();
     transactionStarted = true;
 
@@ -280,6 +277,7 @@ export const register = async (req, res) => {
     });
 
     await connection.commit();
+    transactionStarted = false;
 
     const user = {
       id: userId,
@@ -288,14 +286,6 @@ export const register = async (req, res) => {
       role
     };
     const token = createAuthToken(user);
-
-    await sendTelegramAdminAlert("Ny startup registrert", [
-      `Navn: ${name}`,
-      `E-post: ${email}`,
-      `Selskap: ${company.name || "-"}`,
-      `Orgnr: ${company.orgnr || "-"}`,
-      `Rollematch: ${roleCheckStatus === "matched" ? "Automatisk" : "Manuell vurdering"}`
-    ]);
 
     res.status(201).json({
       success: true,
@@ -309,17 +299,29 @@ export const register = async (req, res) => {
       user
     });
 
+    setImmediate(() => {
+      sendTelegramAdminAlert("Ny startup registrert", [
+        `Navn: ${name}`,
+        `E-post: ${email}`,
+        `Selskap: ${company.name || "-"}`,
+        `Orgnr: ${company.orgnr || "-"}`,
+        `Rollematch: ${roleCheckStatus === "matched" ? "Automatisk" : "Manuell vurdering"}`
+      ]).catch((alertError) => console.error("Startup registration alert failed:", alertError));
+    });
+
   } catch (error) {
     if (transactionStarted) {
       await connection.rollback();
+      transactionStarted = false;
     }
     console.error("Register error:", error);
     res.status(error.status || 500).json({
       success: false,
-      error: error.message || "Serverfeil"
+      error: Number(error.status || 500) < 500 ? error.message : "Serverfeil"
     });
   } finally {
-    connection.release();
+    if (transactionStarted) await connection.rollback();
+    connection?.release();
   }
 };
 
@@ -376,11 +378,13 @@ export const login = async (req, res) => {
     }
 
     const [users] = await db.execute(
-      "SELECT * FROM users WHERE email = ?",
+      `SELECT id, name, email, password, role, email_verified
+       FROM users WHERE email = ? LIMIT 1`,
       [email]
     );
 
     if (users.length === 0) {
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       logAuditEvent("login_failed_unknown_email", {
         email,
         ip: getClientIp(req)

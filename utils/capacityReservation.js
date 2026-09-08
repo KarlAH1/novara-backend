@@ -1,4 +1,5 @@
 import db from "../config/db.js";
+import { tableExists, clearSchemaCapabilityCache } from "./schemaCapabilities.js";
 
 /*
   Capacity reservation for a private round.
@@ -31,15 +32,6 @@ export const RESERVATION_STATUS = {
   EXPIRED: "expired"
 };
 
-async function tableExists(connection, tableName) {
-  const [rows] = await connection.query(
-    `SELECT 1 FROM information_schema.TABLES
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
-    [tableName]
-  );
-  return rows.length > 0;
-}
-
 export async function ensureCapacityReservationSchema() {
   const connection = await db.getConnection();
   try {
@@ -64,6 +56,7 @@ export async function ensureCapacityReservationSchema() {
         UNIQUE KEY uniq_reservation_active (round_id, investor_id, status)
       )
     `);
+    clearSchemaCapabilityCache();
   } finally {
     connection.release();
   }
