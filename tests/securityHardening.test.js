@@ -35,6 +35,19 @@ test("investor registration never persists a password in Web Storage", () => {
   assert.doesNotMatch(investSource, /sessionStorage\.setItem\([^\n]+password/);
 });
 
+test("initial UI state cannot animate or expose transient auth actions", () => {
+  const configSource = read("frontend/config.js");
+  const sharedStyles = read("frontend/styles.css");
+  const loginPage = read("frontend/login.html");
+
+  assert.match(configSource, /classList\.add\("ui-booting"\)/);
+  assert.match(configSource, /dataset\.authState/);
+  assert.match(sharedStyles, /html\.ui-booting \*[\s\S]*transition: none !important/);
+  assert.match(sharedStyles, /body\[data-requires-auth\]:not\(\.auth-ready\) > \*[\s\S]*visibility: hidden/);
+  assert.doesNotMatch(sharedStyles, /body\[data-requires-auth\]:not\(\.auth-ready\) > \*\s*\{[^}]*opacity:/);
+  assert.match(loginPage, /<body class="[^"]*auth-entry-page/);
+});
+
 test("new auth tokens enforce algorithm, issuer and audience with a legacy rollout switch", () => {
   const previous = {
     secret: process.env.JWT_SECRET,
