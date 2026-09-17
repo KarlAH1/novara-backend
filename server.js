@@ -102,6 +102,22 @@ const PORT = process.env.PORT || 8080;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDir = path.resolve(__dirname, "../frontend");
+/*
+  Request bodies are capped tightly by default. The only endpoints that
+  legitimately carry a large payload are the PDF uploads, which arrive as a
+  base64 data URI — and base64 inflates a file by about a third, so a 7 MB PDF
+  (the limit both handlers enforce) needs roughly 9.4 MB of JSON.
+
+  These paths are listed rather than pattern-matched so a new upload endpoint
+  has to be added here deliberately. Missing one is not a subtle failure: the
+  upload dies with a 413 before any handler runs, which is exactly what
+  happened to /api/startup/pitch-deck when only the articles path was listed.
+*/
+const UPLOAD_JSON_PATHS = new Set([
+  "/api/startup/pitch-deck",
+  "/api/startup/articles-of-association"
+]);
+
 const defaultJsonParser = express.json({ limit: "256kb" });
 const uploadJsonParser = express.json({ limit: "10mb" });
 const defaultUrlEncodedParser = express.urlencoded({ extended: true, limit: "256kb" });
@@ -238,9 +254,7 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
    MIDDLEWARE
 ========================================= */
 app.use((req, res, next) => {
-  const parser = req.path === "/api/startup/articles-of-association"
-    ? uploadJsonParser
-    : defaultJsonParser;
+  const parser = UPLOAD_JSON_PATHS.has(req.path) ? uploadJsonParser : defaultJsonParser;
   return parser(req, res, next);
 });
 app.use(defaultUrlEncodedParser);

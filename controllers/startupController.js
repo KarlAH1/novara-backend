@@ -21,7 +21,10 @@ import { improveStartupPitchText } from "../utils/openaiPitchAssistant.js";
 import { isStripeConfigured } from "../utils/stripeClient.js";
 
 const STARTUP_TEXT_MAX_LENGTH = 500;
-const MAX_ARTICLES_PDF_BYTES = 7 * 1024 * 1024;
+// Largest PDF accepted on any upload endpoint. Must stay within the JSON body
+// limit in server.js: base64 adds roughly a third, so 7 MB here needs ~9.4 MB
+// of request body.
+const MAX_UPLOAD_PDF_BYTES = 7 * 1024 * 1024;
 
 function validateStartupText(value, fieldLabel, { required = false } = {}) {
     const normalized = String(value || "").trim();
@@ -394,12 +397,12 @@ export const uploadStartupPitchDeck = async (req, res) => {
             return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
         }
 
-        if (match[1].length > Math.ceil(MAX_ARTICLES_PDF_BYTES * 4 / 3) + 8) {
+        if (match[1].length > Math.ceil(MAX_UPLOAD_PDF_BYTES * 4 / 3) + 8) {
             return res.status(413).json({ error: "PDF-filen er for stor. Maks størrelse er 7 MB." });
         }
 
         const fileBuffer = Buffer.from(match[1], "base64");
-        if (fileBuffer.length > MAX_ARTICLES_PDF_BYTES || fileBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+        if (fileBuffer.length > MAX_UPLOAD_PDF_BYTES || fileBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
             return res.status(400).json({ error: "Filen er ikke en gyldig PDF eller er for stor." });
         }
 
@@ -516,12 +519,12 @@ export const uploadStartupArticlesOfAssociation = async (req, res) => {
             return res.status(400).json({ error: "Ugyldig PDF-opplasting." });
         }
 
-        if (match[1].length > Math.ceil(MAX_ARTICLES_PDF_BYTES * 4 / 3) + 8) {
+        if (match[1].length > Math.ceil(MAX_UPLOAD_PDF_BYTES * 4 / 3) + 8) {
             return res.status(413).json({ error: "PDF-filen er for stor. Maks størrelse er 7 MB." });
         }
 
         const fileBuffer = Buffer.from(match[1], "base64");
-        if (fileBuffer.length > MAX_ARTICLES_PDF_BYTES || fileBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+        if (fileBuffer.length > MAX_UPLOAD_PDF_BYTES || fileBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
             return res.status(400).json({ error: "Filen er ikke en gyldig PDF eller er for stor." });
         }
 
