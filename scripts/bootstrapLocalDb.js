@@ -185,6 +185,8 @@ const statements = [
     emission_id INT NOT NULL,
     shareholder_name VARCHAR(255) NOT NULL,
     ownership_percent DECIMAL(7,4) NOT NULL,
+    share_count INT NULL,
+    input_source VARCHAR(16) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_emission_shareholders_round FOREIGN KEY (emission_id) REFERENCES emission_rounds(id) ON DELETE CASCADE
   )
@@ -220,6 +222,7 @@ const statements = [
     stripe_net_amount DECIMAL(10,2) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_rc_agreement_round_investor (round_id, investor_id),
     CONSTRAINT fk_rc_agreements_round FOREIGN KEY (round_id) REFERENCES emission_rounds(id) ON DELETE CASCADE,
     CONSTRAINT fk_rc_agreements_startup FOREIGN KEY (startup_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_rc_agreements_investor FOREIGN KEY (investor_id) REFERENCES users(id) ON DELETE CASCADE

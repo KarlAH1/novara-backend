@@ -4,6 +4,8 @@ import {
     startEmission,
     getEmissionById,
     getPreviousEmissions,
+    getEmissionDraft,
+    updateEmissionDraft,
     updateEmissionConfig,
     updateEmissionBankAccount,
     getActiveEmission,
@@ -11,6 +13,7 @@ import {
     getEmissionReadiness,
     getArticlesShareBasis,
     confirmArticlesShareBasis,
+    previewShareholderAllocation,
     closeEmissionEarly,
     generateInvite,
     investInEmission,
@@ -33,8 +36,15 @@ router.get("/history", auth, startupOnly, getPreviousEmissions);
 router.get("/articles/share-basis", auth, startupOnly, getArticlesShareBasis);
 router.post("/articles/share-basis/confirm", auth, startupOnly, confirmArticlesShareBasis);
 
+// Existing owners, previewed with the exact rule the save path uses
+router.post("/shareholders/preview", auth, startupOnly, previewShareholderAllocation);
+
 // Get emission
 router.get("/:id(\\d+)", auth, getEmissionById);
+
+// Incomplete round setup, stored separately from operative terms
+router.get("/:id(\\d+)/draft", auth, startupOnly, getEmissionDraft);
+router.put("/:id(\\d+)/draft", auth, startupOnly, updateEmissionDraft);
 
 // Update config
 router.put("/:id(\\d+)/config", auth, startupOnly, updateEmissionConfig);

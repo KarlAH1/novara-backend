@@ -3,7 +3,7 @@ import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
-import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
+import { cleanupLegalDocuments, removeUnsignedDrafts } from "../utils/legalDocumentCleanup.js";
 import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import { sendDocumentSigningRequestEmail } from "../utils/notificationEmailFlow.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
@@ -166,6 +166,10 @@ router.post(
         .replace(/{{round_target_amount}}/g, `${numericAmount.toLocaleString("no-NO")} NOK`)
         .replace(/{{chair_name}}/g, escapeHtml(chairName))
         .replace(/{{rc_round_name}}/g, escapeHtml(rcRoundName));
+
+      // A regenerated proposal replaces earlier unsigned drafts instead of
+      // piling up next to them.
+      await removeUnsignedDrafts(pool, startupId, "BOARD");
 
       // 3️⃣ Lag dokument
       const [docResult] = await pool.query(

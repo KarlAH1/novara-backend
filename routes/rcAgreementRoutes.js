@@ -18,6 +18,8 @@ import { decodeBirthDateFromNationalId } from "../utils/norwegianNationalId.js";
 import { releaseReservationForAgreement } from "../utils/capacityReservation.js";
 import { buildEvidencePackage, canAccessEvidence } from "../utils/evidenceExport.js";
 import { isUserInSameCompany } from "../utils/startupContext.js";
+import { saveInvestorFlowProgress } from "../utils/investorFlowProgress.js";
+import { MINIMUM_RC_INVESTMENT_NOK } from "../utils/rcInvestmentRules.js";
 
 const router = express.Router();
 
@@ -26,7 +28,7 @@ const router = express.Router();
 // including its RC document — rather than keeping it as history. This also
 // frees the (round_id, investor_id) unique slot so the investor can start a
 // fresh agreement in the same round.
-const deleteUnpaidRcAgreement = async (agreement) => {
+const deleteUnpaidRcAgreement = async (agreement, { preserveInvestorFlow = false } = {}) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -50,6 +52,34 @@ const deleteUnpaidRcAgreement = async (agreement) => {
     // Give the held capacity back to the round before the agreement row goes,
     // or an abandoned checkout would keep a slot locked until it expired.
     await releaseReservationForAgreement(connection, agreement.id, "agreement_cancelled");
+
+    if (preserveInvestorFlow) {
+      const [inviteRows] = await connection.query(
+        `SELECT i.id
+         FROM rc_invites i
+         JOIN emission_rounds r ON r.id = i.round_id
+         WHERE i.round_id = ?
+           AND i.claimed_by_user_id = ?
+           AND r.open = 1
+           AND (r.closed_reason IS NULL OR r.closed_reason = '')
+           AND (r.deadline IS NULL OR r.deadline >= NOW())
+           AND r.target_amount - COALESCE(r.committed_amount, r.amount_raised, 0) >= ?
+         ORDER BY i.claimed_at DESC, i.id DESC
+         LIMIT 1`,
+        [agreement.round_id, agreement.investor_id, MINIMUM_RC_INVESTMENT_NOK]
+      );
+
+      if (inviteRows[0]?.id) {
+        await saveInvestorFlowProgress(connection, {
+          investorId: agreement.investor_id,
+          inviteId: inviteRows[0].id,
+          progress: {
+            stage: "review",
+            amount: agreement.investment_amount
+          }
+        });
+      }
+    }
 
     await connection.query("DELETE FROM rc_agreements WHERE id = ?", [agreement.id]);
 
@@ -1127,7 +1157,7 @@ router.post("/:id(\\d+)/withdraw", auth, requireRole(["investor"]), async (req, 
       return res.status(400).json({ error: "Kun avtaler som venter på betaling kan avbrytes." });
     }
 
-    await deleteUnpaidRcAgreement(agreement);
+    await deleteUnpaidRcAgreement(agreement, { preserveInvestorFlow: true });
 
     sendInvestorWithdrewEmail({
       startupEmail: agreement.startup_email,

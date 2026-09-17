@@ -11,6 +11,7 @@ import { lockDocumentWithSignatures, applySignatureBlockToHtml } from "../utils/
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 import { buildConversionState } from "./conversionRoutes.js";
 import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapabilities.js";
+import { shareCountsForStoredOwners } from "../utils/shareholderAllocation.js";
 
 const router = express.Router();
 
@@ -23,18 +24,10 @@ function buildExistingShareholderSeedRows(shareholders, currentShareCount) {
         return [];
     }
 
-    let allocatedShares = 0;
+    const counts = shareCountsForStoredOwners(shareholders, normalizedCurrentShareCount);
 
     return shareholders.map((holder, index) => {
-        const isLast = index === shareholders.length - 1;
-        const percentage = Number(holder.ownership_percent || 0);
-        let shareCount = Math.floor((normalizedCurrentShareCount * percentage) / 100);
-
-        if (isLast) {
-            shareCount = Math.max(normalizedCurrentShareCount - allocatedShares, 0);
-        }
-
-        allocatedShares += shareCount;
+        const shareCount = counts[index] || 0;
 
         return {
             emission_shareholder_id: Number(holder.id || 0) || null,
@@ -120,7 +113,7 @@ async function getOrCreateExistingShareholderTask(connection, startupId) {
 
         const [shareholderRows] = await connection.query(
             `
-            SELECT id, shareholder_name, ownership_percent
+            SELECT *
             FROM emission_shareholders
             WHERE emission_id = ?
             ORDER BY id ASC

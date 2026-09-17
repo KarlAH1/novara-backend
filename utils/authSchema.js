@@ -114,6 +114,7 @@ export async function ensureAuthSchema() {
           email VARCHAR(255) NOT NULL,
           code_hash VARCHAR(64) NOT NULL,
           verification_token_hash VARCHAR(64) NULL,
+          pending_password_hash VARCHAR(255) NULL,
           expires_at DATETIME NOT NULL,
           verified_at DATETIME NULL,
           consumed_at DATETIME NULL,
@@ -124,6 +125,12 @@ export async function ensureAuthSchema() {
           INDEX idx_startup_email_verifications_expires (expires_at)
         )
       `);
+    }
+
+    if (!(await columnExists(connection, "startup_email_verifications", "pending_password_hash"))) {
+      await connection.query(
+        "ALTER TABLE startup_email_verifications ADD COLUMN pending_password_hash VARCHAR(255) NULL"
+      );
     }
   } finally {
     connection.release();

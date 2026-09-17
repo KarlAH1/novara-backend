@@ -3,6 +3,9 @@ import { getCompanyStartupProfile, resolveCompanyStartupOwner, getCompanyForUser
 import { getRcAgreementColumns } from "../routes/rcAgreementRoutes.js";
 import { getStartupPlanSummaryForUser, STARTUP_PLAN_STATES } from "./startupPlanAccess.js";
 import { isStripeConfigured } from "./stripeClient.js";
+import { getPendingSignatures } from "./pendingSignatures.js";
+import { getLatestStartupRoundDraft } from "./roundDraft.js";
+import { getInvestorFlowProgressList } from "./investorFlowProgress.js";
 
 // rc_agreements columns vary by migration state — mirrors the same
 // dynamic-select pattern used in the GET /:id route (rcAgreementRoutes.js).
@@ -20,28 +23,27 @@ async function getRcAgreementSignedAtSelects() {
     return { investorSignedAtSelect, paymentConfirmedAtSelect };
 }
 
-// Same shape as the /auth/pending-signatures endpoint — reused here so the
-// "next task" list never disagrees with what that endpoint already reports.
-async function getPendingSignatureTask(userId) {
-    const [rows] = await pool.query(
-        `SELECT ds.document_id, d.title
-         FROM document_signers ds
-         JOIN documents d ON d.id = ds.document_id
-         WHERE ds.user_id = ? AND ds.signed_at IS NULL AND d.status != 'LOCKED'
-         ORDER BY ds.id DESC
-         LIMIT 1`,
-        [userId]
-    );
-
-    const row = rows[0];
-    if (!row) return null;
-
-    return {
-        title: "Signer dokumentet",
-        description: row.title ? `"${row.title}" venter på din signatur.` : "Et dokument venter på din signatur.",
+// Same source as /auth/pending-signatures, so the card and the endpoint agree.
+async function getPendingSignatureTasks(userId) {
+    const pending = await getPendingSignatures(pool, userId);
+    return pending.map((item) => ({
+        kind: "pending_signature",
+        roundId: item.round_id == null ? null : Number(item.round_id),
+        startupId: item.startup_id == null ? null : Number(item.startup_id),
+        title: item.company_name
+            ? `Signer dokumentet for ${item.company_name}`
+            : "Signer dokumentet",
+        description: item.document_title
+            ? `"${item.document_title}" venter på din signatur.`
+            : "Et dokument venter på din signatur.",
         ctaLabel: "Signer nå",
-        ctaUrl: `sign.html?type=conversion&id=${row.document_id}`
-    };
+        ctaUrl: item.sign_path
+    }));
+}
+
+async function getPendingSignatureTask(userId) {
+    const [first] = await getPendingSignatureTasks(userId);
+    return first || null;
 }
 
 // Mirrors the exact conditions in getRcAgreementViewState() (rcAgreementRoutes.js)
@@ -52,16 +54,32 @@ function resolveAgreementFlow(agreement) {
     return { paymentConfirmed, investorSigned };
 }
 
-async function getInvestorNextTask(userId) {
-    const signatureTask = await getPendingSignatureTask(userId);
-    if (signatureTask) return signatureTask;
+async function getInvestorNextTasks(userId) {
+    const tasks = [];
+    const occupiedRounds = new Set();
+    const addTask = (task) => {
+        if (!task) return;
+        const roundId = Number(task.roundId);
+        if (Number.isInteger(roundId) && roundId > 0) {
+            if (occupiedRounds.has(roundId)) return;
+            occupiedRounds.add(roundId);
+        }
+        tasks.push(task);
+    };
+
+    const signatureTasks = await getPendingSignatureTasks(userId);
+    signatureTasks.forEach(addTask);
 
     const { investorSignedAtSelect, paymentConfirmedAtSelect } = await getRcAgreementSignedAtSelects();
 
     const [agreements] = await pool.query(
-        `SELECT a.id, a.status, ${investorSignedAtSelect}, ${paymentConfirmedAtSelect},
-                pr.status AS par_value_status, pr.due_date AS par_value_due_date
+        `SELECT a.id, a.round_id, a.startup_id, a.status,
+                ${investorSignedAtSelect}, ${paymentConfirmedAtSelect},
+                pr.status AS par_value_status, pr.due_date AS par_value_due_date,
+                COALESCE(sp.company_name, startup.name) AS company_name
          FROM rc_agreements a
+         JOIN users startup ON startup.id = a.startup_id
+         LEFT JOIN startup_profiles sp ON sp.user_id = a.startup_id
          LEFT JOIN conversion_par_value_requests pr
              ON pr.id = (
                  SELECT req.id FROM conversion_par_value_requests req
@@ -75,26 +93,59 @@ async function getInvestorNextTask(userId) {
     for (const agreement of agreements) {
         const { paymentConfirmed, investorSigned } = resolveAgreementFlow(agreement);
         if (investorSigned && !paymentConfirmed) {
-            return {
-                title: "Betal RC-avtalen",
+            addTask({
+                kind: "agreement_payment",
+                roundId: Number(agreement.round_id),
+                startupId: Number(agreement.startup_id),
+                title: agreement.company_name
+                    ? `Betal RC-avtalen for ${agreement.company_name}`
+                    : "Betal RC-avtalen",
                 description: "Du har signert avtalen — betal investeringsbeløpet for å fullføre den.",
                 ctaLabel: "Gå til avtalen",
                 ctaUrl: `rc-detail.html?agreement=${agreement.id}`
-            };
+            });
         }
     }
 
     for (const agreement of agreements) {
         const dueNotConfirmed = agreement.par_value_status && agreement.par_value_status !== "paid_confirmed";
         if (dueNotConfirmed && agreement.par_value_due_date) {
-            return {
-                title: "Betal paribeløp",
+            addTask({
+                kind: "par_value_payment",
+                roundId: Number(agreement.round_id),
+                startupId: Number(agreement.startup_id),
+                title: agreement.company_name
+                    ? `Betal paribeløp for ${agreement.company_name}`
+                    : "Betal paribeløp",
                 description: "Et paribeløp må betales for formell utstedelse av aksjene.",
                 ctaLabel: "Gå til avtalen",
                 ctaUrl: `rc-detail.html?agreement=${agreement.id}`
-            };
+            });
         }
     }
+
+    const flowProgressItems = await getInvestorFlowProgressList(pool, userId);
+    for (const flowProgress of flowProgressItems) {
+        const stageDetails = {
+            terms: ["Steg 1 av 4", "Vilkår"],
+            invest: ["Steg 2 av 4", "Beløp"],
+            review: ["Steg 3 av 4", "Bekreft"]
+        };
+        const [stepLabel, stageLabel] = stageDetails[flowProgress.stage] || stageDetails.terms;
+        const companyLabel = flowProgress.companyName ? ` hos ${flowProgress.companyName}` : "";
+        addTask({
+            kind: "resume_investor_flow",
+            roundId: flowProgress.roundId,
+            eyebrow: "Fortsett der du slapp",
+            title: `Fullfør investeringen${companyLabel}`,
+            description: `${stepLabel} · ${stageLabel}`,
+            ctaLabel: "Fortsett",
+            ctaUrl: `invest.html?invite=${encodeURIComponent(flowProgress.inviteToken)}`,
+            updatedAt: flowProgress.updatedAt
+        });
+    }
+
+    if (tasks.length > 0) return tasks;
 
     if (agreements.length > 0) {
         const [legalRows] = await pool.query(
@@ -111,16 +162,17 @@ async function getInvestorNextTask(userId) {
         );
 
         if (!legalComplete) {
-            return {
+            return [{
+                kind: "legal_profile",
                 title: "Fyll ut aksjonærinfo",
                 description: "Fyll ut opplysningene selskapet trenger til aksjeeierboken.",
                 ctaLabel: "Gå til avtalen",
                 ctaUrl: `rc-detail.html?agreement=${agreements[0].id}`
-            };
+            }];
         }
     }
 
-    return null;
+    return [];
 }
 
 async function getStartupPlanTask(userId) {
@@ -170,6 +222,8 @@ async function getStartupNextTask(userId) {
         };
     }
 
+    const { startupUserId } = await resolveCompanyStartupOwner(pool, userId);
+
     const planTask = await getStartupPlanTask(userId);
     if (planTask) return planTask;
 
@@ -199,7 +253,21 @@ async function getStartupNextTask(userId) {
         }
     }
 
-    const { startupUserId } = await resolveCompanyStartupOwner(pool, userId);
+    const roundDraft = await getLatestStartupRoundDraft(pool, startupUserId);
+    if (roundDraft) {
+        const stepNames = ["Vilkår", "Eiergrunnlag", "Bekreft"];
+        const step = Math.min(3, Math.max(1, Number(roundDraft.lastStep || 1)));
+        return {
+            kind: "resume_round_draft",
+            eyebrow: "Fortsett der du slapp",
+            title: "Gjør ferdig rundeoppsettet",
+            description: `Steg ${step} av 3 · ${stepNames[step - 1]}`,
+            ctaLabel: "Fortsett",
+            ctaUrl: `dashboard.html?emission=${roundDraft.roundId}&step=${step}`,
+            updatedAt: roundDraft.updatedAt
+        };
+    }
+
     const [articlesRows] = await pool.query(
         `SELECT id FROM startup_documents WHERE startup_id = ? AND document_type = 'current_articles_of_association' LIMIT 1`,
         [startupUserId]
@@ -251,15 +319,21 @@ async function getStartupNextTask(userId) {
 }
 
 export async function resolveNextTask(userId, role) {
+    const [task] = await resolveNextTasks(userId, role);
+    return task || null;
+}
+
+export async function resolveNextTasks(userId, role) {
     const safeRole = String(role || "").toLowerCase();
 
     if (safeRole === "investor") {
-        return getInvestorNextTask(userId);
+        return getInvestorNextTasks(userId);
     }
 
     if (safeRole === "startup") {
-        return getStartupNextTask(userId);
+        const task = await getStartupNextTask(userId);
+        return task ? [task] : [];
     }
 
-    return null;
+    return [];
 }

@@ -24,7 +24,7 @@ import {
   sendRoundClosedEmail
 } from "../utils/notificationEmailFlow.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
-import { getEmissionRoundColumns } from "../utils/emissionRoundState.js";
+import { getEmissionRoundColumns, updateRoundClosure } from "../utils/emissionRoundState.js";
 import { decryptNationalId } from "../utils/nationalIdCrypto.js";
 import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
 import { enqueueCriticalAuditEvent } from "../utils/auditOutbox.js";
@@ -40,6 +40,7 @@ import {
   suggestBoardChair
 } from "../utils/boardChairResolution.js";
 import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapabilities.js";
+import { shareCountsForStoredOwners } from "../utils/shareholderAllocation.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -468,17 +469,9 @@ function buildShareholderRegisterRows(existingShareholders, currentShareCount, i
   const rows = [];
 
   if (Array.isArray(existingShareholders) && existingShareholders.length && normalizedCurrentShareCount > 0) {
-    let allocatedShares = 0;
+    const counts = shareCountsForStoredOwners(existingShareholders, normalizedCurrentShareCount);
     existingShareholders.forEach((holder, index) => {
-      const isLast = index === existingShareholders.length - 1;
-      const percentage = Number(holder.ownership_percent || 0);
-      let shareCount = Math.floor((normalizedCurrentShareCount * percentage) / 100);
-
-      if (isLast) {
-        shareCount = Math.max(normalizedCurrentShareCount - allocatedShares, 0);
-      }
-
-      allocatedShares += shareCount;
+      const shareCount = counts[index] || 0;
       rows.push({
         shareholder_name: holder.shareholder_name,
         identifier_value: "",
@@ -535,18 +528,10 @@ function buildExistingShareholderSeedRows(existingShareholders, currentShareCoun
     return [];
   }
 
-  let allocatedShares = 0;
+  const counts = shareCountsForStoredOwners(existingShareholders, normalizedCurrentShareCount);
 
   return existingShareholders.map((holder, index) => {
-    const isLast = index === existingShareholders.length - 1;
-    const percentage = Number(holder.ownership_percent || 0);
-    let shareCount = Math.floor((normalizedCurrentShareCount * percentage) / 100);
-
-    if (isLast) {
-      shareCount = Math.max(normalizedCurrentShareCount - allocatedShares, 0);
-    }
-
-    allocatedShares += shareCount;
+    const shareCount = counts[index] || 0;
 
     return {
       emission_shareholder_id: Number(holder.id || 0) || null,
@@ -588,7 +573,7 @@ async function ensureExistingShareholderTaskRows(connection, conversionId, round
 
   const [shareholderRows] = await connection.query(
     `
-    SELECT id, shareholder_name, ownership_percent
+    SELECT *
     FROM emission_shareholders
     WHERE emission_id = ?
     ORDER BY id ASC
@@ -2533,28 +2518,7 @@ router.post("/close-round", auth, requireRole(["startup"]), async (req, res) => 
       });
     }
     const columns = await getEmissionRoundColumns(connection);
-    const roundUpdates = ["open = 0"];
-    const roundParams = [];
-
-    if (columns.has("status")) {
-      roundUpdates.push("status = ?");
-      roundParams.push("CLOSED");
-    }
-
-    if (columns.has("closed_reason")) {
-      roundUpdates.push("closed_reason = ?");
-      roundParams.push("conversion_downloaded");
-    }
-
-    if (columns.has("closed_at")) {
-      roundUpdates.push("closed_at = NOW()");
-    }
-
-    roundParams.push(round.id);
-    await connection.query(
-      `UPDATE emission_rounds SET ${roundUpdates.join(", ")} WHERE id = ?`,
-      roundParams
-    );
+    await updateRoundClosure(connection, round.id, "conversion_downloaded", columns);
 
     await connection.query(
       `

@@ -3,7 +3,7 @@ import pool from "../config/db.js";
 import { auth, requireRole } from "../middleware/authMiddleware.js";
 import fs from "fs";
 import { canStartupCreateRaise } from "../utils/startupPlanAccess.js";
-import { cleanupLegalDocuments } from "../utils/legalDocumentCleanup.js";
+import { cleanupLegalDocuments, removeUnsignedDrafts } from "../utils/legalDocumentCleanup.js";
 import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import { sendDocumentSigningRequestEmail } from "../utils/notificationEmailFlow.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
@@ -139,6 +139,9 @@ router.post(
         .replace(/{{chair_name}}/g, escapeHtml(resolvedChairName))
         .replace(/{{secretary_name}}/g, escapeHtml(data.secretary_name))
         .replace(/{{rc_round_name}}/g, escapeHtml(rcRoundName));
+
+      // A regenerated protocol replaces earlier unsigned drafts.
+      await removeUnsignedDrafts(pool, startupId, "GF");
 
       /* =====================================================
          4️⃣ Opprett dokument

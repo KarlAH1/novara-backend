@@ -12,6 +12,18 @@ async function columnExists(connection, tableName, columnName) {
   return rows.length > 0;
 }
 
+async function indexExists(connection, tableName, indexName) {
+  const [rows] = await connection.query(
+    `
+    SELECT 1 FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?
+    LIMIT 1
+    `,
+    [tableName, indexName]
+  );
+  return rows.length > 0;
+}
+
 /*
   Terms snapshot on the executed RC.
 
@@ -79,6 +91,28 @@ export async function ensureRcAgreementSchema() {
       if (!(await columnExists(connection, "rc_agreements", columnName))) {
         await connection.query(sql);
       }
+    }
+
+    const uniqueRoundInvestorIndex = "uniq_rc_agreement_round_investor";
+    if (!(await indexExists(connection, "rc_agreements", uniqueRoundInvestorIndex))) {
+      const [duplicates] = await connection.query(
+        `SELECT round_id, investor_id, COUNT(*) AS agreement_count
+         FROM rc_agreements
+         GROUP BY round_id, investor_id
+         HAVING COUNT(*) > 1
+         LIMIT 1`
+      );
+
+      if (duplicates.length) {
+        throw new Error(
+          "Cannot enforce one RC agreement per investor and round while duplicate agreements exist."
+        );
+      }
+
+      await connection.query(
+        `ALTER TABLE rc_agreements
+         ADD UNIQUE INDEX ${uniqueRoundInvestorIndex} (round_id, investor_id)`
+      );
     }
   } finally {
     connection.release();

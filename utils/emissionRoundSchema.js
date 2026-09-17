@@ -59,6 +59,41 @@ export async function ensureEmissionRoundSchema() {
       );
     }
 
+    const draftsExist = await tableExists(connection, "emission_round_drafts");
+    if (!draftsExist) {
+      await connection.query(
+        `
+        CREATE TABLE emission_round_drafts (
+          round_id INT NOT NULL PRIMARY KEY,
+          startup_id INT NOT NULL,
+          draft_json LONGTEXT NOT NULL,
+          last_step TINYINT NOT NULL DEFAULT 1,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_emission_round_drafts_startup (startup_id, updated_at),
+          CONSTRAINT fk_emission_round_drafts_round FOREIGN KEY (round_id) REFERENCES emission_rounds(id) ON DELETE CASCADE
+        )
+        `
+      );
+    }
+
+    const investorProgressExists = await tableExists(connection, "investor_flow_progress");
+    if (!investorProgressExists && await tableExists(connection, "rc_invites")) {
+      await connection.query(
+        `
+        CREATE TABLE investor_flow_progress (
+          investor_id INT NOT NULL,
+          invite_id INT NOT NULL,
+          stage VARCHAR(16) NOT NULL DEFAULT 'terms',
+          amount INT NULL,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (investor_id, invite_id),
+          INDEX idx_investor_flow_progress_updated (investor_id, updated_at),
+          CONSTRAINT fk_investor_flow_progress_invite FOREIGN KEY (invite_id) REFERENCES rc_invites(id) ON DELETE CASCADE
+        )
+        `
+      );
+    }
+
     const columns = [
       {
         name: "trigger_period",
@@ -99,6 +134,22 @@ export async function ensureEmissionRoundSchema() {
       SET er.committed_amount = COALESCE(committed.committed_amount, 0)
       `
     );
+
+    /*
+      Existing shareholders are recorded by share count — the unit the
+      aksjeeierbok uses. The percentage stays, derived from the count, and the
+      source records whether the founder typed shares or a percentage.
+    */
+    if (await tableExists(connection, "emission_shareholders")) {
+      for (const [name, sql] of [
+        ["share_count", "ALTER TABLE emission_shareholders ADD COLUMN share_count INT NULL"],
+        ["input_source", "ALTER TABLE emission_shareholders ADD COLUMN input_source VARCHAR(16) NULL"]
+      ]) {
+        if (!(await columnExists(connection, "emission_shareholders", name))) {
+          await connection.query(sql);
+        }
+      }
+    }
 
     if (await columnExists(connection, "emission_rounds", "trigger_period")) {
       await connection.query(

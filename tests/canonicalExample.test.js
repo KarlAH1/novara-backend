@@ -185,3 +185,22 @@ test("preview warns when the par amount is a large share of the investment", () 
   assert.ok(preview.par_amount_ratio >= PAR_AMOUNT_WARNING_RATIO);
   assert.equal(preview.warn, true);
 });
+
+test("the pre-round picture shows the capital increase as the par amount alone", () => {
+  // The full canonical round: NOK 100,000 from ten investors at the cap.
+  const preview = buildParPreview({
+    valuationCap: VALUATION_CAP,
+    shareCount: EXISTING_SHARES,
+    parValue: PAR_VALUE,
+    exampleInvestment: 100000
+  });
+
+  assert.equal(preview.pre_share_capital, 30000);
+  assert.equal(preview.post_share_count, EXISTING_SHARES + preview.rc_shares);
+  // Share capital moves by the par amount only — never by the investment.
+  assert.equal(preview.post_share_capital, 30000 + preview.par_amount);
+  assert.notEqual(preview.post_share_capital, 30000 + 100000);
+  assert.ok(Math.abs(
+    preview.investor_ownership_percent - (preview.rc_shares / preview.post_share_count) * 100
+  ) < 0.01);
+});

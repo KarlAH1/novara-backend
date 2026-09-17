@@ -18,6 +18,13 @@ import {
 } from "../utils/inviteClaim.js";
 import { createAuthToken } from "../utils/authToken.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
+import { MINIMUM_RC_INVESTMENT_NOK } from "../utils/rcInvestmentRules.js";
+import {
+  deleteInvestorFlowProgress,
+  loadInvestorFlowProgress,
+  saveInvestorFlowProgress
+} from "../utils/investorFlowProgress.js";
+import { getReservedAmount } from "../utils/capacityReservation.js";
 
 const router = express.Router();
 const inviteAccessLimiter = createRateLimiter({
@@ -31,7 +38,127 @@ function createSixDigitCode() {
   return String(crypto.randomInt(100000, 1000000));
 }
 
+async function findInvestorAgreementForRound(connection, roundId, investorId) {
+  if (!investorId) return null;
+  const [rows] = await connection.query(
+    `SELECT id FROM rc_agreements
+     WHERE round_id = ? AND investor_id = ?
+     LIMIT 1`,
+    [roundId, investorId]
+  );
+  return rows[0] || null;
+}
+
 router.get("/:token", getInvite);
+
+router.get("/:token/progress", auth, requireRole(["investor"]), async (req, res) => {
+  try {
+    const token = String(req.params.token || "").trim();
+    const invite = await loadInviteClaim(pool, token);
+    if (!invite) {
+      return res.status(404).json({ error: "Fant ikke invitasjonen." });
+    }
+    if (invite.claimed_by_user_id == null) {
+      return res.json({ progress: null });
+    }
+    if (!inviteIsAvailableTo(invite, req.user.id)) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
+    const existingAgreement = await findInvestorAgreementForRound(
+      pool,
+      invite.round_id,
+      req.user.id
+    );
+    if (existingAgreement) {
+      await deleteInvestorFlowProgress(pool, {
+        investorId: req.user.id,
+        inviteId: invite.id
+      });
+      return res.status(409).json({
+        error: "Du har allerede en investering i denne runden.",
+        code: "agreement_exists_for_round",
+        agreementId: existingAgreement.id
+      });
+    }
+
+    const availability = await syncEmissionRoundAvailability(pool, invite.round_id);
+    if (!availability?.canInvest || availability.remainingCapacity < MINIMUM_RC_INVESTMENT_NOK) {
+      await deleteInvestorFlowProgress(pool, {
+        investorId: req.user.id,
+        inviteId: invite.id
+      });
+      return res.status(409).json({
+        error: availability?.message || "Den private runden er avsluttet.",
+        code: availability?.closedReason || "round_closed"
+      });
+    }
+
+    const progress = await loadInvestorFlowProgress(pool, {
+      investorId: req.user.id,
+      inviteId: invite.id
+    });
+    res.json({ progress });
+  } catch (err) {
+    console.error("Get investor flow progress failed:", err);
+    res.status(500).json({ error: "Kunne ikke hente fremdriften." });
+  }
+});
+
+router.put("/:token/progress", auth, requireRole(["investor"]), async (req, res) => {
+  try {
+    const token = String(req.params.token || "").trim();
+    const invite = await loadInviteClaim(pool, token);
+    if (!invite) {
+      return res.status(404).json({ error: "Fant ikke invitasjonen." });
+    }
+    if (!inviteIsAvailableTo(invite, req.user.id)) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
+    const existingAgreement = await findInvestorAgreementForRound(
+      pool,
+      invite.round_id,
+      req.user.id
+    );
+    if (existingAgreement) {
+      await deleteInvestorFlowProgress(pool, {
+        investorId: req.user.id,
+        inviteId: invite.id
+      });
+      return res.status(409).json({
+        error: "Du har allerede en investering i denne runden.",
+        code: "agreement_exists_for_round",
+        agreementId: existingAgreement.id
+      });
+    }
+
+    const availability = await syncEmissionRoundAvailability(pool, invite.round_id);
+    if (!availability?.canInvest || availability.remainingCapacity < MINIMUM_RC_INVESTMENT_NOK) {
+      await deleteInvestorFlowProgress(pool, {
+        investorId: req.user.id,
+        inviteId: invite.id
+      });
+      return res.status(409).json({
+        error: availability?.message || "Den private runden er avsluttet.",
+        code: availability?.closedReason || "round_closed"
+      });
+    }
+    if (!(await claimInviteForUser(pool, token, req.user.id))) {
+      return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
+    }
+
+    const progress = await saveInvestorFlowProgress(pool, {
+      investorId: req.user.id,
+      inviteId: invite.id,
+      progress: req.body || {}
+    });
+    res.json({ success: true, progress });
+  } catch (err) {
+    console.error("Save investor flow progress failed:", err);
+    res.status(500).json({ error: "Kunne ikke lagre fremdriften." });
+  }
+});
 /* =====================================================
    CREATE INVITE (Startup Only)
 ===================================================== */
@@ -110,13 +237,13 @@ router.post(
   Returns null whenever the share basis is not yet confirmed, rather than
   guessing — a wrong estimate here is worse than none.
 */
-async function buildInviteParEstimate(connection, invite) {
+async function buildInviteParEstimate(db, invite) {
   try {
     const cap = Number(invite.valuation_cap || 0);
     const target = Number(invite.target_amount || 0);
     if (!cap || !target) return null;
 
-    const [[profile]] = await connection.query(
+    const [[profile]] = await db.query(
       `SELECT nominal_value_per_share, current_share_count
        FROM startup_profiles WHERE user_id = ? LIMIT 1`,
       [invite.startup_id]
@@ -128,7 +255,7 @@ async function buildInviteParEstimate(connection, invite) {
       parValue: Number(profile?.nominal_value_per_share || 0),
       // A typical single investment: one tenth of the round, so the figure is
       // recognisable rather than the whole round's aggregate.
-      exampleInvestment: Math.max(Math.round(target / 10), 1)
+      exampleInvestment: Math.max(Math.round(target / 10), MINIMUM_RC_INVESTMENT_NOK)
     });
 
     return preview && !preview.blocked ? preview : null;
@@ -153,8 +280,11 @@ router.get("/:token/par-estimate", async (req, res) => {
     const token = String(req.params.token || "").trim();
     const amount = Number(req.query.amount);
 
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return res.json({ estimate: null });
+    if (!Number.isFinite(amount) || amount < MINIMUM_RC_INVESTMENT_NOK) {
+      return res.json({
+        estimate: null,
+        minimumInvestment: MINIMUM_RC_INVESTMENT_NOK
+      });
     }
 
     const [rows] = await connection.query(
@@ -199,7 +329,8 @@ router.get("/validate/:token", async (req, res) => {
       return res.status(404).json({ error: "Ugyldig invitasjon." });
     }
 
-    if (!inviteIsAvailableTo(inviteClaim, getOptionalUserFromRequest(req)?.id)) {
+    const viewingUser = getOptionalUserFromRequest(req);
+    if (!inviteIsAvailableTo(inviteClaim, viewingUser?.id)) {
       return res.status(403).json({ error: INVITE_TAKEN_ERROR, code: "invite_claimed" });
     }
 
@@ -245,6 +376,21 @@ router.get("/validate/:token", async (req, res) => {
 
     const invite = rows[0];
     const availability = await syncEmissionRoundAvailability(pool, invite.round_id);
+    const reservedAmount = availability
+      ? await getReservedAmount(pool, invite.round_id)
+      : 0;
+    const remainingCapacity = Math.max(
+      Number(availability?.remainingCapacity || 0) - Number(reservedAmount || 0),
+      0
+    );
+    const belowMinimumCapacity = Boolean(
+      availability?.canInvest && remainingCapacity < MINIMUM_RC_INVESTMENT_NOK
+    );
+    const existingAgreement = await findInvestorAgreementForRound(
+      pool,
+      invite.round_id,
+      viewingUser?.id
+    );
 
     res.json({
       startup: {
@@ -267,21 +413,30 @@ router.get("/validate/:token", async (req, res) => {
         targetAmount: availability?.targetAmount ?? Number(invite.target_amount || 0),
         committedAmount: availability?.committedAmount ?? availability?.committed_amount ?? null,
         amountRaised: availability?.confirmedPaidAmount ?? availability?.amount_raised ?? invite.amount_raised ?? null,
-        closedReason: availability?.closedReason || null,
-        canInvest: availability?.canInvest ?? false,
-        message: availability?.message || null
+        remainingCapacity,
+        closedReason: existingAgreement
+          ? "agreement_exists_for_round"
+          : (availability?.closedReason || null),
+        canInvest: Boolean(availability?.canInvest) && !belowMinimumCapacity && !existingAgreement,
+        existingAgreementId: existingAgreement?.id || null,
+        message: existingAgreement
+          ? "Du har allerede en investering i denne runden."
+          : belowMinimumCapacity
+          ? "Runden har mindre enn minste investeringsbeløp tilgjengelig."
+          : (availability?.message || null)
       },
       terms: {
         targetAmount: invite.target_amount,
         amountRaised: invite.amount_raised,
         discountRate: invite.discount_rate,
         valuationCap: invite.valuation_cap,
-        conversionYears: invite.conversion_years
+        conversionYears: invite.conversion_years,
+        minimumInvestment: MINIMUM_RC_INVESTMENT_NOK
       },
       // Deterministic only for the long-stop scenario, where the valuation cap
       // alone sets the price. Calculated here so the browser never derives a
       // legal allocation of its own.
-      par_estimate: await buildInviteParEstimate(connection, invite)
+      par_estimate: await buildInviteParEstimate(pool, invite)
     });
 
   } catch (err) {
@@ -349,15 +504,56 @@ router.post("/access-code/send/:token", inviteAccessLimiter, async (req, res) =>
       return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten." });
     }
 
+    let pendingPasswordHash;
+    if (password) {
+      pendingPasswordHash = await bcrypt.hash(password, 10);
+    } else {
+      const [pendingRows] = await pool.query(
+        `
+        SELECT pending_password_hash
+        FROM startup_email_verifications
+        WHERE email = ?
+          AND pending_password_hash IS NOT NULL
+          AND consumed_at IS NULL
+          AND expires_at >= NOW()
+        ORDER BY id DESC
+        LIMIT 1
+        `,
+        [email]
+      );
+      pendingPasswordHash = pendingRows[0]?.pending_password_hash;
+    }
+
+    if (!pendingPasswordHash) {
+      return res.status(400).json({
+        error: "Registreringen har utløpt. Gå tilbake og skriv inn opplysningene på nytt."
+      });
+    }
+
     const code = createSixDigitCode();
     const expiresAt = createExpiry(0.25);
 
+    // Only the newest code may complete this registration. The password is
+    // kept as a one-way bcrypt hash and removed as soon as the flow completes
+    // or is replaced by a new code.
     await pool.query(
       `
-      INSERT INTO startup_email_verifications (email, code_hash, verification_token_hash, expires_at)
-      VALUES (?, ?, NULL, ?)
+      UPDATE startup_email_verifications
+      SET consumed_at = NOW(), pending_password_hash = NULL
+      WHERE email = ?
+        AND pending_password_hash IS NOT NULL
+        AND consumed_at IS NULL
       `,
-      [email, hashToken(code), expiresAt]
+      [email]
+    );
+
+    await pool.query(
+      `
+      INSERT INTO startup_email_verifications
+        (email, code_hash, verification_token_hash, pending_password_hash, expires_at)
+      VALUES (?, ?, NULL, ?, ?)
+      `,
+      [email, hashToken(code), pendingPasswordHash, expiresAt]
     );
 
     await sendInvestorInviteAccessCodeEmail({ email, code });
@@ -387,16 +583,10 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
     const token = String(req.params.token || "").trim();
     const name = String(req.body.name || "").trim();
     const email = String(req.body.email || "").trim().toLowerCase();
-    const password = String(req.body.password || "");
     const code = String(req.body.code || "").trim();
 
-    if (!name || !email || !password || !code) {
-      return res.status(400).json({ error: "Navn, e-post, passord og kode er påkrevd." });
-    }
-
-    const passwordError = validatePasswordRequirements(password);
-    if (passwordError) {
-      return res.status(400).json({ error: passwordError });
+    if (!name || !email || !code) {
+      return res.status(400).json({ error: "Navn, e-post og kode er påkrevd." });
     }
 
     const [inviteRows] = await pool.query(
@@ -429,9 +619,10 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
 
     const [verificationRows] = await pool.query(
       `
-      SELECT id, code_hash, expires_at, attempts
+      SELECT id, code_hash, pending_password_hash, expires_at, attempts
       FROM startup_email_verifications
       WHERE email = ?
+        AND pending_password_hash IS NOT NULL
         AND consumed_at IS NULL
       ORDER BY id DESC
       LIMIT 1
@@ -446,10 +637,18 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
 
     const expiresAt = new Date(record.expires_at);
     if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() < Date.now()) {
+      await pool.query(
+        "UPDATE startup_email_verifications SET consumed_at = NOW(), pending_password_hash = NULL WHERE id = ?",
+        [record.id]
+      );
       return res.status(400).json({ error: "Koden har utløpt. Be om en ny kode." });
     }
 
     if (Number(record.attempts || 0) >= 5) {
+      await pool.query(
+        "UPDATE startup_email_verifications SET consumed_at = NOW(), pending_password_hash = NULL WHERE id = ?",
+        [record.id]
+      );
       return res.status(429).json({ error: "For mange kodeforsøk. Be om en ny kode." });
     }
 
@@ -458,7 +657,8 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
         `
         UPDATE startup_email_verifications
         SET attempts = attempts + 1,
-            consumed_at = IF(attempts + 1 >= 5, NOW(), consumed_at)
+            consumed_at = IF(attempts + 1 >= 5, NOW(), consumed_at),
+            pending_password_hash = IF(attempts + 1 >= 5, NULL, pending_password_hash)
         WHERE id = ? AND consumed_at IS NULL AND attempts < 5
         `,
         [record.id]
@@ -466,7 +666,7 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
       return res.status(400).json({ error: "Koden er ugyldig." });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = String(record.pending_password_hash);
     connection = await pool.getConnection();
     await connection.beginTransaction();
     transactionStarted = true;
@@ -495,7 +695,8 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
       `
       UPDATE startup_email_verifications
       SET verified_at = NOW(),
-          consumed_at = NOW()
+          consumed_at = NOW(),
+          pending_password_hash = NULL
       WHERE id = ? AND consumed_at IS NULL AND attempts < 5
       `,
       [record.id]

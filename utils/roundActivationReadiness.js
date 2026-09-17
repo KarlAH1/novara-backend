@@ -1,4 +1,6 @@
 import { calculateRcConversion } from "./rcConversionCalculator.js";
+import * as D from "./exactDecimal.js";
+import { validateBankAccount } from "./norwegianBankAccount.js";
 import {
   confirmationMatches,
   getActiveArticlesConfirmation
@@ -156,6 +158,19 @@ export function buildParPreview({ valuationCap, shareCount, parValue, exampleInv
 
   const ratio = result.par_amount / investment;
 
+  /*
+    The before/after picture the company sees. The capital increase at
+    conversion is the par amount alone — the investment amount is not a
+    contribution in it and creates no share premium — so the share capital
+    moves by exactly par_amount.
+  */
+  const preShareCapital = D.toRoundedNumber(D.multiply(D.fromNumber(shares), D.fromNumber(par)), 2);
+  const postShareCount = shares + result.final_share_count;
+  const investorOwnership = D.toRoundedNumber(
+    D.divide(D.fromNumber(result.final_share_count * 100), D.fromNumber(postShareCount)),
+    2
+  );
+
   return {
     current_share_count: shares,
     par_value: par,
@@ -165,6 +180,13 @@ export function buildParPreview({ valuationCap, shareCount, parValue, exampleInv
     rc_shares: result.final_share_count,
     par_amount: result.par_amount,
     par_amount_ratio: ratio,
+    pre_share_capital: preShareCapital,
+    post_share_count: postShareCount,
+    post_share_capital: D.toRoundedNumber(
+      D.add(D.fromNumber(preShareCapital), D.fromNumber(result.par_amount)),
+      2
+    ),
+    investor_ownership_percent: investorOwnership,
     warn: ratio >= PAR_AMOUNT_WARNING_RATIO,
     blocked: false
   };
@@ -237,8 +259,14 @@ export async function checkRoundActivationReadiness(connection, startupId, round
   if (!triggerPeriod || triggerPeriod < 1) {
     blockers.push("Triggerperioden (long-stop) må være satt til minst 1 år.");
   }
-  if (!String(round.bank_account || "").trim()) {
-    blockers.push("Kontonummer for innbetaling må være satt.");
+  // Also catches accounts saved before the check existed.
+  const bankCheck = validateBankAccount(round.bank_account);
+  if (!bankCheck.ok) {
+    blockers.push(
+      String(round.bank_account || "").trim()
+        ? `Kontonummer for innbetaling: ${bankCheck.error}`
+        : "Kontonummer for innbetaling må være satt."
+    );
   }
 
   // The invariant the whole model rests on: the investor's share price has to

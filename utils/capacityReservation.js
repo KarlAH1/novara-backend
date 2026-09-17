@@ -1,5 +1,5 @@
 import db from "../config/db.js";
-import { tableExists, clearSchemaCapabilityCache } from "./schemaCapabilities.js";
+import { tableExists, columnExists, clearSchemaCapabilityCache } from "./schemaCapabilities.js";
 
 /*
   Capacity reservation for a private round.
@@ -32,31 +32,95 @@ export const RESERVATION_STATUS = {
   EXPIRED: "expired"
 };
 
+const ACTIVE_RESERVATION_COLUMN = "active_investor_id";
+const ACTIVE_RESERVATION_INDEX = "uniq_reservation_active";
+
+/*
+  MySQL has no partial unique indexes. A generated column gives live holds the
+  investor id and terminal rows NULL. Because a unique index permits multiple
+  NULL values, an investor can have reservation history while still being
+  limited to one active hold per round.
+
+  The original schema indexed (round_id, investor_id, status). That allowed
+  only one historical 'released' row and made a later cancellation fail with
+  ER_DUP_ENTRY when its live hold was changed to 'released'.
+*/
+async function ensureActiveReservationIndex(connection) {
+  let hasActiveColumn = await columnExists(
+    connection,
+    "round_capacity_reservations",
+    ACTIVE_RESERVATION_COLUMN
+  );
+
+  if (!hasActiveColumn) {
+    await connection.query(
+      `ALTER TABLE round_capacity_reservations
+       ADD COLUMN active_investor_id INT
+       GENERATED ALWAYS AS (CASE WHEN status = 'reserved' THEN investor_id ELSE NULL END) VIRTUAL`
+    );
+    clearSchemaCapabilityCache();
+    hasActiveColumn = true;
+  }
+
+  const [indexRows] = await connection.query(
+    `SELECT COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'round_capacity_reservations'
+       AND INDEX_NAME = ?
+     ORDER BY SEQ_IN_INDEX`,
+    [ACTIVE_RESERVATION_INDEX]
+  );
+  const indexColumns = indexRows.map((row) => row.COLUMN_NAME);
+  const hasCorrectIndex = hasActiveColumn
+    && indexColumns.length === 2
+    && indexColumns[0] === "round_id"
+    && indexColumns[1] === ACTIVE_RESERVATION_COLUMN
+    && indexRows.every((row) => Number(row.NON_UNIQUE) === 0);
+
+  if (indexRows.length && !hasCorrectIndex) {
+    await connection.query(
+      `ALTER TABLE round_capacity_reservations DROP INDEX uniq_reservation_active`
+    );
+  }
+
+  if (!hasCorrectIndex) {
+    await connection.query(
+      `ALTER TABLE round_capacity_reservations
+       ADD UNIQUE INDEX uniq_reservation_active (round_id, active_investor_id)`
+    );
+  }
+}
+
 export async function ensureCapacityReservationSchema() {
   const connection = await db.getConnection();
   try {
-    if (await tableExists(connection, "round_capacity_reservations")) return;
+    if (!(await tableExists(connection, "round_capacity_reservations"))) {
+      await connection.query(`
+        CREATE TABLE round_capacity_reservations (
+          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          round_id INT NOT NULL,
+          investor_id INT NOT NULL,
+          agreement_id INT NULL,
+          invite_token VARCHAR(128) NULL,
+          amount INT NOT NULL,
+          status VARCHAR(16) NOT NULL DEFAULT 'reserved',
+          active_investor_id INT
+            GENERATED ALWAYS AS (CASE WHEN status = 'reserved' THEN investor_id ELSE NULL END) VIRTUAL,
+          expires_at DATETIME NOT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          released_at DATETIME NULL,
+          committed_at DATETIME NULL,
+          release_reason VARCHAR(64) NULL,
+          INDEX idx_reservation_round_status (round_id, status),
+          INDEX idx_reservation_agreement (agreement_id),
+          UNIQUE KEY uniq_reservation_active (round_id, active_investor_id)
+        )
+      `);
+      clearSchemaCapabilityCache();
+    }
 
-    await connection.query(`
-      CREATE TABLE round_capacity_reservations (
-        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        round_id INT NOT NULL,
-        investor_id INT NOT NULL,
-        agreement_id INT NULL,
-        invite_token VARCHAR(128) NULL,
-        amount INT NOT NULL,
-        status VARCHAR(16) NOT NULL DEFAULT 'reserved',
-        expires_at DATETIME NOT NULL,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        released_at DATETIME NULL,
-        committed_at DATETIME NULL,
-        release_reason VARCHAR(64) NULL,
-        INDEX idx_reservation_round_status (round_id, status),
-        INDEX idx_reservation_agreement (agreement_id),
-        UNIQUE KEY uniq_reservation_active (round_id, investor_id, status)
-      )
-    `);
-    clearSchemaCapabilityCache();
+    await ensureActiveReservationIndex(connection);
   } finally {
     connection.release();
   }

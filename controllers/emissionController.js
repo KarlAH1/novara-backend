@@ -18,7 +18,14 @@ import {
   recordArticlesConfirmation
 } from "../utils/articlesConfirmation.js";
 import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
-import { tableExists } from "../utils/schemaCapabilities.js";
+import { columnExists, tableExists } from "../utils/schemaCapabilities.js";
+import { allocateShareholders } from "../utils/shareholderAllocation.js";
+import { validateBankAccount } from "../utils/norwegianBankAccount.js";
+import {
+  deleteRoundDraft,
+  loadRoundDraft,
+  saveRoundDraft
+} from "../utils/roundDraft.js";
 const MAX_EMISSION_AMOUNT = 2147483647;
 
 /*
@@ -48,7 +55,7 @@ const getEmissionShareholders = async (emissionId) => {
 
   const [rows] = await pool.query(
     `
-    SELECT id, shareholder_name, ownership_percent
+    SELECT *
     FROM emission_shareholders
     WHERE emission_id = ?
     ORDER BY id ASC
@@ -59,7 +66,9 @@ const getEmissionShareholders = async (emissionId) => {
   return rows.map((row) => ({
     id: row.id,
     name: row.shareholder_name,
-    ownership_percent: Number(row.ownership_percent)
+    ownership_percent: Number(row.ownership_percent),
+    share_count: row.share_count == null ? null : Number(row.share_count),
+    source: row.input_source || null
   }));
 };
 
@@ -72,9 +81,13 @@ const normalizeShareholders = (rawShareholders) => {
     .slice(0, 200)
     .map((item) => ({
       name: String(item?.name || "").trim().slice(0, 200),
-      ownership_percent: Number(item?.ownership_percent)
+      share_count: item?.share_count === "" || item?.share_count == null ? null : Number(item.share_count),
+      ownership_percent: item?.ownership_percent === "" || item?.ownership_percent == null ? null : Number(item.ownership_percent)
     }))
-    .filter((item) => item.name && Number.isFinite(item.ownership_percent) && item.ownership_percent > 0);
+    .filter((item) => item.name && (
+      (Number.isFinite(item.share_count) && item.share_count > 0) ||
+      (Number.isFinite(item.ownership_percent) && item.ownership_percent > 0)
+    ));
 };
 
 let rcAgreementColumnsPromise;
@@ -503,10 +516,6 @@ export const updateEmissionConfig = async (req, res) => {
         return res.status(400).json({ message: "For mange aksjonærer i én forespørsel." });
       }
       const normalizedShareholders = normalizeShareholders(shareholders);
-      const totalOwnership = normalizedShareholders.reduce(
-        (sum, item) => sum + Number(item.ownership_percent || 0),
-        0
-      );
 
        if (!Number.isFinite(normalizedTriggerPeriod) || normalizedTriggerPeriod < 1) {
         return res.status(400).json({
@@ -520,17 +529,13 @@ export const updateEmissionConfig = async (req, res) => {
         });
       }
 
-      if (!bank_account) {
-        return res.status(400).json({
-          message: "Kontonummer må være satt."
-        });
+      // Investors pay to this account. A wrong one sends real money nowhere,
+      // or to a stranger, so it is checked here and not only in the form.
+      const bankCheck = validateBankAccount(bank_account);
+      if (!bankCheck.ok) {
+        return res.status(400).json({ message: bankCheck.error, code: "INVALID_BANK_ACCOUNT" });
       }
-
-      if (totalOwnership > 100.0001) {
-        return res.status(400).json({
-          message: "Eierandelene kan ikke overstige 100% totalt"
-        });
-      }
+      bank_account = bankCheck.formatted;
 
       await connection.beginTransaction();
       transactionStarted = true;
@@ -551,6 +556,23 @@ export const updateEmissionConfig = async (req, res) => {
       if (!(await isUserInSameCompany(connection, req.user.id, rows[0].startup_id))) {
         return res.status(403).json({
           message: "Access denied"
+        });
+      }
+
+      /*
+        Owners are stored as share counts, reconciled to the company's issued
+        shares, so the register produced at conversion matches the company's
+        aksjeeierbok. The browser's figures are only input; the allocation is
+        decided here.
+      */
+      const shareBasis = await resolveShareBasis(connection, rows[0].startup_id);
+      const allocation = allocateShareholders(normalizedShareholders, shareBasis.share_count);
+
+      if (normalizedShareholders.length && allocation.errors.length) {
+        return res.status(400).json({
+          message: allocation.errors[0],
+          errors: allocation.errors,
+          allocation
         });
       }
 
@@ -615,15 +637,15 @@ export const updateEmissionConfig = async (req, res) => {
         );
 
         if (normalizedShareholders.length) {
-          const values = normalizedShareholders.map(() => "(?, ?, ?)").join(", ");
-          const params = normalizedShareholders.flatMap((shareholder) => [
-            emissionId,
-            shareholder.name,
-            shareholder.ownership_percent
-          ]);
+          const hasShareCount = await columnExists(connection, emissionShareholderTableName, "share_count");
+          const rowsToStore = allocation.shareholders;
+          const values = rowsToStore.map(() => (hasShareCount ? "(?, ?, ?, ?, ?)" : "(?, ?, ?)")).join(", ");
+          const params = rowsToStore.flatMap((shareholder) => hasShareCount
+            ? [emissionId, shareholder.name, shareholder.ownership_percent, shareholder.share_count, shareholder.source]
+            : [emissionId, shareholder.name, shareholder.ownership_percent]);
           await connection.query(
             `INSERT INTO emission_shareholders
-             (emission_id, shareholder_name, ownership_percent)
+             (emission_id, shareholder_name, ownership_percent${hasShareCount ? ", share_count, input_source" : ""})
              VALUES ${values}`,
             params
           );
@@ -647,6 +669,83 @@ export const updateEmissionConfig = async (req, res) => {
   };
 
 /* =====================================================
+   ROUND CONFIG DRAFT
+   Stores incomplete form state separately from operative round terms.
+===================================================== */
+export const getEmissionDraft = async (req, res) => {
+  try {
+    const emissionId = Number(req.params.id);
+    const [rows] = await pool.query(
+      `SELECT id, startup_id, open, closed_reason
+       FROM emission_rounds
+       WHERE id = ?
+       LIMIT 1`,
+      [emissionId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "Emission not found" });
+    }
+
+    if (!(await isUserInSameCompany(pool, req.user.id, rows[0].startup_id))) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const draft = await loadRoundDraft(pool, emissionId);
+    res.json({ draft });
+  } catch (err) {
+    console.error("Get emission draft error:", err);
+    res.status(500).json({ message: "Kunne ikke hente utkastet." });
+  }
+};
+
+export const updateEmissionDraft = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const emissionId = Number(req.params.id);
+    const [rows] = await connection.query(
+      `SELECT id, startup_id, open, closed_reason
+       FROM emission_rounds
+       WHERE id = ?
+       LIMIT 1`,
+      [emissionId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "Emission not found" });
+    }
+
+    if (!(await isUserInSameCompany(connection, req.user.id, rows[0].startup_id))) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    if (Number(rows[0].open) !== 0 || rows[0].closed_reason) {
+      return res.status(409).json({ message: "Bare rundeutkast kan lagres." });
+    }
+
+    const [agreementRows] = await connection.query(
+      "SELECT id FROM rc_agreements WHERE round_id = ? LIMIT 1",
+      [emissionId]
+    );
+    if (agreementRows.length) {
+      return res.status(409).json({ message: "Rundeoppsettet er låst etter første avtale." });
+    }
+
+    const draft = await saveRoundDraft(connection, {
+      roundId: emissionId,
+      startupId: rows[0].startup_id,
+      draft: req.body || {}
+    });
+    res.json({ success: true, draft });
+  } catch (err) {
+    console.error("Update emission draft error:", err);
+    res.status(500).json({ message: "Kunne ikke lagre utkastet." });
+  } finally {
+    connection.release();
+  }
+};
+
+/* =====================================================
    UPDATE BANK ACCOUNT ONLY
    Unlike the full config, this is NOT locked after the first investment —
    a wrong account number needs to be fixable any time, since it's where
@@ -655,11 +754,11 @@ export const updateEmissionConfig = async (req, res) => {
 export const updateEmissionBankAccount = async (req, res) => {
   try {
     const emissionId = req.params.id;
-    const bank_account = String(req.body.bank_account || "").trim();
-
-    if (!bank_account) {
-      return res.status(400).json({ message: "Kontonummer må være satt." });
+    const bankCheck = validateBankAccount(req.body.bank_account);
+    if (!bankCheck.ok) {
+      return res.status(400).json({ message: bankCheck.error, code: "INVALID_BANK_ACCOUNT" });
     }
+    const bank_account = bankCheck.formatted;
 
     const [rows] = await pool.query(
       `SELECT id, startup_id FROM emission_rounds WHERE id = ?`,
@@ -751,6 +850,8 @@ export const activateEmission = async (req, res) => {
         }
       });
 
+      await deleteRoundDraft(connection, emissionId);
+
       await connection.commit();
       transactionStarted = false;
       res.json({ success: true });
@@ -803,7 +904,23 @@ export const getEmissionReadiness = async (req, res) => {
       return res.status(404).json({ message: "Emission not found" });
     }
 
-    const readiness = await checkRoundActivationReadiness(pool, startupId, rows[0]);
+    /*
+      The form is checked as it stands on screen, not as it was last saved —
+      otherwise a company that has just typed its valuation cap is told the cap
+      is missing. These values are only evaluated here; nothing is stored, and
+      activation re-checks the saved terms.
+    */
+    const draft = { ...rows[0] };
+    const q = req.query || {};
+    const cap = Number(String(q.valuation_cap ?? "").replace(/[^\d]/g, ""));
+    if (cap > 0) draft.valuation_cap = cap;
+    const period = Number(q.trigger_period);
+    if (Number.isFinite(period) && period >= 1) draft.trigger_period = Math.round(period);
+    if (typeof q.bank_account === "string" && q.bank_account.trim()) {
+      draft.bank_account = q.bank_account.trim().slice(0, 64);
+    }
+
+    const readiness = await checkRoundActivationReadiness(pool, startupId, draft);
     res.json(readiness);
   } catch (err) {
     console.error("Emission readiness error:", err);
@@ -912,6 +1029,23 @@ export const confirmArticlesShareBasis = async (req, res) => {
     res.json({ success: true, confirmation_id: result.id });
   } catch (err) {
     console.error("Confirm articles share basis error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+/* =====================================================
+   SHAREHOLDER ALLOCATION PREVIEW
+   The exact rule the save path uses, so the form shows the share counts that
+   will be stored — not a second calculation living in the browser.
+===================================================== */
+export const previewShareholderAllocation = async (req, res) => {
+  try {
+    const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
+    const shareBasis = await resolveShareBasis(pool, startupContext.startupUserId);
+    const entries = normalizeShareholders(req.body?.shareholders);
+    res.json(allocateShareholders(entries, shareBasis.share_count));
+  } catch (err) {
+    console.error("Shareholder preview error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };

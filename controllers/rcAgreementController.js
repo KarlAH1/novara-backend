@@ -23,6 +23,8 @@ import {
     reserveCapacity
 } from "../utils/capacityReservation.js";
 import { getTableColumns } from "../utils/schemaCapabilities.js";
+import { validateRcInvestmentAmount } from "../utils/rcInvestmentRules.js";
+import { deleteInvestorFlowProgress } from "../utils/investorFlowProgress.js";
 
 /*
   Version of the RC agreement template. Recorded on every executed agreement so
@@ -248,10 +250,13 @@ export const investViaInvite = async (req, res) => {
         const { token } = req.params;
         const { amount } = req.body;
         const investorId = req.user.id;
+        const amountValidation = validateRcInvestmentAmount(amount);
 
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ error: "Invalid amount" });
+        if (!amountValidation.ok) {
+            return res.status(400).json(amountValidation);
         }
+
+        const requestedAmount = amountValidation.amount;
 
         await connection.beginTransaction();
 
@@ -298,7 +303,30 @@ export const investViaInvite = async (req, res) => {
             });
         }
 
-        const requestedAmount = Number(amount);
+        /*
+          A user may invest in any number of different startup rounds, but only
+          once in the same round. The round row is locked above, so concurrent
+          attempts through two different invite links are serialised before
+          this check. A database unique index is the final backstop.
+        */
+        const [existingAgreementRows] = await connection.query(
+            `SELECT id
+             FROM rc_agreements
+             WHERE round_id = ? AND investor_id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [roundId, investorId]
+        );
+
+        if (existingAgreementRows.length) {
+            await connection.rollback();
+            return res.status(409).json({
+                error: "Du har allerede en investering i denne runden.",
+                code: "agreement_exists_for_round",
+                agreementId: existingAgreementRows[0].id
+            });
+        }
+
         if (requestedAmount > availability.remainingCapacity) {
             await connection.rollback();
             return res.status(400).json({
@@ -510,6 +538,11 @@ export const investViaInvite = async (req, res) => {
             }
         });
 
+        await deleteInvestorFlowProgress(connection, {
+            investorId,
+            inviteId: inviteRows[0].id
+        });
+
         await connection.commit();
 
         sendRcAgreementCreatedEmails({
@@ -529,6 +562,12 @@ export const investViaInvite = async (req, res) => {
     } catch(err){
         await connection.rollback();
         console.error("Invest error:", err);
+        if (err?.code === "ER_DUP_ENTRY" && String(err?.sqlMessage || "").includes("uniq_rc_agreement_round_investor")) {
+            return res.status(409).json({
+                error: "Du har allerede en investering i denne runden.",
+                code: "agreement_exists_for_round"
+            });
+        }
         res.status(500).json({ error:"Server error" });
     } finally {
         connection.release();

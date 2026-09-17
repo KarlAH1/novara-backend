@@ -319,7 +319,8 @@ test("substantive legal wording lives in one place", () => {
   // The pages render the shared constants rather than restating them, so a
   // correction in one place cannot leave three pages contradicting it.
   const invest = readFrontend("invest.html");
+  const investScript = readFrontend("invest.js");
   assert.match(invest, /rc-copy\.js/);
-  assert.match(invest, /id="rcRiskPoints"/);
-  assert.match(invest, /window\.RC_COPY/);
+  assert.doesNotMatch(invest, /id="rcRiskPoints"/);
+  assert.match(investScript, /window\.RC_COPY/);
 });

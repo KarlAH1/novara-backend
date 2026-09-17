@@ -1,3 +1,5 @@
+import { deleteInvestorFlowProgressForRound } from "./investorFlowProgress.js";
+
 const STATUS_REASON_MAP = {
   manually_closed: "CLOSED",
   conversion_downloaded: "CLOSED",
@@ -94,6 +96,10 @@ export async function updateRoundClosure(connection, roundId, closedReason, colu
     `UPDATE emission_rounds SET ${updates.join(", ")} WHERE id = ?`,
     params
   );
+
+  // A closed round must disappear from every investor's resume surface. The
+  // invite remains as historical data, but no stale flow can be reopened.
+  await deleteInvestorFlowProgressForRound(connection, roundId);
 }
 
 async function reopenRoundAfterCapacityDrop(connection, roundId, columns) {
