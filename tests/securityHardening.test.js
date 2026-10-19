@@ -54,7 +54,8 @@ test("investor registration never persists a password in Web Storage", () => {
   const investSource = read("frontend/invest.js");
   const verifySource = read("frontend/invite-verify.html");
   const inviteRoutes = read("backend/routes/rcInviteRoutes.js");
-  assert.match(investSource, /JSON\.stringify\(\{ name, email \}\)/);
+  // The terms acceptance travels with the pending registration; the password never does.
+  assert.match(investSource, /sessionStorage\.setItem\("investorInviteRegistration", JSON\.stringify\(\{ name, email, acceptTerms \}\)\)/);
   assert.doesNotMatch(investSource, /sessionStorage\.setItem\([^\n]+password/);
   assert.doesNotMatch(verifySource, /verifyInvestorPassword|Bekreft passordet ditt/);
   assert.match(inviteRoutes, /pending_password_hash/);

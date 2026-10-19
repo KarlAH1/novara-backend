@@ -1,5 +1,16 @@
 import "../config/env.js";
 import mysql from "mysql2/promise";
+import { assertLocalDatabase } from "../utils/dbSafety.js";
+
+try {
+  // Without DB_HOST the script falls back to 127.0.0.1 below, which is local.
+  assertLocalDatabase("db:bootstrap:local", {
+    env: { ...process.env, DB_HOST: process.env.DB_HOST || "127.0.0.1" }
+  });
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 const {
   DB_HOST = "127.0.0.1",
@@ -24,7 +35,7 @@ const statements = [
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NULL,
-    role ENUM('investor','startup','admin') NOT NULL,
+    role ENUM('investor','startup','admin','confirmer') NOT NULL,
     email_verified TINYINT(1) NOT NULL DEFAULT 0,
     email_verification_token VARCHAR(64) NULL,
     email_verification_expires DATETIME NULL,
@@ -151,7 +162,7 @@ const statements = [
   `
   CREATE TABLE IF NOT EXISTS documents (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    type ENUM('BOARD','GF','RC','SFC','GFC','CONVERSION_BOARD','CONVERSION_GF','CONVERSION_ARTICLES','CONVERSION_SHARE_REGISTER','CONVERSION_CAPITAL_CONFIRMATION','CONVERSION_PACKAGE') NOT NULL,
+    type ENUM('BOARD','GF','RC','SFC','GFC','CONVERSION_BOARD','CONVERSION_GF','CONVERSION_ARTICLES','CONVERSION_SHARE_REGISTER','CONVERSION_CAPITAL_CONFIRMATION','ROUND_PAYMENT_CONFIRMATION','CONVERSION_PACKAGE') NOT NULL,
     startup_id INT NOT NULL,
     round_id INT NULL,
     title VARCHAR(255) NOT NULL,
@@ -196,6 +207,9 @@ const statements = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     round_id INT NOT NULL,
     token VARCHAR(128) NOT NULL UNIQUE,
+    invitee_name VARCHAR(120) NULL,
+    invitee_relation VARCHAR(32) NULL,
+    first_opened_at DATETIME NULL,
     claimed_by_user_id INT NULL,
     claimed_at DATETIME NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -358,7 +372,8 @@ const statements = [
     stripe_fee_amount DECIMAL(10,2) NULL,
     stripe_net_amount DECIMAL(10,2) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_conversion_agreement (conversion_event_id, agreement_id)
   )
   `
 ];

@@ -10,11 +10,14 @@
   <p><strong>Selskap:</strong> {{company_name}}</p>
   <p><strong>Org.nr.:</strong> {{orgnr}}</p>
   <p><strong>Dato:</strong> {{date}}</p>
-  <p><strong>Bekreftet av:</strong> {{third_party_name}} ({{third_party_email}})</p>
+  <p><strong>Bekreftet av:</strong> {{third_party_name}}, {{third_party_capacity}} ({{third_party_email}})</p>
   <p><strong>Trigger event:</strong> {{trigger_type}}</p>
   <p><strong>Konverteringsdato:</strong> {{conversion_date}}</p>
   <p><strong>Paribeløp forfaller:</strong> {{par_value_due_date}}</p>
-  <p style="margin-top:18px;">Undertegnede bekrefter at opplysningene om kapitalforhøyelsen er kontrollert, og at aksjeinnskuddet, som utgjør de nye aksjenes samlede pålydende, er innbetalt kontant til selskapet i samsvar med aksjeloven. Det er ikke tilført overkurs ved denne kapitalforhøyelsen.</p>
+  <p style="margin-top:18px;">Undertegnede bekrefter, jf. aksjeloven § 10-9 annet ledd, at aksjeinnskuddet, som utgjør de nye aksjenes samlede pålydende, er innbetalt kontant direkte til selskapet slik generalforsamlingens vedtak fastsetter, jf. aksjeloven § 10-13 annet ledd. Innbetalingene er kontrollert mot grunnlaget nedenfor. Det er ikke tilført overkurs ved denne kapitalforhøyelsen.</p>
+  <h2 style="margin: 22px 0 8px; font-size: 19px;">Innbetalinger</h2>
+  {{payment_rows}}
+  <p style="margin: 8px 0 0; font-size: 14px; color: #374151;">{{evidence_basis}}</p>
   <div style="margin-top: 20px; padding: 18px; background:#f8f4ed; border:1px solid #ddd4c7; border-radius:14px;">
     <p style="margin:0 0 10px;"><strong>Totalt antall aksjer som utstedes:</strong> {{total_new_shares}}</p>
     <p style="margin:0 0 10px;"><strong>Samlet pålydende – økning av aksjekapitalen:</strong> {{total_nominal_amount}}</p>

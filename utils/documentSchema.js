@@ -49,7 +49,8 @@ export async function ensureDocumentSchema() {
       "CONVERSION_ARTICLES",
       "CONVERSION_SHARE_REGISTER",
       "CONVERSION_CAPITAL_CONFIRMATION",
-      "CONVERSION_PACKAGE"
+      "CONVERSION_PACKAGE",
+      "ROUND_PAYMENT_CONFIRMATION"
     ];
     const missingValues = requiredValues.filter((value) => !values.includes(value));
 

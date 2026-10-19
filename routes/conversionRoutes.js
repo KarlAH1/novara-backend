@@ -15,8 +15,7 @@ import {
   RC_CALCULATION_VERSION
 } from "../utils/rcConversionCalculator.js";
 import { ensureStartupArticlesParsed } from "../utils/startupArticlesBasis.js";
-import { buildUpdatedArticlesDraft } from "../utils/updatedArticlesBuilder.js";
-import { fetchBrregCompany } from "../utils/brreg.js";
+import { amendArticlesShareCapital } from "../utils/articlesAmendment.js";
 import { sendEmail } from "../utils/emailService.js";
 import {
   sendConversionStartedEmail,
@@ -41,12 +40,16 @@ import {
 } from "../utils/boardChairResolution.js";
 import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapabilities.js";
 import { shareCountsForStoredOwners } from "../utils/shareholderAllocation.js";
+import { GF_SUBSCRIBER_ROLE } from "../utils/pendingSignatures.js";
+import { listForStartup, syncConfirmationRequestsLater } from "../utils/paymentConfirmations.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const templatesDir = path.resolve(__dirname, "../templates");
 const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+// Time from the GF meeting to the par payment deadline stated in its resolution.
+const PAR_PAYMENT_DAYS_AFTER_GF = 14;
 
 function getTriggerLabel(triggerType) {
   if (triggerType === "new_round" || triggerType === "new_priced_round") return "Ny emisjon";
@@ -409,7 +412,10 @@ async function getConversionBasis(connection, startupId) {
   }
 
   const profileBasis = profileRows[0] || null;
-  const rawArticles = articlesRows[0] || null;
+  // connection.query resolves to [rows, fields]. Taking [0] alone gave the
+  // whole row list, so the articles were never actually read here: no id, no
+  // parsed fields, and a "present" check that a list always passed.
+  const rawArticles = articlesRows[0]?.[0] || null;
   const articlesBasisRow = rawArticles
     ? await ensureStartupArticlesParsed(connection, rawArticles)
     : null;
@@ -446,9 +452,12 @@ async function getConversionBasis(connection, startupId) {
   return {
     nominal_value_per_share: resolvedNominalValue,
     current_share_count: resolvedCurrentShareCount,
-    current_share_capital_amount: parsedShareCapital || (resolvedCurrentShareCount && resolvedNominalValue
+    // From the confirmed share count and par value, not from the parser: the
+    // confirmation is what a person checked against the articles, and it
+    // already requires capital = shares × par.
+    current_share_capital_amount: resolvedCurrentShareCount && resolvedNominalValue
       ? Number(resolvedCurrentShareCount) * Number(resolvedNominalValue)
-      : null),
+      : (parsedShareCapital || null),
     share_basis_temporary: isShareBasisTemporary,
     missing_fields: missingFields,
     is_complete: missingFields.length === 0,
@@ -876,10 +885,73 @@ async function syncParValueRequests(connection, conversion, calculations) {
   return rows;
 }
 
+async function isGfSubscriptionComplete(connection, conversion) {
+  if (!conversion?.gf_document_id) return false;
+  const [rows] = await connection.query(
+    "SELECT status FROM documents WHERE id = ? LIMIT 1",
+    [conversion.gf_document_id]
+  );
+  return rows[0]?.status === "LOCKED";
+}
+
+// Called by the signing route once the GF protocol locks, i.e. once every
+// investor has subscribed. Idempotent: requests are upserted and a notice is
+// only sent for a request that has not had one.
+export async function issueParValueNotices(connection, conversionId) {
+  const [[conversion]] = await connection.query(
+    "SELECT * FROM conversion_events WHERE id = ? LIMIT 1",
+    [conversionId]
+  );
+  if (!conversion || !(await isGfSubscriptionComplete(connection, conversion))) return;
+  if (!(await tableExists(connection, "conversion_par_value_requests"))) return;
+
+  const calculations = readFrozenCalculations(conversion);
+  if (!calculations) return;
+
+  const startupContext = await resolveCompanyStartupOwner(connection, conversion.startup_id);
+  const [[round]] = await connection.query(
+    "SELECT bank_account FROM emission_rounds WHERE id = ? LIMIT 1",
+    [conversion.round_id]
+  );
+  const requests = await syncParValueRequests(connection, conversion, calculations);
+  await sendParValueNotices(connection, { ...startupContext, bank_account: round?.bank_account || null }, conversion, requests);
+}
+
+// Called by the signing route when the meeting has signed the GF protocol: the
+// investors can now subscribe in it.
+export async function notifyGfSubscribers(connection, documentId) {
+  const [[doc]] = await connection.query(
+    "SELECT id, type, title, startup_id FROM documents WHERE id = ? LIMIT 1",
+    [documentId]
+  );
+  if (!doc || doc.type !== "GFC") return;
+
+  const [subscribers] = await connection.query(
+    `SELECT email FROM document_signers
+     WHERE document_id = ? AND role = ? AND signed_at IS NULL AND email IS NOT NULL`,
+    [documentId, GF_SUBSCRIBER_ROLE]
+  );
+  const startupContext = await resolveCompanyStartupOwner(connection, doc.startup_id);
+  const companyName = startupContext.company?.company_name || "selskapet";
+  const signUrl = buildSignUrl(doc.type, doc.id);
+
+  await Promise.allSettled(subscribers.map((subscriber) => sendDocumentSigningRequestEmail({
+    to: subscriber.email,
+    companyName,
+    roleLabel: "tegner av aksjer",
+    documentTitle: `Generalforsamlingsprotokoll for ${companyName}`,
+    signUrl
+  })));
+}
+
 async function sendParValueNotices(connection, startupContext, conversion, requests) {
   const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
   const companyName = startupContext.company?.company_name || "selskapet";
-  const noticeDueDate = addDays(new Date(), 7);
+  // The deadline is the one in the GF resolution. Only if that has already
+  // passed is a fresh week given, so a notice is never overdue on arrival.
+  const resolutionDueDate = conversion?.par_value_due_date ? new Date(conversion.par_value_due_date) : null;
+  const usesResolutionDate = Boolean(resolutionDueDate && resolutionDueDate.getTime() > Date.now());
+  const noticeDueDate = usesResolutionDate ? resolutionDueDate : addDays(new Date(), 7);
   const noticeDueDateSql = toMysqlDateTime(noticeDueDate);
   const bankAccount = startupContext.bank_account || "Legges inn av selskapet";
   let sentAny = false;
@@ -922,10 +994,10 @@ async function sendParValueNotices(connection, startupContext, conversion, reque
     }
   }
 
-  // Only move the conversion's deadline when a notice actually went out.
-  // Updating it unconditionally pushed the payment deadline seven days into the
-  // future on every single page load, so it never arrived.
-  if (conversion?.id && sentAny) {
+  // Only move the conversion's deadline when a notice actually went out with a
+  // new one. Updating it unconditionally pushed the payment deadline seven days
+  // into the future on every single page load, so it never arrived.
+  if (conversion?.id && sentAny && !usesResolutionDate) {
     await connection.query(
       `
       UPDATE conversion_events
@@ -1055,7 +1127,19 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     // Investment Amount was paid at year 0 and is not part of this settlement.
     const subscriptionPrice = nominalValue;
     const sharePremiumPerShare = 0;
-    const paymentDueDate = formatDateLabel(freshConversion.par_value_due_date || freshConversion.conversion_date);
+
+    // The investors subscribe by signing this protocol and pay afterwards, so
+    // the deadline in the resolution runs from the meeting, not from the
+    // trigger. A deadline set at trigger time could already have passed.
+    const earliestDueDate = addDays(new Date(), PAR_PAYMENT_DAYS_AFTER_GF);
+    if (!freshConversion.par_value_due_date || new Date(freshConversion.par_value_due_date) < earliestDueDate) {
+      freshConversion.par_value_due_date = earliestDueDate;
+      await connection.query(
+        "UPDATE conversion_events SET par_value_due_date = ? WHERE id = ?",
+        [toMysqlDateTime(earliestDueDate), freshConversion.id]
+      );
+    }
+    const paymentDueDate = formatDateLabel(freshConversion.par_value_due_date);
 
     const subscriptionRows = calculations.investors.map((item) => {
       const investorName = escapeHtml(item.investor_name || item.investor_email || "Investor");
@@ -1131,13 +1215,25 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       }
     ];
 
+    // "Tegning skjer ved signatur på denne protokollen": each investor named in
+    // the resolution subscribes by signing it. They are asked to once the
+    // meeting has signed (see the document signing route).
+    const subscriberSigners = calculations.investors
+      .filter((item) => item.investor_email)
+      .map((item) => ({
+        email: item.investor_email,
+        user_id: item.investor_id || null,
+        role: GF_SUBSCRIBER_ROLE,
+        status: item.investor_id ? "ACCEPTED" : "INVITED"
+      }));
+
     const gfId = await createDocument(connection, {
       type: "GFC",
       startupId: startupContext.startupUserId,
       roundId: round.id,
       title: `GFC – ${companyName}`,
       html: gfHtml,
-      signers: gfSigners
+      signers: [...gfSigners, ...subscriberSigners]
     });
 
     await notifyDocumentSigners({
@@ -1155,7 +1251,11 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
     freshConversion.gf_document_id = gfId;
   }
 
-  if (!freshConversion.updated_articles_document_id && basis.articles_document?.parsed_fields) {
+  // Raised after the other documents have been prepared, so one that cannot be
+  // generated does not hold back the rest.
+  let deferredError = null;
+
+  if (!freshConversion.updated_articles_document_id && basis.articles_document?.id) {
     const nextShareCount = Number(basis.current_share_count || 0) + Number(calculations.totals?.total_conversion_share_count || 0);
     const nextCapitalAmount = Number(basis.current_share_capital_amount || 0) + Number(calculations.totals?.total_nominal_amount || 0);
 
@@ -1180,43 +1280,47 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
         `men ny aksjekapital er beregnet til ${nextCapitalAmount}. Vedtektene ble ikke generert.`
       );
     }
-    let brregMunicipality = basis.articles_document?.parsed_fields?.municipality || "";
-    if (!brregMunicipality && orgnr) {
-      try {
-        const brregData = await fetchBrregCompany(orgnr);
-        brregMunicipality = brregData.municipality || "";
-      } catch (_) { /* silent fallback */ }
-    }
-    const updatedArticles = await buildUpdatedArticlesDraft({
-      templatePath: path.join(templatesDir, "vedtekter-template.html"),
-      currentArticles: basis.articles_document.parsed_fields,
-      fallbackData: {
-        company_name: companyName,
-        orgnr,
-        municipality: brregMunicipality,
-        business_purpose: "Selskapets virksomhet følger det som er registrert for selskapet."
-      },
-      nextCapitalData: {
-        share_capital_amount: nextCapitalAmount,
-        share_count: nextShareCount,
-        nominal_value: basis.nominal_value_per_share,
-        last_amended_date: today
-      }
-    });
-
-    const articlesId = await createDocument(connection, {
-      type: "CONVERSION_ARTICLES",
-      startupId: startupContext.startupUserId,
-      roundId: round.id,
-      title: `Vedtekter etter konvertering – ${companyName}`,
-      html: updatedArticles.html
-    });
-
-    await connection.query(
-      "UPDATE conversion_events SET updated_articles_document_id = ? WHERE id = ?",
-      [articlesId, freshConversion.id]
+    // The company's own articles with only the capital clause changed; see
+    // utils/articlesAmendment.js for why nothing is generated from a template.
+    const [[articlesSource]] = await connection.query(
+      "SELECT extracted_text FROM startup_documents WHERE id = ? LIMIT 1",
+      [basis.articles_document.id]
     );
-    freshConversion.updated_articles_document_id = articlesId;
+    const amendment = articlesSource?.extracted_text
+      ? amendArticlesShareCapital(articlesSource.extracted_text, {
+          current: {
+            shareCapital: Number(basis.current_share_capital_amount),
+            shareCount: Number(basis.current_share_count),
+            parValue
+          },
+          next: { shareCapital: nextCapitalAmount, shareCount: nextShareCount },
+          companyName,
+          orgnr,
+          amendedDate: today
+        })
+      : { ok: false, error: "Vi kunne ikke lese teksten i vedtektene som er lastet opp (for eksempel en skannet PDF)." };
+
+    if (!amendment.ok) {
+      deferredError = new Error(
+        `Oppdaterte vedtekter kunne ikke lages automatisk: ${amendment.error} ` +
+        "Last opp gjeldende vedtekter som en PDF med tekst, eller kontakt Raisium."
+      );
+      deferredError.code = "ARTICLES_NOT_AMENDABLE";
+    } else {
+      const articlesId = await createDocument(connection, {
+        type: "CONVERSION_ARTICLES",
+        startupId: startupContext.startupUserId,
+        roundId: round.id,
+        title: `Vedtekter etter konvertering – ${companyName}`,
+        html: amendment.html
+      });
+
+      await connection.query(
+        "UPDATE conversion_events SET updated_articles_document_id = ? WHERE id = ?",
+        [articlesId, freshConversion.id]
+      );
+      freshConversion.updated_articles_document_id = articlesId;
+    }
   }
 
   const existingShareholderTaskRows = await ensureExistingShareholderTaskRows(
@@ -1227,7 +1331,14 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
   );
   const existingShareholderTaskComplete = isExistingShareholderTaskComplete(existingShareholderTaskRows);
 
-  if (!freshConversion.shareholder_register_document_id && existingShareholderTaskComplete) {
+  /*
+    The register is rebuilt until the conversion is completed. It was written
+    once, as soon as the existing owners were filled in, and never again: the
+    investors' national ID numbers and addresses, entered later, never reached
+    the register that goes into the registration package.
+  */
+  const registerIsFinal = round.closed_reason === "conversion_downloaded";
+  if (existingShareholderTaskComplete && !registerIsFinal) {
     const investorIds = calculations.investors
       .map((item) => Number(item.investor_id || 0))
       .filter(Boolean);
@@ -1308,68 +1419,32 @@ async function ensureConversionArtifacts(connection, startupContext, user, round
       rows: shareholderRegisterRows
     });
 
-    const registerId = await createDocument(connection, {
-      type: "CONVERSION_SHARE_REGISTER",
-      startupId: startupContext.startupUserId,
-      roundId: round.id,
-      title: `Aksjeeierbok etter konvertering – ${companyName}`,
-      html: shareholderRegisterHtml
-    });
+    if (freshConversion.shareholder_register_document_id) {
+      await connection.query(
+        "UPDATE documents SET html_content = ? WHERE id = ? AND status <> 'LOCKED' AND html_content <> ?",
+        [shareholderRegisterHtml, freshConversion.shareholder_register_document_id, shareholderRegisterHtml]
+      );
+    } else {
+      const registerId = await createDocument(connection, {
+        type: "CONVERSION_SHARE_REGISTER",
+        startupId: startupContext.startupUserId,
+        roundId: round.id,
+        title: `Aksjeeierbok etter konvertering – ${companyName}`,
+        html: shareholderRegisterHtml
+      });
 
-    await connection.query(
-      "UPDATE conversion_events SET shareholder_register_document_id = ? WHERE id = ?",
-      [registerId, freshConversion.id]
-    );
-    freshConversion.shareholder_register_document_id = registerId;
+      await connection.query(
+        "UPDATE conversion_events SET shareholder_register_document_id = ? WHERE id = ?",
+        [registerId, freshConversion.id]
+      );
+      freshConversion.shareholder_register_document_id = registerId;
+    }
   }
 
-  if (!freshConversion.capital_confirmation_document_id && freshConversion.third_party_email) {
-    const thirdPartyUser = await findUserByEmail(connection, freshConversion.third_party_email);
-    const templatePath = path.join(templatesDir, "conversion-capital-confirmation-template.html");
-    let confirmationHtml = fs.readFileSync(templatePath, "utf8");
-    confirmationHtml = confirmationHtml
-      .replace(/{{company_name}}/g, escapeHtml(companyName))
-      .replace(/{{orgnr}}/g, escapeHtml(orgnr))
-      .replace(/{{date}}/g, today)
-      .replace(/{{third_party_name}}/g, escapeHtml(freshConversion.third_party_name || "Revisor registreres før innsending"))
-      .replace(/{{third_party_email}}/g, escapeHtml(freshConversion.third_party_email || "Registreres før innsending"))
-      .replace(/{{trigger_type}}/g, escapeHtml(getTriggerLabel(freshConversion.trigger_type)))
-      .replace(/{{conversion_date}}/g, formatDateLabel(freshConversion.conversion_date))
-      .replace(/{{par_value_due_date}}/g, formatDateLabel(freshConversion.par_value_due_date))
-      .replace(/{{total_new_shares}}/g, escapeHtml(Number(calculations.totals?.total_conversion_share_count || 0).toLocaleString("no-NO")))
-      .replace(/{{total_nominal_amount}}/g, escapeHtml(formatCurrency(calculations.totals?.total_nominal_amount || 0)))
-      .replace(/{{total_share_premium}}/g, escapeHtml(formatCurrency(calculations.totals?.total_share_premium || 0)));
+  // The confirmation of the share contribution is produced when Raisium's
+  // revisor takes the request (utils/paymentConfirmations.js), not here.
 
-    const confirmationSigners = freshConversion.third_party_email ? [{
-      email: freshConversion.third_party_email,
-      user_id: thirdPartyUser?.id || null,
-      role: "Revisor",
-      status: thirdPartyUser ? "ACCEPTED" : "INVITED"
-    }] : [];
-
-    const confirmationId = await createDocument(connection, {
-      type: "CONVERSION_CAPITAL_CONFIRMATION",
-      startupId: startupContext.startupUserId,
-      roundId: round.id,
-      title: `Bekreftelse på innbetalt aksjekapital – ${companyName}`,
-      html: confirmationHtml,
-      signers: confirmationSigners
-    });
-
-    await notifyDocumentSigners({
-      type: "CONVERSION_CAPITAL_CONFIRMATION",
-      documentId: confirmationId,
-      title: `Bekreftelse på innbetalt aksjekapital – ${companyName}`,
-      companyName,
-      signers: confirmationSigners
-    });
-
-    await connection.query(
-      "UPDATE conversion_events SET capital_confirmation_document_id = ? WHERE id = ?",
-      [confirmationId, freshConversion.id]
-    );
-    freshConversion.capital_confirmation_document_id = confirmationId;
-  }
+  if (deferredError) throw deferredError;
 }
 
 async function ensureAltinnPackageIfReady(connection, startupContext, round, conversion, calculations) {
@@ -1536,10 +1611,12 @@ export async function buildConversionState(connection, startupContext, user) {
       });
     }
 
-    const requests = hasParValueRequestsTable
-      ? await syncParValueRequests(connection, conversion, conversionData.calculations)
-      : [];
-    if (hasParValueRequestsTable) {
+    // Par amounts are requested only after the investors have subscribed, which
+    // they do by signing the GF protocol. Before that there is no resolution and
+    // no subscription to pay for. The signing route issues them the moment the
+    // protocol locks; this catches any that did not go out then.
+    if (hasParValueRequestsTable && await isGfSubscriptionComplete(connection, conversion)) {
+      const requests = await syncParValueRequests(connection, conversion, conversionData.calculations);
       await sendParValueNotices(connection, { ...startupContext, bank_account: round.bank_account || null }, conversion, requests);
     }
     if (hasConversionExistingShareholdersTable) {
@@ -1654,6 +1731,11 @@ export async function buildConversionState(connection, startupContext, user) {
   const articlesDoc = conversion?.updated_articles_document_id ? documentsById[conversion.updated_articles_document_id] || null : null;
   const shareholderDoc = conversion?.shareholder_register_document_id ? documentsById[conversion.shareholder_register_document_id] || null : null;
   const confirmationDoc = conversion?.capital_confirmation_document_id ? documentsById[conversion.capital_confirmation_document_id] || null : null;
+  // Raisium's revisor confirms the share contribution; the company only uploads
+  // a bank statement if some investors paid by bank transfer.
+  const confirmationRequest = conversion?.id
+    ? (await listForStartup(connection, startupId)).find((item) => Number(item.conversion_event_id) === Number(conversion.id)) || null
+    : null;
   const packageDoc = conversion?.altinn_package_document_id ? documentsById[conversion.altinn_package_document_id] || null : null;
   const approvalGate = await evaluateTriggerApproval(connection, round, conversion?.trigger_type || "new_priced_round");
 
@@ -1702,7 +1784,8 @@ export async function buildConversionState(connection, startupContext, user) {
       shareholder_register: { status: shareholderDoc ? "ready" : "pending", document: shareholderDoc },
       third_party_confirmation: {
         status: confirmationDoc?.status === "LOCKED" ? "signed" : (confirmationDoc ? "ready" : "pending"),
-        document: confirmationDoc
+        document: confirmationDoc,
+        request: confirmationRequest
       },
       package: { status: packageDoc ? "ready" : "pending", document: packageDoc }
     }
@@ -1809,8 +1892,8 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
           triggerStatus,
           toMysqlDateTime(timeline.conversionDate),
           toMysqlDateTime(timeline.parValueDueDate),
-          String(req.body.thirdPartyName || "").trim() || null,
-          String(req.body.thirdPartyEmail || "").trim().toLowerCase() || null,
+          null,
+          null,
           Number.isFinite(pricedRoundSharePrice) && pricedRoundSharePrice > 0
             ? pricedRoundSharePrice
             : null,
@@ -1874,8 +1957,6 @@ router.post("/start", auth, requireRole(["startup"]), async (req, res) => {
 
       await persistConversionContext(connection, existing.id, {
         conversionDate: req.body.conversionDate,
-        thirdPartyName: req.body.thirdPartyName,
-        thirdPartyEmail: req.body.thirdPartyEmail,
         pricedRoundSharePrice: req.body.pricedRoundSharePrice,
         triggerRequestReason
       });
@@ -1943,27 +2024,13 @@ router.post("/context", auth, requireRole(["startup"]), async (req, res) => {
       return res.status(400).json({ error: "Registrer trigger event først." });
     }
 
-    const previousThirdPartyEmail = String(conversion.third_party_email || "").trim().toLowerCase();
-
     await persistConversionContext(connection, conversion.id, {
       conversionDate: req.body.conversionDate,
-      thirdPartyName: req.body.thirdPartyName,
-      thirdPartyEmail: req.body.thirdPartyEmail,
       pricedRoundSharePrice: req.body.pricedRoundSharePrice
     });
 
-    const nextThirdPartyEmail = String(req.body.thirdPartyEmail || "").trim().toLowerCase();
     const state = await buildConversionState(connection, startupContext, req.user);
     res.json(state);
-    if (nextThirdPartyEmail && nextThirdPartyEmail !== previousThirdPartyEmail) {
-      setImmediate(() => {
-        sendTelegramAdminAlert("Bekreftelse på aksjeinnskudd venter", [
-          `Selskap: ${startupContext.company?.company_name || req.user.name || "-"}`,
-          `Orgnr: ${startupContext.company?.orgnr || "-"}`,
-          `Bekrefter e-post: ${nextThirdPartyEmail}`
-        ]).catch((error) => console.error("Third-party confirmation alert failed:", error));
-      });
-    }
   } catch (err) {
     console.error("Update conversion context error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -2001,14 +2068,37 @@ router.post("/par-value/confirm", auth, requireRole(["startup"]), async (req, re
       return res.status(403).json({ error: "Ikke tilgang til dette paribeløpet." });
     }
 
-    await connection.query(
+    // A second confirmation must not move the recorded time of the first.
+    const [confirmation] = await connection.query(
       `
       UPDATE conversion_par_value_requests
       SET paid_confirmed_at = NOW(), status = 'paid_confirmed'
-      WHERE id = ?
+      WHERE id = ? AND paid_confirmed_at IS NULL
       `,
       [requestId]
     );
+
+    if (confirmation.affectedRows) {
+      const [[details]] = await connection.query(
+        `SELECT pr.agreement_id, pr.investor_id, pr.par_value_amount, pr.reference, pr.conversion_event_id, ce.round_id
+         FROM conversion_par_value_requests pr
+         JOIN conversion_events ce ON ce.id = pr.conversion_event_id
+         WHERE pr.id = ?`,
+        [requestId]
+      );
+      await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.PAR_CONFIRMED, {
+        startupId: req.user.id,
+        roundId: details?.round_id ?? null,
+        agreementId: details?.agreement_id ?? null,
+        investorId: details?.investor_id ?? null,
+        actorUserId: req.user.id,
+        actorRole: "startup",
+        paymentReference: details?.reference || null,
+        ipAddress: getClientIp(req),
+        metadata: { conversion_event_id: details?.conversion_event_id ?? null, amount: details?.par_value_amount, confirmed_via: "manual" }
+      });
+      syncConfirmationRequestsLater({ conversionId: details?.conversion_event_id ?? null });
+    }
 
     res.json({ message: "Paribeløp bekreftet." });
   } catch (err) {
@@ -2185,6 +2275,16 @@ export async function checkRegistrationReadiness(connection, conversion, calcula
   // external confirmer before anything is registered.
   if (!conversion.third_party_confirmed_at) {
     blockers.push("Den eksterne bekreftelsen på innbetalt aksjekapital er ikke fullført.");
+  }
+
+  // One par amount request per investor exists only once every investor has
+  // subscribed in the GF protocol.
+  const [[{ requestCount }]] = await connection.query(
+    "SELECT COUNT(*) AS requestCount FROM conversion_par_value_requests WHERE conversion_event_id = ?",
+    [conversion.id]
+  );
+  if (Number(requestCount) < Number(calculations?.investors?.length || 0)) {
+    blockers.push("Ikke alle investorer har tegnet aksjene i generalforsamlingsprotokollen ennå.");
   }
 
   // Every par amount received.

@@ -18,6 +18,7 @@ import {
   recordArticlesConfirmation
 } from "../utils/articlesConfirmation.js";
 import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
+import { syncConfirmationRequestsLater } from "../utils/paymentConfirmations.js";
 import { columnExists, tableExists } from "../utils/schemaCapabilities.js";
 import { allocateShareholders } from "../utils/shareholderAllocation.js";
 import { validateBankAccount } from "../utils/norwegianBankAccount.js";
@@ -277,6 +278,14 @@ export const startEmission = async (req, res) => {
         `UPDATE documents SET round_id = ? WHERE id IN (?, ?)`,
         [result.insertId, board[0].id, gf[0].id]
       );
+
+      await recordAuditEvent(connection, AUDIT_EVENTS.ROUND_CREATED, {
+        startupId: startup_id, roundId: result.insertId,
+        actorUserId: req.user.id, actorRole: "startup",
+        newStatus: "DRAFT",
+        ipAddress: getClientIp(req),
+        metadata: { target_amount: approvedAmount, deadline, board_document_id: board[0].id, gf_document_id: gf[0].id }
+      });
 
       await connection.commit();
       transactionStarted = false;
@@ -1100,6 +1109,7 @@ export const closeEmissionEarly = async (req, res) => {
 
     const columns = await getEmissionRoundColumns(pool);
     await updateRoundClosure(pool, emissionId, "manually_closed", columns);
+    syncConfirmationRequestsLater({ roundId: Number(emissionId) });
 
     res.json({ success: true, deleted: false });
   } catch (err) {
@@ -1141,47 +1151,6 @@ export const getActiveEmission = async (req, res) => {
       console.error("GET ACTIVE EMISSION ERROR:", err);
       res.status(500).json({ message: "Server error" });
   }
-};
-
-/* =====================================================
-   GENERATE INVITE
-===================================================== */
-export const generateInvite = async (req, res) => {
-    try {
-
-        const { emissionId } = req.params;
-        const startupContext = await resolveCompanyStartupOwner(pool, req.user.id);
-        const startupId = startupContext.startupUserId;
-
-        const [rows] = await pool.query(`
-            SELECT id FROM emission_rounds
-            WHERE id=? AND startup_id=? AND status='OPEN'
-        `, [emissionId, startupId]);
-
-        if (!rows.length) {
-            return res.status(403).json({
-                message: "Emission not open"
-            });
-        }
-
-        const crypto = await import("crypto");
-        const token = crypto.randomUUID();
-
-        await pool.query(`
-            INSERT INTO emission_invites
-            (emission_id, token, created_by)
-            VALUES (?, ?, ?)
-        `, [emissionId, token, startupId]);
-
-        const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
-        res.json({
-            inviteLink: `${frontendBase}/invest.html?invite=${token}`
-        });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server error" });
-    }
 };
 
 export const deleteEmissionByStartup = async (req, res) => {

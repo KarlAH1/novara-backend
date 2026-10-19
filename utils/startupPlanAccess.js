@@ -1,4 +1,5 @@
 import pool from "../config/db.js";
+import { getCompanyForUserWithConnection } from "./startupContext.js";
 
 export const STARTUP_PLAN_DEFINITIONS = {
   normal: {
@@ -48,18 +49,7 @@ export function getStartupPlanDefinition(planCode) {
 }
 
 export async function getCompanyForUser(userId) {
-  const [rows] = await pool.query(
-    `
-    SELECT c.id AS company_id, c.company_name, c.orgnr
-    FROM company_memberships cm
-    JOIN companies c ON c.id = cm.company_id
-    WHERE cm.user_id = ?
-    LIMIT 1
-    `,
-    [userId]
-  );
-
-  return rows[0] || null;
+  return getCompanyForUserWithConnection(pool, userId);
 }
 
 async function getActiveSubscription(companyId) {

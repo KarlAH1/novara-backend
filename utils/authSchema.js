@@ -76,6 +76,14 @@ export async function ensureAuthSchema() {
       {
         name: "startup_identity_provider",
         sql: "ALTER TABLE users ADD COLUMN startup_identity_provider VARCHAR(32) NULL"
+      },
+      {
+        name: "terms_accepted_at",
+        sql: "ALTER TABLE users ADD COLUMN terms_accepted_at DATETIME NULL"
+      },
+      {
+        name: "terms_version",
+        sql: "ALTER TABLE users ADD COLUMN terms_version VARCHAR(32) NULL"
       }
     ];
 
@@ -87,7 +95,7 @@ export async function ensureAuthSchema() {
     }
 
     await connection.query(
-      "ALTER TABLE users MODIFY COLUMN role ENUM('investor','startup','admin') NOT NULL"
+      "ALTER TABLE users MODIFY COLUMN role ENUM('investor','startup','admin','confirmer') NOT NULL"
     );
 
     const [indexes] = await connection.query(

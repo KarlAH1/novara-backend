@@ -60,6 +60,7 @@ export const AUDIT_EVENTS = {
 
   INVITE_CREATED: "invite.created",
   INVITE_CLAIMED: "invite.claimed",
+  INVITE_REVOKED: "invite.revoked",
 
   CAPACITY_RESERVED: "capacity.reserved",
   CAPACITY_RESERVATION_REFUSED: "capacity.refused",
@@ -86,6 +87,8 @@ export const AUDIT_EVENTS = {
   PAR_REQUESTED: "par.requested",
   PAR_CONFIRMED: "par.confirmed",
   SHARE_CONTRIBUTION_CONFIRMED: "par.contribution_confirmed",
+  ROUND_PAYMENTS_CONFIRMED: "round.payments_confirmed",
+  CONFIRMATION_CLAIMED: "confirmation.claimed",
 
   REGISTRATION_READINESS_CHECKED: "registration.readiness_checked",
   REGISTRATION_COMPLETED: "registration.completed",

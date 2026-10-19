@@ -270,6 +270,31 @@ export async function releaseReservationForAgreement(connection, agreementId, re
 }
 
 /*
+  How much of the round one agreement may still take: the remaining capacity
+  less what other investors hold in live reservations. Its own live hold is part
+  of the remaining capacity, so it is not subtracted.
+
+  Activation compared against the remaining capacity alone. An investor whose
+  hold had lapsed could then pay into a place another investor had reserved in
+  the meantime, and when that investor paid too the round ended oversubscribed.
+*/
+export async function getAvailableForAgreement(connection, { agreementId, roundId, remainingCapacity, lock = false }) {
+  if (!(await tableExists(connection, "round_capacity_reservations"))) {
+    return { available: Number(remainingCapacity || 0), held: 0 };
+  }
+
+  const [[own]] = await connection.query(
+    `SELECT COALESCE(SUM(amount), 0) AS held
+     FROM round_capacity_reservations
+     WHERE agreement_id = ? AND status = ? AND expires_at >= NOW()`,
+    [agreementId, RESERVATION_STATUS.RESERVED]
+  );
+  const held = Number(own?.held || 0);
+  const reservedByOthers = await getReservedAmount(connection, roundId, { lock }) - held;
+  return { available: Number(remainingCapacity || 0) - reservedByOthers, held };
+}
+
+/*
   Capacity actually available to a new investor: the round's remaining capacity
   less everything currently held by someone else's live reservation.
 */

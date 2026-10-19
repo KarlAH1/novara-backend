@@ -31,6 +31,67 @@ async function columnExists(connection, tableName, columnName) {
   return rows.length > 0;
 }
 
+/*
+  syncParValueRequests upserts on (conversion_event_id, agreement_id). Tables
+  created by scripts/bootstrapLocalDb.js before 2026-10-18 lacked that key, so
+  the upsert never matched: every load of the conversion page inserted a new
+  request per investor and e-mailed a new payment demand, and registration
+  readiness could never pass because the stale copies stayed unpaid.
+
+  Duplicates are removed before the key is added. The row kept is the paid one,
+  or else the oldest (the one whose notice went out first). A group with more
+  than one paid row means an investor may have paid twice; that is left for a
+  person to resolve, and the key is not added until it has been.
+*/
+async function ensureParValueRequestUniqueKey(connection) {
+  const [indexes] = await connection.query(
+    "SHOW INDEX FROM conversion_par_value_requests WHERE Key_name = 'uniq_conversion_agreement'"
+  );
+  if (indexes.length) return;
+
+  const [groups] = await connection.query(`
+    SELECT conversion_event_id, agreement_id, COUNT(*) AS row_count,
+           SUM(paid_confirmed_at IS NOT NULL) AS paid_count
+    FROM conversion_par_value_requests
+    GROUP BY conversion_event_id, agreement_id
+    HAVING COUNT(*) > 1
+  `);
+
+  const ambiguous = groups.filter((group) => Number(group.paid_count) > 1);
+  if (ambiguous.length) {
+    console.error(
+      "conversion_par_value_requests: more than one paid request for the same investor. " +
+      "Resolve these by hand before the unique key can be added:",
+      ambiguous.map((group) => ({ conversion_event_id: group.conversion_event_id, agreement_id: group.agreement_id }))
+    );
+    return;
+  }
+
+  for (const group of groups) {
+    const [rows] = await connection.query(
+      `SELECT id, stripe_checkout_session_id
+       FROM conversion_par_value_requests
+       WHERE conversion_event_id = ? AND agreement_id = ?
+       ORDER BY (paid_confirmed_at IS NULL), id`,
+      [group.conversion_event_id, group.agreement_id]
+    );
+    const [kept, ...removed] = rows;
+    await connection.query(
+      "DELETE FROM conversion_par_value_requests WHERE id IN (?) AND paid_confirmed_at IS NULL",
+      [removed.map((row) => row.id)]
+    );
+    const openCheckouts = removed.filter((row) => row.stripe_checkout_session_id).map((row) => row.stripe_checkout_session_id);
+    console.warn(
+      `conversion_par_value_requests: removed ${removed.length} duplicate(s) for agreement ${group.agreement_id}, kept ${kept.id}.` +
+      (openCheckouts.length ? ` Check these Stripe sessions were not paid: ${openCheckouts.join(", ")}` : "")
+    );
+  }
+
+  await connection.query(
+    "ALTER TABLE conversion_par_value_requests ADD UNIQUE KEY uniq_conversion_agreement (conversion_event_id, agreement_id)"
+  );
+}
+
 export async function ensureConversionSchema() {
   const connection = await db.getConnection();
 
@@ -109,8 +170,11 @@ export async function ensureConversionSchema() {
           INDEX idx_conversion_par_value_event (conversion_event_id)
         )
       `);
-    } else if (!(await columnExists(connection, "conversion_par_value_requests", "reference"))) {
-      await connection.query("ALTER TABLE conversion_par_value_requests ADD COLUMN reference VARCHAR(128) NULL AFTER par_value_amount");
+    } else {
+      if (!(await columnExists(connection, "conversion_par_value_requests", "reference"))) {
+        await connection.query("ALTER TABLE conversion_par_value_requests ADD COLUMN reference VARCHAR(128) NULL AFTER par_value_amount");
+      }
+      await ensureParValueRequestUniqueKey(connection);
     }
 
     // The investor is shown what the payment consists of: share count times par

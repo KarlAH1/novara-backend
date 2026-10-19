@@ -5,7 +5,6 @@ import { createRateLimiter } from "../middleware/rateLimit.js";
 import {
   createOrUpdateStartupProfile,
   getStartupByUser,
-  getAllRaisingStartups,
   deleteMyStartup,
   getMyOrganization,
   uploadStartupPitchDeck,
@@ -68,10 +67,5 @@ router.get("/organization", authMiddleware, startupOnly, getMyOrganization);
    DELETE MY STARTUP
 ========================================= */
 router.delete("/my", authMiddleware, startupOnly, deleteMyStartup);
-
-/* =========================================
-   PUBLIC – GET ALL RAISING STARTUPS
-========================================= */
-router.get("/raising", authMiddleware, getAllRaisingStartups);
 
 export default router;

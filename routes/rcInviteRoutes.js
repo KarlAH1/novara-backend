@@ -25,6 +25,18 @@ import {
   saveInvestorFlowProgress
 } from "../utils/investorFlowProgress.js";
 import { getReservedAmount } from "../utils/capacityReservation.js";
+import {
+  findAgreementForClaimedInvite,
+  loadRoundPipeline,
+  markInviteOpened,
+  normalizeInviteeInput
+} from "../utils/invitePipeline.js";
+import { AUDIT_EVENTS, recordAuditEvent } from "../utils/auditLogger.js";
+import {
+  CURRENT_TERMS_VERSION,
+  hasAcceptedTerms,
+  termsNotAcceptedResponse
+} from "../utils/legalTerms.js";
 
 const router = express.Router();
 const inviteAccessLimiter = createRateLimiter({
@@ -198,18 +210,39 @@ router.post(
         return res.status(400).json({ error: "Emission not open" });
       }
 
+      const invitee = normalizeInviteeInput(req.body || {});
+      if (!invitee.ok) {
+        await connection.rollback();
+        return res.status(400).json({ error: invitee.error, code: "INVITEE_NAME_REQUIRED" });
+      }
+
       const token = generateInviteToken();
 
-      await connection.query(
-        "INSERT INTO rc_invites (round_id, token) VALUES (?, ?)",
-        [roundId, token]
+      const [insertResult] = await connection.query(
+        "INSERT INTO rc_invites (round_id, token, invitee_name, invitee_relation) VALUES (?, ?, ?, ?)",
+        [roundId, token, invitee.name, invitee.relation]
       );
+
+      // The invitee's name stays in rc_invites; the audit trail only needs to
+      // show that a personal invite was issued, and to whom by relation.
+      await recordAuditEvent(connection, AUDIT_EVENTS.INVITE_CREATED, {
+        startupId: round.startup_id,
+        roundId: Number(roundId),
+        actorUserId: req.user.id,
+        actorRole: "startup",
+        metadata: { invite_id: insertResult.insertId, relation: invitee.relation }
+      });
 
       await connection.commit();
 
       res.status(201).json({
-        message: "Privat invitasjonslenke opprettet",
-        token
+        message: "Personlig invitasjon opprettet",
+        token,
+        invite: {
+          id: insertResult.insertId,
+          inviteeName: invitee.name,
+          relation: invitee.relation
+        }
       });
 
     } catch (err) {
@@ -218,6 +251,42 @@ router.post(
       res.status(500).json({ error: "Internal server error" });
     } finally {
       connection.release();
+    }
+  }
+);
+
+/* =====================================================
+   INVESTOR PIPELINE (Startup Only)
+   Everyone the startup has invited to this round, and how
+   far each of them has come.
+===================================================== */
+
+router.get(
+  "/pipeline/:roundId",
+  auth,
+  requireRole(["startup"]),
+  async (req, res) => {
+    try {
+      const roundId = Number(req.params.roundId);
+      if (!Number.isInteger(roundId) || roundId <= 0) {
+        return res.status(400).json({ error: "Ugyldig runde." });
+      }
+
+      const [[round]] = await pool.query(
+        "SELECT id, startup_id FROM emission_rounds WHERE id = ? LIMIT 1",
+        [roundId]
+      );
+      if (!round) {
+        return res.status(404).json({ error: "Fant ikke runden." });
+      }
+      if (Number(round.startup_id) !== Number(req.user.id)) {
+        return res.status(403).json({ error: "Ikke din runde." });
+      }
+
+      res.json(await loadRoundPipeline(pool, roundId));
+    } catch (err) {
+      console.error("Load invite pipeline failed:", err);
+      res.status(500).json({ error: "Kunne ikke hente invitasjonene." });
     }
   }
 );
@@ -375,6 +444,14 @@ router.get("/validate/:token", async (req, res) => {
     }
 
     const invite = rows[0];
+
+    // The startup previewing its own link is not the invitee opening it.
+    if (Number(viewingUser?.id) !== Number(invite.startup_id)) {
+      await markInviteOpened(pool, inviteClaim.id).catch((markError) => {
+        console.error("Mark invite opened failed:", markError);
+      });
+    }
+
     const availability = await syncEmissionRoundAvailability(pool, invite.round_id);
     const reservedAmount = availability
       ? await getReservedAmount(pool, invite.round_id)
@@ -454,6 +531,10 @@ router.post("/access-code/send/:token", inviteAccessLimiter, async (req, res) =>
 
     if (!name || !email) {
       return res.status(400).json({ error: "Navn og e-post er påkrevd." });
+    }
+
+    if (!hasAcceptedTerms(req.body)) {
+      return termsNotAcceptedResponse(res);
     }
 
     if (password) {
@@ -589,6 +670,10 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
       return res.status(400).json({ error: "Navn, e-post og kode er påkrevd." });
     }
 
+    if (!hasAcceptedTerms(req.body)) {
+      return termsNotAcceptedResponse(res);
+    }
+
     const [inviteRows] = await pool.query(
       `
       SELECT r.id
@@ -687,8 +772,11 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
     }
 
     const [result] = await connection.query(
-      "INSERT INTO users (name, email, password, role, email_verified, email_verification_token, email_verification_expires) VALUES (?, ?, ?, 'investor', 1, NULL, NULL)",
-      [name, email, passwordHash]
+      `INSERT INTO users
+       (name, email, password, role, email_verified, email_verification_token, email_verification_expires,
+        terms_accepted_at, terms_version)
+       VALUES (?, ?, ?, 'investor', 1, NULL, NULL, NOW(), ?)`,
+      [name, email, passwordHash, CURRENT_TERMS_VERSION]
     );
 
     const [verificationUpdate] = await connection.query(
@@ -782,12 +870,29 @@ router.post(
         return res.status(403).json({ error: "Access denied" });
       }
 
+      // Once the invitee has an RC agreement, the invite is part of that
+      // agreement's history and stays.
+      if (await findAgreementForClaimedInvite(pool, invite)) {
+        return res.status(409).json({
+          error: "Personen har allerede startet en avtale, så invitasjonen kan ikke trekkes tilbake.",
+          code: "INVITE_HAS_AGREEMENT"
+        });
+      }
+
       await pool.query(
         "DELETE FROM rc_invites WHERE id=?",
         [inviteId]
       );
 
-      res.json({ message: "Invite removed" });
+      await recordAuditEvent(pool, AUDIT_EVENTS.INVITE_REVOKED, {
+        startupId: invite.startup_id,
+        roundId: invite.round_id,
+        actorUserId: req.user.id,
+        actorRole: "startup",
+        metadata: { invite_id: invite.id, was_claimed: invite.claimed_by_user_id != null }
+      });
+
+      res.json({ message: "Invitasjonen er trukket tilbake" });
 
     } catch (err) {
       console.error("Revoke invite failed:", err);

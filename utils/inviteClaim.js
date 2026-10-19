@@ -39,12 +39,13 @@ export function inviteIsAvailableTo(invite, userId) {
 
 // Binds an unclaimed invite to this user. Returns false when the invite was
 // already taken by someone else (checked inside the UPDATE so two people
-// racing on the same link can't both win).
+// racing on the same link can't both win). The claimant returning to their own
+// link keeps the original claimed_at, which the startup's pipeline shows.
 export async function claimInviteForUser(connection, token, userId) {
   const [result] = await connection.query(
     `
     UPDATE rc_invites
-    SET claimed_by_user_id = ?, claimed_at = NOW()
+    SET claimed_by_user_id = ?, claimed_at = COALESCE(claimed_at, NOW())
     WHERE token = ?
       AND (claimed_by_user_id IS NULL OR claimed_by_user_id = ?)
     `,

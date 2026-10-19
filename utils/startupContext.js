@@ -1,10 +1,33 @@
+/*
+  A company membership gives access to the company's rounds, investors and
+  documents. Anyone can register with any org.nr. and ask for their role to be
+  reviewed by hand, and that registration created a membership at once: a
+  stranger could read every investor's name, e-mail and amount, and opening the
+  conversion page could e-mail them payment demands.
+
+  So a membership awaiting manual review counts only for a company's first
+  member, who can prepare but not open a round (see roundActivationReadiness).
+  Anyone joining an existing company waits until Raisium approves them.
+
+  The predicate expects the membership aliased cm and its user aliased member.
+*/
+export const ACTIVE_MEMBERSHIP_SQL = `(
+    COALESCE(member.company_role_check_status, '') <> 'pending_manual_review'
+    OR NOT EXISTS (
+      SELECT 1 FROM company_memberships earlier
+      WHERE earlier.company_id = cm.company_id AND earlier.id < cm.id
+    )
+  )`;
+
 export async function getCompanyForUserWithConnection(connection, userId) {
   const [rows] = await connection.query(
     `
     SELECT c.id AS company_id, c.company_name, c.orgnr
     FROM company_memberships cm
     JOIN companies c ON c.id = cm.company_id
+    JOIN users member ON member.id = cm.user_id
     WHERE cm.user_id = ?
+      AND ${ACTIVE_MEMBERSHIP_SQL}
     LIMIT 1
     `,
     [userId]
@@ -112,10 +135,12 @@ export async function isUserInSameCompany(connection, userId, targetUserId) {
   const [rows] = await connection.query(
     `
     SELECT 1
-    FROM company_memberships source_cm
-    JOIN company_memberships target_cm ON target_cm.company_id = source_cm.company_id
-    WHERE source_cm.user_id = ?
+    FROM company_memberships cm
+    JOIN users member ON member.id = cm.user_id
+    JOIN company_memberships target_cm ON target_cm.company_id = cm.company_id
+    WHERE cm.user_id = ?
       AND target_cm.user_id = ?
+      AND ${ACTIVE_MEMBERSHIP_SQL}
     LIMIT 1
     `,
     [userId, targetUserId]

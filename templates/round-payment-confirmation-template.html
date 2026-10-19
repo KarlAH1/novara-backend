@@ -1,0 +1,23 @@
+<section class="doc-template" style="font-family: Georgia, 'Times New Roman', serif; font-size: 17px; color: #111827; background: transparent; padding: 32px; border: none; border-radius: 0; line-height: 1.72;">
+  <style>
+    .doc-template, .doc-template * { color: #000 !important; }
+  </style>
+  <header style="margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #d8d0c4;">
+    <p style="margin: 0 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c6f5f;">Bekreftelse på mottatte innbetalinger</p>
+    <h1 style="margin: 0; font-size: 30px; line-height: 1.15;">Innbetalinger etter RC-avtaler</h1>
+    <p style="margin: 10px 0 0; color: #374151;">Bekreftelsen gjelder investeringsbeløp betalt til selskapet etter RC-avtalene i runden. Det er ikke utstedt aksjer, og bekreftelsen er ikke en bekreftelse på aksjeinnskudd etter aksjeloven.</p>
+  </header>
+  <p><strong>Selskap:</strong> {{company_name}}</p>
+  <p><strong>Org.nr.:</strong> {{orgnr}}</p>
+  <p><strong>Dato:</strong> {{date}}</p>
+  <p><strong>Bekreftet av:</strong> {{confirmer_name}}, {{confirmer_capacity}} ({{confirmer_email}})</p>
+  <p style="margin-top:18px;">Undertegnede bekrefter at selskapet har mottatt innbetalingene nedenfor, betalt direkte til selskapet, og at de er kontrollert mot grunnlaget som er angitt.</p>
+  <h2 style="margin: 22px 0 8px; font-size: 19px;">Innbetalinger</h2>
+  {{payment_rows}}
+  <p style="margin: 8px 0 0; font-size: 14px; color: #374151;">{{evidence_basis}}</p>
+  <div style="margin-top: 20px; padding: 18px; background:#f8f4ed; border:1px solid #ddd4c7; border-radius:14px;">
+    <p style="margin:0 0 10px;"><strong>Antall RC-avtaler:</strong> {{agreement_count}}</p>
+    <p style="margin:0;"><strong>Samlet mottatt:</strong> {{total_amount}}</p>
+  </div>
+  <!-- digital_signature_line -->
+</section>

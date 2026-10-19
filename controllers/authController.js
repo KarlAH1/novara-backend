@@ -13,6 +13,7 @@ import { createExpiry, createRawToken, hashToken, validatePasswordRequirements }
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getClientIp, logAuditEvent } from "../utils/auditLogger.js";
 import { createAuthToken } from "../utils/authToken.js";
+import { CURRENT_TERMS_VERSION, hasAcceptedTerms, termsNotAcceptedResponse } from "../utils/legalTerms.js";
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync("raisium-invalid-password", 10);
 
 function createSixDigitCode() {
@@ -216,6 +217,10 @@ export const register = async (req, res) => {
       });
     }
 
+    if (!hasAcceptedTerms(req.body)) {
+      return termsNotAcceptedResponse(res);
+    }
+
     const role = "startup";
     const roleCheck = await checkCompanyRoleMatch({
       fullName: name,
@@ -264,9 +269,10 @@ export const register = async (req, res) => {
 
     const [result] = await connection.execute(
       `INSERT INTO users
-       (name, email, password, role, email_verified, company_role_check_status, company_role_check_checked_at, company_role_check_orgnr)
-       VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)`,
-      [name, email, hashedPassword, role, 1, roleCheckStatus, company.orgnr]
+       (name, email, password, role, email_verified, company_role_check_status, company_role_check_checked_at, company_role_check_orgnr,
+        terms_accepted_at, terms_version)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), ?)`,
+      [name, email, hashedPassword, role, 1, roleCheckStatus, company.orgnr, CURRENT_TERMS_VERSION]
     );
 
     const userId = result.insertId;
@@ -300,9 +306,10 @@ export const register = async (req, res) => {
     });
 
     setImmediate(() => {
+      // Telegram has no data processing agreement with Raisium, so alerts carry
+      // company-level facts and an id only. Names and e-mail stay in the database.
       sendTelegramAdminAlert("Ny startup registrert", [
-        `Navn: ${name}`,
-        `E-post: ${email}`,
+        `Bruker-ID: ${userId}`,
         `Selskap: ${company.name || "-"}`,
         `Orgnr: ${company.orgnr || "-"}`,
         `Rollematch: ${roleCheckStatus === "matched" ? "Automatisk" : "Manuell vurdering"}`

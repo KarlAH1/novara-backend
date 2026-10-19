@@ -1,5 +1,5 @@
 import pool from "../config/db.js";
-import { stripe } from "./stripeClient.js";
+import { stripe, stripeIdempotencyKey } from "./stripeClient.js";
 import { getCompanyForUserWithConnection } from "./startupContext.js";
 
 // Standard connected accounts: the company gets its own full Stripe
@@ -30,7 +30,7 @@ export async function getOrCreateConnectedAccount(userId) {
         company: company.orgnr ? { registration_number: company.orgnr } : undefined,
         business_profile: company.company_name ? { name: company.company_name } : undefined
     }, {
-        idempotencyKey: `raisium:connect:company:${company.company_id}`
+        idempotencyKey: stripeIdempotencyKey("connect", "company", company.company_id)
     });
 
     const [update] = await pool.query(

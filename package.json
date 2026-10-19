@@ -6,6 +6,7 @@
   "scripts": {
     "db:bootstrap:local": "node scripts/bootstrapLocalDb.js",
     "admin:create": "node scripts/createAdminUser.js",
+    "confirmer:create": "node scripts/createConfirmerUser.js",
     "dev": "node server.js",
     "start": "node server.js",
     "postinstall": "puppeteer browsers install chrome",

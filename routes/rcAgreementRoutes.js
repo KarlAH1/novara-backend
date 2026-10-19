@@ -15,11 +15,12 @@ import { activateRcAgreementPayment } from "../utils/rcPaymentActivation.js";
 import { maybeSendPaymentReminder } from "../utils/rcPaymentReminder.js";
 import { encryptNationalId, decryptNationalId } from "../utils/nationalIdCrypto.js";
 import { decodeBirthDateFromNationalId } from "../utils/norwegianNationalId.js";
-import { releaseReservationForAgreement } from "../utils/capacityReservation.js";
+import { releaseReservationForAgreement, getAvailableForAgreement } from "../utils/capacityReservation.js";
 import { buildEvidencePackage, canAccessEvidence } from "../utils/evidenceExport.js";
 import { isUserInSameCompany } from "../utils/startupContext.js";
 import { saveInvestorFlowProgress } from "../utils/investorFlowProgress.js";
 import { MINIMUM_RC_INVESTMENT_NOK } from "../utils/rcInvestmentRules.js";
+import { syncConfirmationRequestsLater } from "../utils/paymentConfirmations.js";
 
 const router = express.Router();
 
@@ -198,12 +199,15 @@ const getRcAgreementViewState = (agreement = {}) => {
   const startupPreApproved = agreement.round_open === 1 || !!agreement.round_activated_at;
 
   if (paymentConfirmed) {
+    const viaStripe = agreement.payment_method === "stripe" && !!agreement.stripe_paid_at;
     return {
       flow_status: "Avtale aktiv / nedlastbar",
-      flow_message: "Betaling er bekreftet av selskapet. Den endelige avtalen kan lastes ned.",
+      flow_message: viaStripe
+        ? "Betalingen er bekreftet av Stripe. Den endelige avtalen kan lastes ned."
+        : "Betaling er bekreftet av selskapet. Den endelige avtalen kan lastes ned.",
       final_document_status: "Avtale aktiv",
       is_downloadable: true,
-      payment_status: "Betaling bekreftet av selskapet"
+      payment_status: viaStripe ? "Betaling bekreftet av Stripe" : "Betaling bekreftet av selskapet"
     };
   }
 
@@ -370,11 +374,26 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
       email: agreement.investor_email
     });
 
+    /*
+      An agreement waiting for payment whose reservation has lapsed, in a round
+      that has since filled, can no longer be activated. The investor must not
+      be shown an account number and a pay button for it.
+    */
+    let paymentBlocked = false;
+    if (agreement.status === "Awaiting Payment") {
+      const { available, held } = await getAvailableForAgreement(pool, {
+        agreementId: Number(agreementId),
+        roundId: agreement.round_id,
+        remainingCapacity: availability?.remainingCapacity ?? 0
+      });
+      paymentBlocked = (!availability?.canInvest && !held) || Number(agreement.investment_amount) > available;
+    }
+
     const enrichedAgreement = {
       ...agreement,
       payment_deadline: resolveRcPaymentDeadline(agreement)
     };
-    maybeSendPaymentReminder(enrichedAgreement);
+    if (!paymentBlocked) maybeSendPaymentReminder(enrichedAgreement);
 
     res.json({
       ...enrichedAgreement,
@@ -383,7 +402,12 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
       round_closed_reason: availability?.closedReason || null,
       round_remaining_capacity: availability?.remainingCapacity ?? null,
       round_committed_amount: availability?.committedAmount ?? null,
-      ...getRcAgreementViewState(agreement)
+      ...getRcAgreementViewState(agreement),
+      ...(paymentBlocked ? {
+        payment_blocked: true,
+        flow_message: "Runden ble fulltegnet før betalingen ble registrert, så denne avtalen kan ikke fullføres. Ikke overfør penger. Investeringen kan avbrytes.",
+        payment_status: "Kan ikke betales – runden er fulltegnet"
+      } : { payment_blocked: false })
     });
 
   } catch (err) {
@@ -835,129 +859,6 @@ router.get("/:id(\\d+)/document/pdf", auth, async (req, res) => {
   }
 });
 
-/* =====================================================
-   SIGN AGREEMENT (Investor or Startup)
-===================================================== */
-
-router.post(
-  "/:id(\\d+)/sign",
-  auth,
-  async (req, res) => {
-
-    const connection = await pool.getConnection();
-
-    try {
-      const agreementId = req.params.id;
-      const userId = req.user.id;
-      const role = req.user.role;
-
-      await connection.beginTransaction();
-
-      // Lock agreement
-      const [rows] = await connection.query(
-        `
-        SELECT a.*, r.startup_id
-        FROM rc_agreements a
-        JOIN rc_rounds r ON a.round_id = r.id
-        WHERE a.id = ?
-        FOR UPDATE
-        `,
-        [agreementId]
-      );
-
-      if (rows.length === 0) {
-        await connection.rollback();
-        return res.status(404).json({ error: "Agreement not found" });
-      }
-
-      const agreement = rows[0];
-
-      // Access control
-      if (
-        (role === "investor" && agreement.investor_id !== userId) ||
-        (role === "startup" && agreement.startup_id !== userId)
-      ) {
-        await connection.rollback();
-        return res.status(403).json({ error: "Access denied" });
-      }
-
-      if (agreement.status === "Active RC") {
-        await connection.rollback();
-        return res.status(400).json({ error: "Agreement already active" });
-      }
-
-      // Record signature
-      if (role === "investor") {
-        await connection.query(
-          "UPDATE rc_agreements SET investor_signed_at = NOW() WHERE id=?",
-          [agreementId]
-        );
-      }
-
-      if (role === "startup") {
-        await connection.query(
-          "UPDATE rc_agreements SET startup_signed_at = NOW() WHERE id=?",
-          [agreementId]
-        );
-      }
-
-      // Reload signature state
-      const [updatedRows] = await connection.query(
-        `
-        SELECT investor_signed_at, startup_signed_at
-        FROM rc_agreements
-        WHERE id=?
-        `,
-        [agreementId]
-      );
-
-      const updated = updatedRows[0];
-
-      // If both signed → move to Awaiting Payment
-      if (updated.investor_signed_at && updated.startup_signed_at) {
-        await connection.query(
-          `
-          UPDATE rc_agreements
-          SET status='Awaiting Payment'
-          WHERE id=?
-          `,
-          [agreementId]
-        );
-      } else {
-        // If only one signed → Pending Signatures
-        await connection.query(
-          `
-          UPDATE rc_agreements
-          SET status='Pending Signatures'
-          WHERE id=?
-          `,
-          [agreementId]
-        );
-      }
-
-      await connection.commit();
-
-      res.json({
-        message: "Signature recorded",
-        investorSigned: !!updated.investor_signed_at,
-        startupSigned: !!updated.startup_signed_at,
-        newStatus:
-          updated.investor_signed_at && updated.startup_signed_at
-            ? "Awaiting Payment"
-            : "Pending Signatures"
-      });
-
-    } catch (err) {
-      await connection.rollback();
-      console.error("Signing failed:", err);
-      res.status(500).json({ error: "Internal server error" });
-    } finally {
-      connection.release();
-    }
-  }
-);
-
-/* CONFIRM PAYMENT */
 router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
   const connection = await pool.getConnection();
 
@@ -980,6 +881,7 @@ router.post("/:id(\\d+)/confirm", auth, async (req, res) => {
     }
 
     if (!result.alreadyActive) {
+      syncConfirmationRequestsLater({ roundId: result.agreement.round_id });
       sendRcPaymentConfirmedEmail({
         investorEmail: result.agreement.investor_email,
         startupName: result.agreement.startup_name || "selskapet",

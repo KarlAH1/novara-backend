@@ -9,7 +9,11 @@ import { syncEmissionRoundAvailability } from "../utils/emissionRoundState.js";
 import { renderHtmlToPdfBuffer } from "../utils/pdfRenderer.js";
 import { lockDocumentWithSignatures, applySignatureBlockToHtml } from "../utils/documentSigning.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
-import { buildConversionState } from "./conversionRoutes.js";
+import { buildConversionState, issueParValueNotices, notifyGfSubscribers } from "./conversionRoutes.js";
+import { AUDIT_EVENTS, getClientIp, recordAuditEvent } from "../utils/auditLogger.js";
+import { enqueueCriticalAuditEvent } from "../utils/auditOutbox.js";
+import { GF_SUBSCRIBER_ROLE } from "../utils/pendingSignatures.js";
+import { completeConfirmationForDocument, notifyConfirmationCompleted } from "../utils/paymentConfirmations.js";
 import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapabilities.js";
 import { shareCountsForStoredOwners } from "../utils/shareholderAllocation.js";
 
@@ -211,7 +215,7 @@ const syncRcAgreementSignatures = async (connection, documentId, htmlContent, do
     const agreementMatch = htmlContent.match(/rc_agreement_id:(\d+)/i);
 
     if (!agreementMatch) {
-        return;
+        return null;
     }
 
     const agreementId = Number(agreementMatch[1]);
@@ -313,6 +317,7 @@ const syncRcAgreementSignatures = async (connection, documentId, htmlContent, do
             );
         }
     }
+    return agreementId;
 };
 
 /* =========================================
@@ -986,6 +991,55 @@ router.post("/:id(\\d+)/sign", auth, async (req, res) => {
             return res.status(409).json({ error: "Dokumentet er allerede signert og låst." });
         }
 
+        /*
+          The GF protocol records a resolution on the board's proposal, and the
+          investors subscribe in it once the meeting has signed it. Neither step
+          may happen out of order.
+        */
+        let gfConversion = null;
+        let signsAsMeeting = false;
+        if (doc.type === "GFC") {
+            const [conversionRows] = await connection.query(
+                `SELECT ce.id, board.status AS board_status
+                 FROM conversion_events ce
+                 LEFT JOIN documents board ON board.id = ce.board_document_id
+                 WHERE ce.gf_document_id = ?
+                 ORDER BY ce.id DESC
+                 LIMIT 1`,
+                [documentId]
+            );
+            gfConversion = conversionRows[0] || null;
+            if (gfConversion && gfConversion.board_status !== "LOCKED") {
+                await connection.rollback();
+                return res.status(409).json({
+                    error: "Styrets forslag må være signert før generalforsamlingsprotokollen kan signeres.",
+                    code: "BOARD_PROPOSAL_NOT_SIGNED"
+                });
+            }
+
+            const [ownRows] = await connection.query(
+                `SELECT role FROM document_signers
+                 WHERE document_id = ? AND signed_at IS NULL AND (user_id = ? OR email = ?)`,
+                [documentId, req.user.id, req.user.email]
+            );
+            signsAsMeeting = ownRows.some((row) => row.role !== GF_SUBSCRIBER_ROLE);
+            if (ownRows.length && !signsAsMeeting) {
+                const [meetingRows] = await connection.query(
+                    `SELECT 1 FROM document_signers
+                     WHERE document_id = ? AND role <> ? AND signed_at IS NULL
+                     LIMIT 1`,
+                    [documentId, GF_SUBSCRIBER_ROLE]
+                );
+                if (meetingRows.length) {
+                    await connection.rollback();
+                    return res.status(409).json({
+                        error: "Protokollen må signeres av møteleder og protokollunderskriver før aksjene kan tegnes.",
+                        code: "GF_NOT_SIGNED_BY_MEETING"
+                    });
+                }
+            }
+        }
+
         if (doc.type === "RC") {
             const agreementMatch = doc.html_content.match(/rc_agreement_id:(\d+)/i);
 
@@ -1063,13 +1117,57 @@ router.post("/:id(\\d+)/sign", auth, async (req, res) => {
             updatedHtml = locked.htmlContent;
         }
 
+        const auditBase = {
+            startupId: doc.startup_id,
+            documentId: Number(documentId),
+            actorUserId: req.user.id,
+            actorRole: req.user.role,
+            ipAddress: getClientIp(req)
+        };
+
         if (doc.type === "RC") {
-            await syncRcAgreementSignatures(
+            const agreementId = await syncRcAgreementSignatures(
                 connection,
                 documentId,
                 updatedHtml,
                 documentHash
             );
+            const [[agreement]] = agreementId
+                ? await connection.query("SELECT round_id, investor_id, status FROM rc_agreements WHERE id = ?", [agreementId])
+                : [[null]];
+            await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.RC_SIGNED, {
+                ...auditBase,
+                roundId: agreement?.round_id ?? null,
+                agreementId: agreementId || null,
+                investorId: agreement?.investor_id ?? null,
+                newStatus: agreement?.status ?? null,
+                documentHash
+            });
+        } else {
+            await recordAuditEvent(connection, AUDIT_EVENTS.DOCUMENT_SIGNED, {
+                ...auditBase,
+                metadata: { document_type: doc.type }
+            });
+        }
+
+        if (remaining.length === 0) {
+            await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.DOCUMENT_LOCKED, {
+                ...auditBase,
+                documentHash,
+                metadata: { document_type: doc.type }
+            });
+        }
+
+        const completedConfirmation = remaining.length === 0
+            ? await completeConfirmationForDocument(connection, Number(documentId), { actorUserId: req.user.id, documentHash })
+            : null;
+
+        if (remaining.length === 0 && doc.type === "GFC" && gfConversion) {
+            await enqueueCriticalAuditEvent(connection, AUDIT_EVENTS.SUBSCRIPTION_COMPLETED, {
+                ...auditBase,
+                documentHash,
+                metadata: { conversion_event_id: gfConversion.id }
+            });
         }
 
         if (remaining.length === 0 && ["SFC", "GFC", "CONVERSION_CAPITAL_CONFIRMATION"].includes(doc.type)) {
@@ -1199,6 +1297,33 @@ router.post("/:id(\\d+)/sign", auth, async (req, res) => {
         await connection.commit();
 
         res.json({ success: true });
+
+        if (completedConfirmation) {
+            setImmediate(() => {
+                notifyConfirmationCompleted(pool, completedConfirmation)
+                    .catch((error) => console.error("Confirmation notice failed:", error));
+            });
+        }
+
+        if (doc.type === "GFC" && gfConversion) {
+            const locked = remaining.length === 0;
+            setImmediate(async () => {
+                try {
+                    if (locked) {
+                        // Every investor has subscribed: request the par amounts.
+                        await issueParValueNotices(pool, gfConversion.id);
+                    } else if (signsAsMeeting) {
+                        const [meetingRows] = await pool.query(
+                            "SELECT 1 FROM document_signers WHERE document_id = ? AND role <> ? AND signed_at IS NULL LIMIT 1",
+                            [documentId, GF_SUBSCRIBER_ROLE]
+                        );
+                        if (!meetingRows.length) await notifyGfSubscribers(pool, Number(documentId));
+                    }
+                } catch (followUpError) {
+                    console.error("GF protocol follow-up failed:", followUpError);
+                }
+            });
+        }
 
     } catch (err) {
         await connection.rollback();

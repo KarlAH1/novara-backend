@@ -29,9 +29,9 @@ export function verifyAuthToken(token) {
       audience: JWT_AUDIENCE
     });
   } catch (error) {
-    // Existing sessions did not carry issuer/audience. Keep a bounded rollout
-    // path; set ALLOW_LEGACY_JWT=false after the previous token TTL has passed.
-    if (String(process.env.ALLOW_LEGACY_JWT || "true").toLowerCase() !== "true") {
+    // Tokens issued before 2026-09-08 did not carry issuer/audience. Their 7-day
+    // TTL has long passed, so the fallback is off unless explicitly re-enabled.
+    if (String(process.env.ALLOW_LEGACY_JWT || "false").toLowerCase() !== "true") {
       throw error;
     }
     return jwt.verify(token, process.env.JWT_SECRET, { algorithms: JWT_ALGORITHMS });

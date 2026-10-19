@@ -11,6 +11,7 @@ import { ensureAdminIssueSchema } from "./utils/adminIssueSchema.js";
 import { ensureConversionSchema } from "./utils/conversionSchema.js";
 import { ensureDocumentSchema } from "./utils/documentSchema.js";
 import { ensureEmissionRoundSchema } from "./utils/emissionRoundSchema.js";
+import { ensureInvitePipelineSchema } from "./utils/invitePipeline.js";
 import { ensureStartupDocumentSchema } from "./utils/startupDocumentSchema.js";
 import { ensureInvestorLegalProfileSchema } from "./utils/investorLegalProfileSchema.js";
 import { ensureStartupPlanSchema } from "./utils/startupPlanSchema.js";
@@ -21,9 +22,12 @@ import { ensureArticlesConfirmationSchema } from "./utils/articlesConfirmation.j
 import { ensureAuditLogSchema } from "./utils/auditLogger.js";
 import { ensureImplementationStatusSchema } from "./utils/rcImplementationStatus.js";
 import { ensureBoardRoleSchema } from "./utils/boardChairResolution.js";
+import { ensurePaymentSchema } from "./utils/paymentSchema.js";
+import { ensurePaymentConfirmationSchema } from "./utils/paymentConfirmations.js";
+import confirmationRoutes from "./routes/confirmationRoutes.js";
 import { ensureAuditOutboxSchema, processAuditOutbox } from "./utils/auditOutbox.js";
 import { stripe, isStripeConfigured } from "./utils/stripeClient.js";
-import { handleCheckoutSessionCompleted, handleCheckoutSessionFailed, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted } from "./utils/stripePayments.js";
+import { handleCheckoutSessionCompleted, handleCheckoutSessionFailed, handlePlanCheckoutSessionCompleted, handleParValueCheckoutSessionCompleted, handleChargeUpdated } from "./utils/stripePayments.js";
 import { handleConnectedAccountUpdated } from "./utils/stripeConnect.js";
 import { closePdfBrowser } from "./utils/pdfRenderer.js";
 import { ensurePerformanceIndexes } from "./utils/performanceIndexes.js";
@@ -51,6 +55,17 @@ if (missingDbVars.length) {
 
 const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
 const emailProviderConfig = getEmailProviderConfig();
+
+// Anyone who knows JWT_SECRET can mint a session for any user, admin included.
+// A short or placeholder value in production is the same as no auth at all.
+const WEAK_JWT_SECRET_PATTERN = /^(supersecret|secret|changeme|change-me|local-|test-|dev-)/i;
+if (
+  isProduction &&
+  (process.env.JWT_SECRET.length < 32 || WEAK_JWT_SECRET_PATTERN.test(process.env.JWT_SECRET))
+) {
+  console.error("❌ JWT_SECRET is too weak for production. Use at least 32 random characters (e.g. `openssl rand -hex 32`).");
+  process.exit(1);
+}
 
 if (isProduction && !emailProviderConfig.configured) {
   console.error("❌ Email provider missing in production. Set RESEND_API_KEY and EMAIL_FROM (or RESEND_FROM).");
@@ -117,6 +132,10 @@ const UPLOAD_JSON_PATHS = new Set([
   "/api/startup/pitch-deck",
   "/api/startup/articles-of-association"
 ]);
+// Upload paths that carry an id.
+const UPLOAD_JSON_PATTERNS = [
+  /^\/api\/confirmations\/\d+\/evidence$/
+];
 
 const defaultJsonParser = express.json({ limit: "256kb" });
 const uploadJsonParser = express.json({ limit: "10mb" });
@@ -161,6 +180,7 @@ await ensureAdminIssueSchema();
 await ensureConversionSchema();
 await ensureDocumentSchema();
 await ensureEmissionRoundSchema();
+await ensureInvitePipelineSchema();
 await ensureInvestorLegalProfileSchema();
 await ensureStartupDocumentSchema();
 await ensureStartupPlanSchema();
@@ -171,7 +191,9 @@ await ensureArticlesConfirmationSchema();
 await ensureAuditLogSchema();
 await ensureImplementationStatusSchema();
 await ensureBoardRoleSchema();
+await ensurePaymentSchema();
 await ensureAuditOutboxSchema();
+await ensurePaymentConfirmationSchema();
 await ensurePerformanceIndexes();
 
 /*
@@ -217,31 +239,44 @@ app.use(
    verification, so it's registered before express.json().
 ========================================= */
 app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  if (!isStripeConfigured() || !process.env.STRIPE_WEBHOOK_SECRET) {
+  /*
+    Two Stripe endpoints point here, each with its own signing secret: one for
+    Raisium's own account (startup plan payments) and one for connected
+    accounts (RC investments and par amounts, which are direct charges on the
+    company's account). An endpoint receives one kind or the other, never both.
+  */
+  const webhookSecrets = [process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_CONNECT_WEBHOOK_SECRET]
+    .map((secret) => String(secret || "").trim())
+    .filter(Boolean);
+  if (!isStripeConfigured() || !webhookSecrets.length) {
     return res.status(503).send("Stripe webhook not configured");
   }
 
   let event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      req.headers["stripe-signature"],
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err) {
-    console.error("Stripe webhook signature verification failed:", err.message);
+  for (const secret of webhookSecrets) {
+    try {
+      event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], secret);
+      break;
+    } catch {
+      // Try the other endpoint's secret.
+    }
+  }
+  if (!event) {
+    console.error("Stripe webhook signature verification failed for every configured secret");
     return res.status(400).send("Invalid webhook signature");
   }
 
   try {
     if (["checkout.session.completed", "checkout.session.async_payment_succeeded"].includes(event.type)) {
       await handleCheckoutSessionCompleted(event.data.object);
-      await handlePlanCheckoutSessionCompleted(event.data.object);
+      await handlePlanCheckoutSessionCompleted(event.data.object, { connectedAccount: event.account || null });
       await handleParValueCheckoutSessionCompleted(event.data.object);
     } else if (["checkout.session.expired", "checkout.session.async_payment_failed"].includes(event.type)) {
       await handleCheckoutSessionFailed(event.data.object);
     } else if (event.type === "account.updated") {
       await handleConnectedAccountUpdated(event.data.object);
+    } else if (event.type === "charge.updated") {
+      await handleChargeUpdated(event.data.object, { connectedAccount: event.account || null });
     }
     res.json({ received: true });
   } catch (err) {
@@ -254,7 +289,8 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
    MIDDLEWARE
 ========================================= */
 app.use((req, res, next) => {
-  const parser = UPLOAD_JSON_PATHS.has(req.path) ? uploadJsonParser : defaultJsonParser;
+  const isUpload = UPLOAD_JSON_PATHS.has(req.path) || UPLOAD_JSON_PATTERNS.some((pattern) => pattern.test(req.path));
+  const parser = isUpload ? uploadJsonParser : defaultJsonParser;
   return parser(req, res, next);
 });
 app.use(defaultUrlEncodedParser);
@@ -332,6 +368,7 @@ app.use("/api/document-signers", documentSignerRoutes);
 app.use("/api/gf", gfRoutes);
 app.use("/api/board", boardRoutes);
 app.use("/api/enheter", enheterRoutes);
+app.use("/api/confirmations", confirmationRoutes);
 
 /* =========================================
    FRONTEND HTML FALLBACKS
@@ -350,6 +387,7 @@ const frontendPages = [
   "dashboard.html",
   "startup-payment.html",
   "sign.html",
+  "bekreftelser.html",
   "payment.html",
   "rc-detail.html",
   "invest.html",

@@ -1,5 +1,5 @@
 import { getCapacityExceededMessage, syncEmissionRoundAvailability } from "./emissionRoundState.js";
-import { commitReservationForAgreement } from "./capacityReservation.js";
+import { commitReservationForAgreement, getAvailableForAgreement } from "./capacityReservation.js";
 import { AUDIT_EVENTS } from "./auditLogger.js";
 import { enqueueCriticalAuditEvent } from "./auditOutbox.js";
 import { getTableColumns } from "./schemaCapabilities.js";
@@ -22,11 +22,13 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
         const [rows] = await connection.query(
             `
             SELECT a.*, e.amount_raised, investor.email AS investor_email, COALESCE(investor.name, investor.email) AS investor_name,
-                   COALESCE(su.name, su.email) AS startup_name, su.email AS startup_email
+                   COALESCE(c.company_name, su.name, su.email) AS startup_name, su.email AS startup_email
             FROM rc_agreements a
             JOIN emission_rounds e ON a.round_id = e.id
             LEFT JOIN users investor ON investor.id = a.investor_id
             LEFT JOIN users su ON su.id = a.startup_id
+            LEFT JOIN company_memberships cm ON cm.user_id = a.startup_id
+            LEFT JOIN companies c ON c.id = cm.company_id
             WHERE a.id = ? ${ownerClause}
             FOR UPDATE
             `,
@@ -55,36 +57,25 @@ export async function activateRcAgreementPayment(connection, { agreementId, expe
         }
 
         /*
-          The investor's own reservation still counts against the round here, so
-          compare against remaining capacity plus what they are holding —
-          otherwise the reservation that guaranteed them the slot would be the
-          very thing that blocks their payment.
+          The agreement may take what is left of the round once everyone else's
+          live reservations are set aside. Its own hold is not set aside: that
+          is the place it reserved.
         */
-        const [ownReservationRows] = await connection.query(
-            `SELECT COALESCE(SUM(amount), 0) AS held
-             FROM round_capacity_reservations
-             WHERE agreement_id = ? AND status = 'reserved'`,
-            [agreementId]
-        ).catch(() => [[{ held: 0 }]]);
-        const heldByThisAgreement = Number(ownReservationRows?.[0]?.held || 0);
+        const { available, held } = await getAvailableForAgreement(connection, {
+            agreementId,
+            roundId: agreement.round_id,
+            remainingCapacity: availability?.remainingCapacity ?? 0,
+            lock: true
+        });
 
-        if (!availability?.canInvest && !heldByThisAgreement) {
+        if ((!availability?.canInvest && !held) || Number(agreement.investment_amount) > available) {
             await connection.rollback();
+            const shown = Math.max(available, 0);
             return {
                 ok: false,
                 code: 400,
-                error: getCapacityExceededMessage(availability?.remainingCapacity ?? 0),
-                max_available_amount: availability?.remainingCapacity ?? 0
-            };
-        }
-
-        if (agreement.investment_amount > (Number(availability?.remainingCapacity ?? 0) + heldByThisAgreement)) {
-            await connection.rollback();
-            return {
-                ok: false,
-                code: 400,
-                error: getCapacityExceededMessage(availability?.remainingCapacity ?? 0),
-                max_available_amount: availability?.remainingCapacity ?? 0
+                error: getCapacityExceededMessage(shown),
+                max_available_amount: shown
             };
         }
 

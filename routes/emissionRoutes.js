@@ -15,7 +15,6 @@ import {
     confirmArticlesShareBasis,
     previewShareholderAllocation,
     closeEmissionEarly,
-    generateInvite,
     investInEmission,
     deleteEmissionByStartup,
     reportEmissionIssue
@@ -66,9 +65,6 @@ router.delete("/:id(\\d+)", auth, startupOnly, deleteEmissionByStartup);
 
 // Report issue
 router.post("/:id(\\d+)/issues", auth, reportEmissionIssue);
-
-// Invite investor
-router.post("/:id(\\d+)/invite", auth, startupOnly, generateInvite);
 
 // Investor invests
 router.post("/:id(\\d+)/invest", auth, investorOnly, investInEmission);

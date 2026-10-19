@@ -41,7 +41,7 @@ export async function sendRcAgreementCreatedEmails({
   amount,
   agreementId
 }) {
-  const rcUrl = `${getFrontendBase()}/rc-detail.html?id=${agreementId}`;
+  const rcUrl = `${getFrontendBase()}/rc-detail.html?agreement=${agreementId}`;
   const amountLabel = formatNok(amount);
 
   const tasks = [];
@@ -74,14 +74,14 @@ export async function sendRcPaymentConfirmedEmail({
   agreementId
 }) {
   if (!investorEmail) return;
-  const rcUrl = `${getFrontendBase()}/rc-detail.html?id=${agreementId}`;
+  const rcUrl = `${getFrontendBase()}/rc-detail.html?agreement=${agreementId}`;
   await sendSafe({
     to: investorEmail,
     subject: `Betaling er bekreftet hos ${startupName || "selskapet"}`,
-    text: `Hei,\n\nBetalingen på ${formatNok(amount)} er bekreftet av ${startupName || "selskapet"}.\n\nAvtalen er nå aktiv i Raisium:\n${rcUrl}`,
+    text: `Hei,\n\nBetalingen på ${formatNok(amount)} til ${startupName || "selskapet"} er bekreftet.\n\nAvtalen er nå aktiv i Raisium:\n${rcUrl}`,
     html: `
       <p>Hei,</p>
-      <p>Betalingen på <strong>${escapeHtml(formatNok(amount))}</strong> er bekreftet av <strong>${escapeHtml(startupName || "selskapet")}</strong>.</p>
+      <p>Betalingen på <strong>${escapeHtml(formatNok(amount))}</strong> til <strong>${escapeHtml(startupName || "selskapet")}</strong> er bekreftet.</p>
       <p><a href="${escapeHtml(rcUrl)}">Åpne avtalen</a></p>
     `
   });
@@ -148,7 +148,7 @@ export async function sendRcPaymentReminderEmail({
   agreementId
 }) {
   if (!investorEmail) return;
-  const rcUrl = `${getFrontendBase()}/rc-detail.html?id=${agreementId}`;
+  const rcUrl = `${getFrontendBase()}/rc-detail.html?agreement=${agreementId}`;
   const amountLabel = formatNok(amount);
   await sendSafe({
     to: investorEmail,

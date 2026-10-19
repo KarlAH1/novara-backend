@@ -122,7 +122,7 @@ export const adminChangeRole = async (req, res) => {
     const { id } = req.params;
     const role = String(req.body.role || "").trim().toLowerCase();
 
-    if (!["admin", "startup", "investor", "partner"].includes(role)) {
+    if (!["admin", "startup", "investor", "confirmer"].includes(role)) {
         return res.status(400).json({ error: "Invalid role" });
     }
 
@@ -457,7 +457,6 @@ export const adminApprovePlanPayment = async (req, res) => {
     await sendTelegramAdminAlert("Planbetaling godkjent", [
         `Selskap: ${company.company_name || "-"}`,
         `Orgnr: ${company.orgnr || "-"}`,
-        `E-post: ${company.startup_email || "-"}`,
         "Status: Aktivert av admin"
     ]);
 
@@ -828,18 +827,15 @@ export const createOwnIssue = async (req, res) => {
         [issueResult.insertId, userId, userRole, message]
     );
 
-    const [userRows] = await pool.query(
-        "SELECT name, email FROM users WHERE id = ? LIMIT 1",
-        [userId]
-    );
-    const sender = userRows[0] || {};
-
     await sendTelegramAdminAlert("Ny melding til Raisium", [
-        `Fra: ${sender.name || "-"} (${sender.email || "-"})`,
+        // No names, e-mail or free text: the message itself may contain
+        // personal data and is read in the admin panel, not in Telegram.
+        `Sak-ID: ${issueResult.insertId}`,
+        `Bruker-ID: ${userId || "-"}`,
         `Rolle: ${userRole || "-"}`,
         `Kategori: ${issueType}`,
         `Kilde: ${source}`,
-        `Melding: ${message}`
+        "Les meldingen i admin-panelet."
     ]);
 
     res.status(201).json({

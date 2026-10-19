@@ -1,5 +1,4 @@
 import pool from "../config/db.js";
-import { generateInviteToken } from "../utils/inviteToken.js";
 import {
     INVITE_TAKEN_ERROR,
     getOptionalUserFromRequest,
@@ -41,40 +40,6 @@ export const getInvite = async (req, res) => {
 
     } catch(err){
         console.error("Get invite error:", err);
-        res.status(500).json({ error:"Server error" });
-    }
-};
-
-/* ===============================
-   Generate invite
-================================= */
-export const generateInvite = async (req, res) => {
-    try {
-
-        const { roundId } = req.params;
-        const startupId = req.user.id;
-
-        const [roundRows] = await pool.query(`
-            SELECT id 
-            FROM emission_rounds 
-            WHERE id=? AND startup_id=? AND open=1
-        `, [roundId, startupId]);
-
-        if (!roundRows.length) {
-            return res.status(403).json({ error:"Not allowed" });
-        }
-
-        const token = generateInviteToken();
-
-        await pool.query(`
-            INSERT INTO rc_invites (round_id, token)
-            VALUES (?, ?)
-        `, [roundId, token]);
-
-        res.json({ token });
-
-    } catch(err){
-        console.error("Generate invite error:", err);
         res.status(500).json({ error:"Server error" });
     }
 };

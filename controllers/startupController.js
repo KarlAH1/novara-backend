@@ -9,6 +9,7 @@ import {
 } from "../utils/startupPlanAccess.js";
 import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import {
+    getCompanyForUserWithConnection,
     getCompanyStartupProfile,
     isUserInSameCompany,
     resolveCompanyStartupOwner
@@ -160,7 +161,7 @@ export const createOrUpdateStartupProfile = async (req, res) => {
                     descriptionValue,
                     raising_amount,
                     slip_horizon_months,
-                    is_raising,
+                    is_raising ? 1 : 0,
                     nominalValue,
                     currentShareCountValue,
                     temporaryShareBasis,
@@ -184,7 +185,7 @@ export const createOrUpdateStartupProfile = async (req, res) => {
                 useOfFundsValue,
                 "",
                 descriptionValue,
-                raising_amount, slip_horizon_months, is_raising,
+                raising_amount, slip_horizon_months, is_raising ? 1 : 0,
                 nominalValue, currentShareCountValue, temporaryShareBasis
             ]
         );
@@ -284,13 +285,6 @@ export const deleteMyStartup = async (req, res) => {
     }
   };
 
-export const getAllRaisingStartups = async (req, res) => {
-    const [rows] = await pool.query(
-        "SELECT * FROM startup_profiles WHERE is_raising=1"
-    );
-    res.json(rows);
-};
-
 export const getMyOrganization = async (req, res) => {
     try {
         const [rows] = await pool.query(
@@ -320,6 +314,10 @@ export const getMyOrganization = async (req, res) => {
         if (!rows.length) {
             return res.json(null);
         }
+
+        // Someone still awaiting approval sees the company, not who else is in it.
+        const membershipActive = Boolean(await getCompanyForUserWithConnection(pool, req.user.id));
+        const visibleMembers = membershipActive ? rows : rows.filter((row) => Number(row.user_id) === Number(req.user.id));
 
         const [roleCheckRows] = await pool.query(
             `
@@ -359,7 +357,7 @@ export const getMyOrganization = async (req, res) => {
                 has_registered_prokura: brregCompany?.hasRegisteredProkura ?? null,
                 roles: brregRoles.slice(0, 16)
             },
-            members: rows.map((row) => ({
+            members: visibleMembers.map((row) => ({
                 id: row.user_id,
                 name: row.name,
                 email: row.email,

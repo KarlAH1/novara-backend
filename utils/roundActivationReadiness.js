@@ -203,6 +203,27 @@ export async function checkRoundActivationReadiness(connection, startupId, round
     return { ready: false, blockers: ["Fant ingen runde å åpne."], warnings, basis: null, preview: null };
   }
 
+  /*
+    Investors are asked for money in the company's name, so someone at the
+    company must hold a role Brønnøysund confirms, or have been approved by
+    Raisium. A registration awaiting manual review can prepare the round but
+    not open it.
+  */
+  const [[roleCheck]] = await connection.query(
+    `SELECT COUNT(*) AS verified
+     FROM company_memberships owner_cm
+     JOIN company_memberships cm ON cm.company_id = owner_cm.company_id
+     JOIN users member ON member.id = cm.user_id
+     WHERE owner_cm.user_id = ?
+       AND COALESCE(member.company_role_check_status, '') <> 'pending_manual_review'`,
+    [startupId]
+  );
+  if (!Number(roleCheck?.verified)) {
+    blockers.push(
+      "Rollen din i selskapet er ikke bekreftet ennå. Raisium går gjennom registreringen, og runden kan åpnes når den er godkjent."
+    );
+  }
+
   const basis = await resolveShareBasis(connection, startupId);
   blockers.push(...basis.issues);
 

@@ -1,5 +1,15 @@
 import "../config/env.js";
 import mysql from "mysql2/promise";
+import { assertConfirmedTarget } from "../utils/dbSafety.js";
+
+// Deletes every non-admin user and everything they own. Refuses to start until
+// the operator has named the exact database it is about to empty.
+try {
+  assertConfirmedTarget("cleanNonAdminLaunchData");
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,

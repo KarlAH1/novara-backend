@@ -1,10 +1,14 @@
 import pool from "../config/db.js";
-import { stripe } from "./stripeClient.js";
+import { stripe, stripeIdempotencyKey } from "./stripeClient.js";
 import { activateRcAgreementPayment } from "./rcPaymentActivation.js";
 import { sendRcPaymentConfirmedEmail, sendStripePaymentReceivedStartupEmail } from "./notificationEmailFlow.js";
 import { getCompanyForUser } from "./startupPlanAccess.js";
 import { sendTelegramAdminAlert } from "./telegramNotifier.js";
-import { releaseReservationForAgreement } from "./capacityReservation.js";
+import { releaseReservationForAgreement, reserveCapacity, RESERVATION_TTL_MINUTES } from "./capacityReservation.js";
+import { syncEmissionRoundAvailability } from "./emissionRoundState.js";
+import { AUDIT_EVENTS } from "./auditLogger.js";
+import { enqueueCriticalAuditEvent } from "./auditOutbox.js";
+import { syncConfirmationRequestsLater } from "./paymentConfirmations.js";
 
 export function paymentMatches(session, expectedAmountNok) {
     return session?.payment_status === "paid"
@@ -24,7 +28,7 @@ async function getReusableCheckoutSession(sessionId, requestOptions = {}) {
 }
 
 function checkoutIdempotencyKey(scope, id, previousSessionId) {
-    return `raisium:${scope}:${id}:${previousSessionId || "initial"}`.slice(0, 255);
+    return stripeIdempotencyKey(scope, id, previousSessionId || "initial");
 }
 
 function runAfterWebhook(task, label) {
@@ -68,10 +72,94 @@ async function fetchStripeFeeSplit(paymentIntentId, stripeAccountId) {
     }
 }
 
+/*
+  A Checkout session must close before the capacity it pays for is released.
+  Sessions used to stay open for Stripe's default 24 hours while the
+  reservation lapsed after 45 minutes, so an investor could pay for a place
+  another investor had since taken: Stripe captured the money and Raisium could
+  not activate the agreement. Now the hold is renewed (or taken again, if there
+  is still room) when checkout starts, and the session expires first.
+*/
+const CHECKOUT_SESSION_MINUTES = 31; // Stripe's minimum is 30
+if (CHECKOUT_SESSION_MINUTES >= RESERVATION_TTL_MINUTES) {
+    throw new Error("A Checkout session must expire before the capacity reservation it pays for.");
+}
+
+async function holdCapacityForCheckout(agreement) {
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+        const availability = await syncEmissionRoundAvailability(connection, agreement.round_id, { lock: true });
+        const reservation = await reserveCapacity(connection, {
+            roundId: agreement.round_id,
+            investorId: agreement.investor_id,
+            amount: agreement.investment_amount,
+            agreementId: agreement.id,
+            remainingCapacity: availability?.remainingCapacity ?? 0
+        });
+        if (!reservation.ok) {
+            await connection.rollback();
+            return {
+                ok: false,
+                error: reservation.code === "capacity_exceeded"
+                    ? "Runden ble fulltegnet før betalingen din ble registrert, så avtalen kan ikke betales. Ikke overfør penger. Du kan avbryte investeringen."
+                    : reservation.error
+            };
+        }
+        await connection.commit();
+        return { ok: true };
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+}
+
+/*
+  Stripe sets a direct charge's balance transaction asynchronously, usually a
+  few seconds after checkout.session.completed (it arrives as charge.updated).
+  Looking it up once, at completion, found nothing and the fee was never
+  recorded. So it is retried for a while, and charge.updated tries again.
+*/
+const FEE_TABLES = ["rc_agreements", "conversion_par_value_requests"];
+const FEE_RETRY_DELAYS_MS = [0, 5000, 20000, 60000];
+
+function recordFeeSplitWhenAvailable(table, rowId, paymentIntentId, stripeAccountId, attempt = 0) {
+    if (!FEE_TABLES.includes(table) || !rowId || !paymentIntentId || !stripeAccountId) return;
+    const timer = setTimeout(async () => {
+        try {
+            const split = await fetchStripeFeeSplit(paymentIntentId, stripeAccountId);
+            if (split) {
+                await pool.query(
+                    `UPDATE ${table} SET stripe_fee_amount = ?, stripe_net_amount = ? WHERE id = ? AND stripe_fee_amount IS NULL`,
+                    [split.feeAmount, split.netAmount, rowId]
+                );
+            } else if (attempt + 1 < FEE_RETRY_DELAYS_MS.length) {
+                recordFeeSplitWhenAvailable(table, rowId, paymentIntentId, stripeAccountId, attempt + 1);
+            }
+        } catch (error) {
+            console.error("Stripe fee split could not be recorded:", error);
+        }
+    }, FEE_RETRY_DELAYS_MS[attempt]);
+    timer.unref?.();
+}
+
+export async function handleChargeUpdated(charge, { connectedAccount = null } = {}) {
+    if (!connectedAccount || !charge?.payment_intent || !charge.balance_transaction) return;
+    for (const table of FEE_TABLES) {
+        const [rows] = await pool.query(
+            `SELECT id FROM ${table} WHERE stripe_payment_intent_id = ? AND stripe_fee_amount IS NULL LIMIT 1`,
+            [charge.payment_intent]
+        );
+        if (rows.length) recordFeeSplitWhenAvailable(table, rows[0].id, charge.payment_intent, connectedAccount);
+    }
+}
+
 export async function createCheckoutSessionForAgreement({ agreementId, investorId, frontendBase }) {
     const [rows] = await pool.query(
         `
-        SELECT a.id, a.rc_id, a.status, a.investment_amount, a.investor_id,
+        SELECT a.id, a.rc_id, a.round_id, a.status, a.investment_amount, a.investor_id,
                a.stripe_checkout_session_id,
                c.stripe_account_id, c.stripe_charges_enabled
         FROM rc_agreements a
@@ -94,7 +182,12 @@ export async function createCheckoutSessionForAgreement({ agreementId, investorI
     }
 
     if (!agreement.stripe_account_id || !agreement.stripe_charges_enabled) {
-        return { ok: false, code: 400, error: "Selskapet har ikke satt opp betalingsmottak ennå. Betal via bankoverføring i mellomtiden." };
+        return { ok: false, code: 400, error: "Selskapet kan ikke ta imot kortbetaling akkurat nå. Betal med bankoverføring, eller prøv igjen senere." };
+    }
+
+    const hold = await holdCapacityForCheckout(agreement);
+    if (!hold.ok) {
+        return { ok: false, code: 409, error: hold.error };
     }
 
     const stripeOptions = { stripeAccount: agreement.stripe_account_id };
@@ -104,6 +197,7 @@ export async function createCheckoutSessionForAgreement({ agreementId, investorI
     const session = await stripe.checkout.sessions.create(
         {
             mode: "payment",
+            expires_at: Math.floor(Date.now() / 1000) + CHECKOUT_SESSION_MINUTES * 60,
             line_items: [
                 {
                     price_data: {
@@ -135,6 +229,12 @@ export async function createCheckoutSessionForAgreement({ agreementId, investorI
     return { ok: true, url: session.url };
 }
 
+/*
+  Every Checkout session is created by Raisium and its id stored before the
+  investor is redirected, so a completed session is only accepted when it is
+  that stored session. A session merely carrying the right metadata could have
+  been created by anyone holding the connected account's own API keys.
+*/
 export async function handleCheckoutSessionCompleted(session) {
     const agreementId = session.metadata?.rc_agreement_id;
     if (!agreementId) {
@@ -149,7 +249,7 @@ export async function handleCheckoutSessionCompleted(session) {
     const payment = paymentRows[0];
     if (!payment
         || !paymentMatches(session, payment.investment_amount)
-        || (payment.stripe_checkout_session_id && payment.stripe_checkout_session_id !== session.id)) {
+        || payment.stripe_checkout_session_id !== session.id) {
         console.error("Stripe webhook rejected agreement payment mismatch", { agreementId, sessionId: session.id });
         return;
     }
@@ -163,6 +263,7 @@ export async function handleCheckoutSessionCompleted(session) {
                 `UPDATE rc_agreements SET stripe_payment_intent_id = ?, stripe_paid_at = NOW() WHERE id = ?`,
                 [session.payment_intent || null, agreementId]
             );
+            syncConfirmationRequestsLater({ roundId: result.agreement.round_id });
 
             runAfterWebhook(async () => {
                 const [companyRows] = await pool.query(
@@ -173,13 +274,7 @@ export async function handleCheckoutSessionCompleted(session) {
                      WHERE a.id = ? LIMIT 1`,
                     [agreementId]
                 );
-                const feeSplit = await fetchStripeFeeSplit(session.payment_intent, companyRows[0]?.stripe_account_id);
-                if (feeSplit) {
-                    await pool.query(
-                        `UPDATE rc_agreements SET stripe_fee_amount = ?, stripe_net_amount = ? WHERE id = ?`,
-                        [feeSplit.feeAmount, feeSplit.netAmount, agreementId]
-                    );
-                }
+                recordFeeSplitWhenAvailable("rc_agreements", agreementId, session.payment_intent, companyRows[0]?.stripe_account_id);
                 await Promise.allSettled([
                     sendRcPaymentConfirmedEmail({
                         investorEmail: result.agreement.investor_email,
@@ -199,7 +294,15 @@ export async function handleCheckoutSessionCompleted(session) {
         }
 
         if (!result.ok) {
+            // Stripe has already taken the money and it sits in the company's
+            // account, but there is no RC behind it. Someone has to refund it.
             console.error("Stripe webhook: could not activate agreement", agreementId, result.error);
+            runAfterWebhook(() => sendTelegramAdminAlert("Betaling mottatt, men avtalen kunne ikke aktiveres", [
+                `Avtale-ID: ${agreementId}`,
+                `Stripe-økt: ${session.id}`,
+                `Årsak: ${result.error}`,
+                "Beløpet må refunderes til investoren fra selskapets Stripe-konto."
+            ]), "unactivated payment alert");
         }
     } finally {
         connection.release();
@@ -209,6 +312,15 @@ export async function handleCheckoutSessionCompleted(session) {
 export async function handleCheckoutSessionFailed(session) {
     const agreementId = session.metadata?.rc_agreement_id;
     if (!agreementId) return;
+
+    // Only the agreement's current session may release its hold. An older
+    // session expiring after the investor has started a new one must not
+    // take the place away from the payment in progress.
+    const [[agreement]] = await pool.query(
+        "SELECT stripe_checkout_session_id FROM rc_agreements WHERE id = ? LIMIT 1",
+        [agreementId]
+    );
+    if (!agreement || agreement.stripe_checkout_session_id !== session.id) return;
 
     const connection = await pool.getConnection();
     try {
@@ -254,7 +366,7 @@ export async function createCheckoutSessionForParValue({ requestId, investorId, 
     }
 
     if (!request.stripe_account_id || !request.stripe_charges_enabled) {
-        return { ok: false, code: 400, error: "Selskapet har ikke satt opp betalingsmottak ennå. Betal via bankoverføring i mellomtiden." };
+        return { ok: false, code: 400, error: "Selskapet kan ikke ta imot kortbetaling akkurat nå. Betal med bankoverføring, eller prøv igjen senere." };
     }
 
     const stripeOptions = { stripeAccount: request.stripe_account_id };
@@ -319,7 +431,7 @@ export async function handleParValueCheckoutSessionCompleted(session) {
     }
 
     if (!paymentMatches(session, request.par_value_amount)
-        || (request.stripe_checkout_session_id && request.stripe_checkout_session_id !== session.id)) {
+        || request.stripe_checkout_session_id !== session.id) {
         console.error("Stripe webhook rejected par-value payment mismatch", { requestId, sessionId: session.id });
         return;
     }
@@ -338,15 +450,25 @@ export async function handleParValueCheckoutSessionCompleted(session) {
         return;
     }
 
-    runAfterWebhook(async () => {
-        const feeSplit = await fetchStripeFeeSplit(session.payment_intent, request.stripe_account_id);
-        if (feeSplit) {
-            await pool.query(
-                `UPDATE conversion_par_value_requests SET stripe_fee_amount = ?, stripe_net_amount = ? WHERE id = ?`,
-                [feeSplit.feeAmount, feeSplit.netAmount, requestId]
-            );
-        }
-    }, "par-value enrichment");
+    const [[details]] = await pool.query(
+        `SELECT pr.agreement_id, pr.investor_id, pr.reference, pr.conversion_event_id, ce.startup_id, ce.round_id
+         FROM conversion_par_value_requests pr
+         JOIN conversion_events ce ON ce.id = pr.conversion_event_id
+         WHERE pr.id = ?`,
+        [requestId]
+    );
+    await enqueueCriticalAuditEvent(pool, AUDIT_EVENTS.PAR_CONFIRMED, {
+        startupId: details?.startup_id ?? null,
+        roundId: details?.round_id ?? null,
+        agreementId: details?.agreement_id ?? null,
+        investorId: details?.investor_id ?? null,
+        actorRole: "system",
+        paymentReference: details?.reference || null,
+        metadata: { conversion_event_id: details?.conversion_event_id ?? null, amount: request.par_value_amount, confirmed_via: "stripe", stripe_session: session.id }
+    });
+
+    recordFeeSplitWhenAvailable("conversion_par_value_requests", requestId, session.payment_intent, request.stripe_account_id);
+    syncConfirmationRequestsLater({ conversionId: details?.conversion_event_id ?? null });
 }
 
 async function getOpenStartupPlanSubscription(companyId) {
@@ -413,7 +535,10 @@ export async function createCheckoutSessionForStartupPlan({ userId, frontendBase
 
 // Stripe (via webhook) activates the plan the same way an admin's manual
 // "confirm payment" does — no human confirmation step needed for Stripe-paid plans.
-export async function handlePlanCheckoutSessionCompleted(session) {
+// Plan payments are made to Raisium's own account. The same metadata on a
+// session in a connected account is the company paying itself, not Raisium.
+export async function handlePlanCheckoutSessionCompleted(session, { connectedAccount = null } = {}) {
+    if (connectedAccount) return;
     const subscriptionId = session.metadata?.startup_plan_subscription_id;
     if (!subscriptionId) {
         return;
@@ -430,7 +555,7 @@ export async function handlePlanCheckoutSessionCompleted(session) {
     }
 
     if (!paymentMatches(session, subscription.final_price_nok)
-        || (subscription.stripe_checkout_session_id && subscription.stripe_checkout_session_id !== session.id)) {
+        || subscription.stripe_checkout_session_id !== session.id) {
         console.error("Stripe webhook rejected plan payment mismatch", { subscriptionId, sessionId: session.id });
         return;
     }

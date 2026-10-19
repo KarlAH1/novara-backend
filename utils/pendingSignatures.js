@@ -26,6 +26,10 @@ const SIGN_TYPE_BY_DOCUMENT_TYPE = {
 // Year-0 documents belong to one round's setup and go stale once it completes.
 const YEAR_ZERO_TYPES = new Set(["BOARD", "GF"]);
 
+// Investors subscribe for their shares by signing the conversion GF protocol in
+// this role, after the meeting (møteleder and protokollunderskriver) has signed.
+export const GF_SUBSCRIBER_ROLE = "Tegner";
+
 export function signTypeFor(documentType) {
   return SIGN_TYPE_BY_DOCUMENT_TYPE[String(documentType || "").toUpperCase()] || "conversion";
 }
@@ -40,8 +44,15 @@ export async function getPendingSignatures(connection, userId) {
      LEFT JOIN users startup ON startup.id = d.startup_id
      LEFT JOIN startup_profiles sp ON sp.user_id = d.startup_id
      WHERE ds.user_id = ? AND ds.signed_at IS NULL AND d.status != 'LOCKED'
+       AND NOT (
+         ds.role = ? AND EXISTS (
+           SELECT 1 FROM document_signers meeting
+           WHERE meeting.document_id = ds.document_id
+             AND meeting.role <> ? AND meeting.signed_at IS NULL
+         )
+       )
      ORDER BY d.created_at DESC, d.id DESC`,
-    [userId]
+    [userId, GF_SUBSCRIBER_ROLE, GF_SUBSCRIBER_ROLE]
   );
 
   const cutoffByStartup = new Map();

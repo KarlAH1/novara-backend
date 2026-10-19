@@ -23,7 +23,10 @@ function extractMunicipality(sectionText) {
   const section = normalizeText(sectionText);
   if (!section) return null;
 
-  const normalizedLine = section.replace(/\n+/g, " ");
+  // Read the clause, not its heading: in "§ 2 Forretningskommune\nSelskapets
+  // forretningskommune er Lillestrøm." the heading itself matched first.
+  const clause = cleanClauseText(section) || section.replace(/^§\s*\d+\s*/, "");
+  const normalizedLine = clause.replace(/\n+/g, " ");
   const patterns = [
     /forretningskommune(?:n)?(?: er)?\s+([^.]+?)(?:\.)?$/i,
     /forretningskontor(?:et)?(?: er)?\s+(?:i\s+)?([^.]+?)(?:\.)?$/i,
@@ -49,7 +52,8 @@ function extractMunicipality(sectionText) {
   with 1-2 trailing digits) is the decimal separator.
 */
 function normalizeNumber(value) {
-  let text = String(value || "").replace(/[\s\u00a0\u202f]/g, "").trim();
+  // "NOK 40 000, fordelt på …" captures the comma that ends the amount.
+  let text = String(value || "").replace(/[\s\u00a0\u202f]/g, "").replace(/[.,]+$/, "").trim();
   if (!text) return null;
 
   if (text.includes(",")) {
@@ -168,7 +172,7 @@ export function parseArticlesText(rawText) {
   const section6 = extractSection(text, 6);
   const section7 = extractSection(text, 7);
 
-  const titleMatch = text.match(/VEDTEKTER\s+([^\n]+)/i);
+  const titleMatch = text.match(/VEDTEKTER\s+(?:FOR\s+)?([^\n]+)/i);
   const orgMatch = text.match(/Org\.?\s*nr\.?:?\s*([0-9 ]{9,})/i);
   const amendedMatch = text.match(/Sist endret:?\s*([^\n]+)/i);
   const purposeMatch = section3.match(/virksomhet(?:en)?(?: er)?\s+([\s\S]+)$/i);
