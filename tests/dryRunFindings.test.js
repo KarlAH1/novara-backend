@@ -193,3 +193,11 @@ test("the conversion reads the uploaded articles, not the list of rows", () => {
   const source = read("backend/routes/conversionRoutes.js");
   assert.match(source, /const rawArticles = articlesRows\[0\]\?\.\[0\] \|\| null;/);
 });
+
+test("an investor's terms acceptance survives the step from the invite to the code", () => {
+  const verify = read("frontend/invite-verify.html");
+  // The guard sends anyone without acceptTerms back to the form, so the stored
+  // registration must keep it.
+  assert.match(verify, /pendingRegistration\?\.acceptTerms !== true/);
+  assert.match(verify, /acceptTerms: stored\.acceptTerms === true/);
+});
