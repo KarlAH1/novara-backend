@@ -56,6 +56,12 @@ if (missingDbVars.length) {
 const isProduction = (process.env.NODE_ENV || "").toLowerCase() === "production";
 const emailProviderConfig = getEmailProviderConfig();
 
+// The AI helpers fail soft so they never block a save, which also makes a
+// missing key invisible. Say so once, where whoever runs the server will see it.
+if (!process.env.OPENAI_API_KEY) {
+  console.warn("⚠️ OPENAI_API_KEY mangler: tekstforslag på startup-profilen og AI-tolkning av vedtekter er slått av.");
+}
+
 // Anyone who knows JWT_SECRET can mint a session for any user, admin included.
 // A short or placeholder value in production is the same as no auth at all.
 const WEAK_JWT_SECRET_PATTERN = /^(supersecret|secret|changeme|change-me|local-|test-|dev-)/i;

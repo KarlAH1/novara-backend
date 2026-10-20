@@ -24,10 +24,15 @@ import { columnExists, tableExists } from "./schemaCapabilities.js";
 // Product-level warning only. Not a legal threshold.
 export const PAR_AMOUNT_WARNING_RATIO = 0.10;
 
-// "4 761 kr": Norwegian grouping with a plain space, the same in every runtime.
+// "124 000": Norwegian digit grouping with a plain space, the same in every runtime.
+function groupDigits(value) {
+  const [whole, fraction] = String(value).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return fraction ? `${grouped},${fraction}` : grouped;
+}
+
 function formatNok(value) {
-  const rounded = Math.round(Number(value || 0));
-  return `${String(rounded).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} kr`;
+  return `${groupDigits(Math.round(Number(value || 0)))} kr`;
 }
 
 function safeParseJson(value) {
@@ -90,12 +95,12 @@ export async function resolveShareBasis(connection, startupId) {
   // silently — the company has to correct one of them.
   if (articlesPar && profilePar && Math.abs(articlesPar - profilePar) > 0.0001) {
     issues.push(
-      `Pålydende per aksje i profilen (${profilePar}) stemmer ikke med gjeldende vedtekter (${articlesPar}). Rett opp før runden åpnes.`
+      `Pålydende per aksje i profilen (${groupDigits(profilePar)} kr) stemmer ikke med gjeldende vedtekter (${groupDigits(articlesPar)} kr). Rett opp før runden åpnes.`
     );
   }
   if (articlesShareCount && profileShareCount && articlesShareCount !== profileShareCount) {
     issues.push(
-      `Antall aksjer i profilen (${profileShareCount}) stemmer ikke med gjeldende vedtekter (${articlesShareCount}). Rett opp før runden åpnes.`
+      `Antall aksjer i profilen (${groupDigits(profileShareCount)}) stemmer ikke med gjeldende vedtekter (${groupDigits(articlesShareCount)}). Rett opp før runden åpnes.`
     );
   }
 
@@ -124,6 +129,9 @@ export async function resolveShareBasis(connection, startupId) {
     articles_document_id: articlesRow?.id || null,
     articles_parse_status: articlesRow?.parse_status || null,
     share_basis_temporary: Boolean(Number(profile?.share_basis_temporary || 0)),
+    // What the profile says on its own, so a disagreement can be shown side by side.
+    profile_par_value: profilePar,
+    profile_share_count: profileShareCount,
     issues
   };
 }
@@ -245,6 +253,7 @@ export async function checkRoundActivationReadiness(connection, startupId, round
   }
 
   const basis = await resolveShareBasis(connection, startupId);
+  const blockersBeforeBasis = blockers.length;
   blockers.push(...basis.issues);
   const activeConfirmation = await getActiveArticlesConfirmation(connection, startupId);
 
@@ -304,6 +313,9 @@ export async function checkRoundActivationReadiness(connection, startupId, round
     );
   }
 
+  // Everything pushed since the basis was resolved is about the share basis.
+  const basisBlockers = blockers.slice(blockersBeforeBasis);
+
   const targetAmount = Number(round.target_amount || 0);
   const valuationCap = Number(round.valuation_cap || 0);
   const triggerPeriod = Number(round.trigger_period || round.conversion_years || 0);
@@ -357,6 +369,7 @@ export async function checkRoundActivationReadiness(connection, startupId, round
   return {
     ready: blockers.length === 0,
     blockers,
+    basis_blockers: basisBlockers,
     warnings,
     basis,
     preview,

@@ -993,6 +993,7 @@ export const getArticlesShareBasis = async (req, res) => {
       ai_extraction: aiExtraction,
       parser_version: parserVersion,
       issues: basis.issues,
+      profile: { share_count: basis.profile_share_count, par_value_per_share: basis.profile_par_value },
       confirmation
     });
   } catch (err) {
