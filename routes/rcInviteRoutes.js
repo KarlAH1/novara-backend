@@ -18,6 +18,9 @@ import {
 } from "../utils/inviteClaim.js";
 import { createAuthToken } from "../utils/authToken.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
+import { sendEmail } from "../utils/emailService.js";
+import { renderEmail, frontendBase } from "../utils/emailLayout.js";
+import { escapeHtml } from "../utils/html.js";
 import { MINIMUM_RC_INVESTMENT_NOK } from "../utils/rcInvestmentRules.js";
 import {
   deleteInvestorFlowProgress,
@@ -251,6 +254,90 @@ router.post(
       res.status(500).json({ error: "Internal server error" });
     } finally {
       connection.release();
+    }
+  }
+);
+
+/* =====================================================
+   SEND AN INVITE BY E-MAIL (Startup Only)
+   Raisium sends the personal link on the founder's behalf, to one address
+   the founder typed, with their own short message. Still one link, one
+   person: the link locks to whoever opens it first.
+===================================================== */
+
+const inviteEmailLimiter = createRateLimiter({
+  keyPrefix: "invite-email",
+  windowMs: 10 * 60 * 1000,
+  maxRequests: 30,
+  message: "Du har sendt mange invitasjoner på kort tid. Vent litt og prøv igjen."
+});
+
+router.post(
+  "/send-email/:token",
+  auth,
+  requireRole(["startup"]),
+  inviteEmailLimiter,
+  async (req, res) => {
+    try {
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const message = String(req.body?.message || "").trim().slice(0, 600);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ error: "Skriv inn en gyldig e-postadresse, for eksempel navn@epost.no." });
+      }
+
+      const [rows] = await pool.query(
+        `SELECT i.id, i.invitee_name, r.id AS round_id, r.startup_id, r.open, r.target_amount,
+                COALESCE(sp.company_name, owner.name) AS company_name
+         FROM rc_invites i
+         JOIN emission_rounds r ON r.id = i.round_id
+         LEFT JOIN startup_profiles sp ON sp.user_id = r.startup_id
+         LEFT JOIN users owner ON owner.id = r.startup_id
+         WHERE i.token = ?
+         LIMIT 1`,
+        [req.params.token]
+      );
+      const invite = rows[0];
+      if (!invite) {
+        return res.status(404).json({ error: "Fant ikke invitasjonen. Lag en ny lenke og prøv igjen." });
+      }
+      if (invite.startup_id !== req.user.id) {
+        return res.status(403).json({ error: "Denne invitasjonen hører til en annen runde." });
+      }
+      if (Number(invite.open) !== 1) {
+        return res.status(400).json({ error: "Runden er ikke åpen, så invitasjonen kan ikke sendes nå." });
+      }
+
+      const [[sender]] = await pool.query("SELECT name FROM users WHERE id = ? LIMIT 1", [req.user.id]);
+      const senderName = String(sender?.name || "").trim() || "En gründer";
+      const firstName = senderName.split(/\s+/)[0];
+      const company = invite.company_name || "selskapet";
+      const link = `${frontendBase()}/invest.html?invite=${encodeURIComponent(req.params.token)}`;
+      const target = Number(invite.target_amount || 0);
+      const targetLabel = target ? `${target.toLocaleString("no-NO")} kr` : "";
+
+      await sendEmail({
+        to: email,
+        subject: `${firstName} har invitert deg til å investere i ${company}`,
+        text: `${senderName} fra ${company} har invitert deg til å investere i en privat runde.${message ? `\n\n«${message}»` : ""}\n\nSe invitasjonen:\n${link}\n\nLenken er personlig. Del den ikke videre.`,
+        html: renderEmail({
+          heading: `${firstName} har invitert deg til å investere i ${company}`,
+          introHtml: `<strong>${escapeHtml(senderName)}</strong> fra <strong>${escapeHtml(company)}</strong> har sendt deg en personlig invitasjon til en privat runde. Se hva selskapet gjør, og bestem selv om du vil være med.`,
+          box: {
+            amount: targetLabel,
+            label: targetLabel ? `Privat runde i ${company}` : "",
+            linesHtml: message ? `«${escapeHtml(message).replace(/\n/g, "<br>")}»` : ""
+          },
+          button: { label: "Se invitasjonen", url: link },
+          after: "Lenken er personlig og låses til deg første gang du åpner den. Del den ikke videre.",
+          preheader: `${senderName} har invitert deg til en privat runde i ${company}`,
+          accent: "investor"
+        })
+      });
+
+      res.json({ message: `Invitasjonen er sendt til ${email}.` });
+    } catch (err) {
+      console.error("Send invite e-mail failed:", err);
+      res.status(500).json({ error: "Vi fikk ikke sendt e-posten. Prøv igjen, eller del lenken på SMS i stedet." });
     }
   }
 );

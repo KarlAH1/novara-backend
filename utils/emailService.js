@@ -28,6 +28,9 @@ export async function sendEmail({ to, subject, html, text }) {
     throw new Error("Email requires recipient and subject");
   }
 
+  // Old-style bodies get the shared frame; renderEmail output passes through.
+  html = wrapLegacyEmail({ subject, html });
+
   if (resendApiKey && fromEmail) {
     const response = await fetchWithTimeout("https://api.resend.com/emails", {
       method: "POST",
@@ -66,3 +69,4 @@ export async function sendEmail({ to, subject, html, text }) {
   return { mode: "log" };
 }
 import { fetchWithTimeout } from "./fetchWithTimeout.js";
+import { wrapLegacyEmail } from "./emailLayout.js";

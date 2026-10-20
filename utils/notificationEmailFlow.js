@@ -1,5 +1,6 @@
 import { sendEmail } from "./emailService.js";
 import { escapeHtml } from "./html.js";
+import { renderEmail } from "./emailLayout.js";
 
 const formatNok = (value) =>
   `${Number(value || 0).toLocaleString("no-NO")} NOK`;
@@ -26,12 +27,11 @@ export async function sendRoundActivatedEmail({
     to: startupEmail,
     subject: "Privat runde er opprettet i Raisium",
     text: `Hei,\n\nDen private runden${startupName ? ` for ${startupName}` : ""} er nå opprettet og klar til bruk i Raisium.\n\nÅpne dashboard:\n${dashboardUrl}\n\nRunde-ID: ${roundId || "-"}`,
-    html: `
-      <p>Hei,</p>
-      <p>Den private runden${startupName ? ` for <strong>${escapeHtml(startupName)}</strong>` : ""} er nå opprettet og klar til bruk i Raisium.</p>
-      <p><a href="${escapeHtml(dashboardUrl)}">Åpne dashboard</a></p>
-      <p>Runde-ID: <strong>${escapeHtml(roundId || "-")}</strong></p>
-    `
+    html: renderEmail({
+      heading: "Runden er åpen",
+      introHtml: `Den private runden${startupName ? ` for <strong>${escapeHtml(startupName)}</strong>` : ""} er klar. Lag en personlig lenke til den første du vil invitere.`,
+      button: { label: "Gå til runden", url: dashboardUrl }
+    })
   });
 }
 
@@ -56,11 +56,13 @@ export async function sendRcAgreementCreatedEmails({
       to: investorEmail,
       subject: `Avtalen din hos ${startupName || "startupen"} er opprettet`,
       text: `Hei,\n\nAvtalen din på ${amountLabel} er opprettet i Raisium. Du kan åpne avtalen her:\n${rcUrl}`,
-      html: `
-        <p>Hei,</p>
-        <p>Avtalen din på <strong>${escapeHtml(amountLabel)}</strong> er opprettet i Raisium.</p>
-        <p><a href="${escapeHtml(rcUrl)}">Åpne avtalen</a></p>
-      `
+      html: renderEmail({
+        heading: `Du har signert avtalen med ${startupName || "selskapet"}`,
+        introHtml: "Siste steg er å betale. Pengene går direkte til selskapet.",
+        box: { amount: amountLabel, label: `Investering i ${startupName || "selskapet"}` },
+        button: { label: "Gå til betaling", url: rcUrl },
+        accent: "investor"
+      })
     }));
   }
 
@@ -79,11 +81,13 @@ export async function sendRcPaymentConfirmedEmail({
     to: investorEmail,
     subject: `Betaling er bekreftet hos ${startupName || "selskapet"}`,
     text: `Hei,\n\nBetalingen på ${formatNok(amount)} til ${startupName || "selskapet"} er bekreftet.\n\nAvtalen er nå aktiv i Raisium:\n${rcUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p>Betalingen på <strong>${escapeHtml(formatNok(amount))}</strong> til <strong>${escapeHtml(startupName || "selskapet")}</strong> er bekreftet.</p>
-      <p><a href="${escapeHtml(rcUrl)}">Åpne avtalen</a></p>
-    `
+    html: renderEmail({
+      heading: `Du er med i ${startupName || "selskapet"}`,
+      introHtml: "Betalingen er bekreftet, og avtalen er aktiv. Aksjene får du senere, etter vilkårene i avtalen.",
+      box: { amount: formatNok(amount), label: `Investering i ${startupName || "selskapet"}` },
+      button: { label: "Se avtalen", url: rcUrl },
+      accent: "investor"
+    })
   });
 }
 
@@ -104,12 +108,12 @@ export async function sendInvestorMarkedPaidEmail({
     to: startupEmail,
     subject: "En investor har markert betaling som sendt",
     text: `Hei,\n\n${investorLabel} har markert ${amountLabel} som betalt i den private runden.\n\nSjekk kontoen din og bekreft mottak i Raisium når pengene er der:\n${dashboardUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p><strong>${escapeHtml(investorLabel)}</strong> har markert <strong>${escapeHtml(amountLabel)}</strong> som betalt i den private runden.</p>
-      <p>Sjekk kontoen din og bekreft mottak i Raisium når pengene er der.</p>
-      <p><a href="${escapeHtml(dashboardUrl)}">Åpne dashboard</a></p>
-    `
+    html: renderEmail({
+      heading: `${investorLabel} har betalt`,
+      introHtml: "Sjekk at pengene har kommet inn på kontoen, og bekreft det i Raisium.",
+      box: { amount: amountLabel, label: `Bankoverføring fra ${investorLabel}` },
+      button: { label: "Bekreft i Raisium", url: dashboardUrl }
+    })
   });
 }
 
@@ -130,11 +134,12 @@ export async function sendStripePaymentReceivedStartupEmail({
     to: startupEmail,
     subject: "Betaling mottatt via Stripe",
     text: `Hei,\n\n${investorLabel} har betalt ${amountLabel} med kort/Vipps via Stripe. Avtalen er automatisk aktivert i Raisium.\n\nÅpne dashboard:\n${dashboardUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p><strong>${escapeHtml(investorLabel)}</strong> har betalt <strong>${escapeHtml(amountLabel)}</strong> med kort/Vipps via Stripe. Avtalen er automatisk aktivert i Raisium.</p>
-      <p><a href="${escapeHtml(dashboardUrl)}">Åpne dashboard</a></p>
-    `
+    html: renderEmail({
+      heading: "Du har fått en investering",
+      introHtml: `<strong>${escapeHtml(investorLabel)}</strong> betalte med kort eller Vipps. Avtalen er aktivert, og du trenger ikke gjøre noe.`,
+      box: { amount: amountLabel, label: `Fra ${investorLabel}` },
+      button: { label: "Se runden", url: dashboardUrl }
+    })
   });
 }
 
@@ -154,12 +159,13 @@ export async function sendRcPaymentReminderEmail({
     to: investorEmail,
     subject: `Påminnelse: betaling til ${startupName || "selskapet"} venter`,
     text: `Hei ${investorName || ""},\n\nBetalingsfristen for avtalen din på ${amountLabel} hos ${startupName || "selskapet"} har passert. Fullfør betalingen for å aktivere avtalen:\n${rcUrl}`,
-    html: `
-      <p>Hei ${escapeHtml(investorName || "")},</p>
-      <p>Betalingsfristen for avtalen din på <strong>${escapeHtml(amountLabel)}</strong> hos <strong>${escapeHtml(startupName || "selskapet")}</strong> har passert.</p>
-      <p>Fullfør betalingen for å aktivere avtalen.</p>
-      <p><a href="${escapeHtml(rcUrl)}">Åpne avtalen</a></p>
-    `
+    html: renderEmail({
+      heading: `Betalingen til ${startupName || "selskapet"} venter`,
+      introHtml: `Hei${investorName ? ` ${escapeHtml(investorName)}` : ""}. Betalingsfristen har passert. Betal nå for å fullføre investeringen.`,
+      box: { amount: amountLabel, label: `Investering i ${startupName || "selskapet"}` },
+      button: { label: "Betal nå", url: rcUrl },
+      accent: "investor"
+    })
   });
 }
 
@@ -180,12 +186,12 @@ export async function sendRcAgreementCancelledEmail({
     to: investorEmail,
     subject: `Avtalen din hos ${startupName || "selskapet"} er kansellert`,
     text: `Hei ${investorName || ""},\n\n${startupName || "Selskapet"} har kansellert avtalen din på ${amountLabel}, siden betaling ikke ble mottatt.${reasonLine}\n\nTa kontakt med selskapet hvis du fortsatt ønsker å investere.`,
-    html: `
-      <p>Hei ${escapeHtml(investorName || "")},</p>
-      <p><strong>${escapeHtml(startupName || "Selskapet")}</strong> har kansellert avtalen din på <strong>${escapeHtml(amountLabel)}</strong>, siden betaling ikke ble mottatt.</p>
-      ${reasonHtml}
-      <p>Ta kontakt med selskapet hvis du fortsatt ønsker å investere.</p>
-    `
+    html: renderEmail({
+      heading: "Avtalen er kansellert",
+      introHtml: `<strong>${escapeHtml(startupName || "Selskapet")}</strong> har kansellert avtalen, siden betalingen ikke kom inn. Ta kontakt med selskapet hvis du fortsatt vil investere.`,
+      box: { amount: amountLabel, label: "Kansellert investering", linesHtml: reason ? `Begrunnelse: ${escapeHtml(reason)}` : "" },
+      accent: "investor"
+    })
   });
 }
 
@@ -209,12 +215,12 @@ export async function sendInvestorWithdrewEmail({
     to: startupEmail,
     subject: "En investor har avbrutt investeringen",
     text: `Hei,\n\n${investorLabel} har avbrutt investeringen på ${amountLabel} i den private runden, før betaling.${reasonLine}\n\nÅpne dashboard:\n${dashboardUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p><strong>${escapeHtml(investorLabel)}</strong> har avbrutt investeringen på <strong>${escapeHtml(amountLabel)}</strong> i den private runden, før betaling.</p>
-      ${reasonHtml}
-      <p><a href="${escapeHtml(dashboardUrl)}">Åpne dashboard</a></p>
-    `
+    html: renderEmail({
+      heading: `${investorLabel} har avbrutt investeringen`,
+      introHtml: "Investoren avbrøt før betaling. Plassen er ledig for andre i runden.",
+      box: { amount: amountLabel, label: "Avbrutt investering", linesHtml: reason ? `Begrunnelse: ${escapeHtml(reason)}` : "" },
+      button: { label: "Se runden", url: dashboardUrl }
+    })
   });
 }
 
@@ -229,11 +235,11 @@ export async function sendConversionStartedEmail({
     to: startupEmail,
     subject: "Trigger event er registrert i Raisium",
     text: `Hei,\n\nTrigger event${triggerLabel ? ` (${triggerLabel})` : ""} er registrert for ${startupName || "selskapet"}.\n\nÅpne dashboard for videre oppfølging:\n${dashboardUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p>Trigger event${triggerLabel ? ` (<strong>${escapeHtml(triggerLabel)}</strong>)` : ""} er registrert for <strong>${escapeHtml(startupName || "selskapet")}</strong>.</p>
-      <p><a href="${escapeHtml(dashboardUrl)}">Åpne dashboard</a></p>
-    `
+    html: renderEmail({
+      heading: "Trigger event er registrert",
+      introHtml: `${triggerLabel ? `<strong>${escapeHtml(triggerLabel)}</strong> er registrert for ` : "Trigger event er registrert for "}<strong>${escapeHtml(startupName || "selskapet")}</strong>. Raisium viser deg neste steg.`,
+      button: { label: "Se neste steg", url: dashboardUrl }
+    })
   });
 }
 
@@ -247,11 +253,11 @@ export async function sendRoundClosedEmail({
     to: startupEmail,
     subject: "Runden er nå lukket i Raisium",
     text: `Hei,\n\nRunden${startupName ? ` for ${startupName}` : ""} er nå lukket etter at dokumentpakken ble lastet ned.\n\nÅpne dashboard:\n${dashboardUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p>Runden${startupName ? ` for <strong>${escapeHtml(startupName)}</strong>` : ""} er nå lukket etter at dokumentpakken ble lastet ned.</p>
-      <p><a href="${escapeHtml(dashboardUrl)}">Åpne dashboard</a></p>
-    `
+    html: renderEmail({
+      heading: "Runden er lukket",
+      introHtml: `Runden${startupName ? ` for <strong>${escapeHtml(startupName)}</strong>` : ""} er lukket etter at dokumentpakken ble lastet ned.`,
+      button: { label: "Se runden", url: dashboardUrl }
+    })
   });
 }
 
@@ -267,10 +273,10 @@ export async function sendDocumentSigningRequestEmail({
     to,
     subject: `${documentTitle || "Dokument"} er klar for signering`,
     text: `Hei,\n\n${documentTitle || "Et dokument"} er klart for signering${companyName ? ` for ${companyName}` : ""}${roleLabel ? ` som ${roleLabel}` : ""}.\n\nÅpne dokumentet her:\n${signUrl}`,
-    html: `
-      <p>Hei,</p>
-      <p><strong>${escapeHtml(documentTitle || "Et dokument")}</strong> er klart for signering${companyName ? ` for <strong>${escapeHtml(companyName)}</strong>` : ""}${roleLabel ? ` som <strong>${escapeHtml(roleLabel)}</strong>` : ""}.</p>
-      <p><a href="${escapeHtml(signUrl)}">Åpne dokumentet</a></p>
-    `
+    html: renderEmail({
+      heading: `${documentTitle || "Et dokument"} venter på deg`,
+      introHtml: `Du skal signere${companyName ? ` for <strong>${escapeHtml(companyName)}</strong>` : ""}${roleLabel ? ` som <strong>${escapeHtml(roleLabel)}</strong>` : ""}. Det tar et par minutter.`,
+      button: { label: "Les og signer", url: signUrl }
+    })
   });
 }
