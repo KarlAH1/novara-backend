@@ -669,7 +669,7 @@ router.post("/access-code/send/:token", inviteAccessLimiter, async (req, res) =>
       if (existingRole === "investor") {
         return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
       }
-      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten." });
+      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten.", code: "email_is_startup" });
     }
 
     let pendingPasswordHash;
@@ -855,7 +855,7 @@ router.post("/access-code/verify/:token", inviteAccessLimiter, async (req, res) 
       if (existingRole === "investor") {
         return res.status(400).json({ error: "Brukeren finnes allerede. Logg inn med e-post og passord." });
       }
-      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten." });
+      return res.status(400).json({ error: "Denne e-posten er allerede knyttet til en startup-bruker og kan ikke brukes i denne private investorflyten.", code: "email_is_startup" });
     }
 
     const [result] = await connection.query(
