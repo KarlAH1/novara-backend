@@ -150,15 +150,14 @@ export async function getStartupJourney(userId) {
 
   const planActive = plan.state === STARTUP_PLAN_STATES.RAISE_FORM_UNLOCKED;
   const planWaiting = plan.state === STARTUP_PLAN_STATES.PAYMENT_PENDING;
-  const planSelected = [STARTUP_PLAN_STATES.PAYMENT_REQUIRED, STARTUP_PLAN_STATES.PLAN_SELECTED].includes(plan.state);
+  // There is one plan, so there is nothing to choose: the payment page picks
+  // it and the startup goes straight to paying.
   step.plan = {
     done: planActive,
     waiting: planWaiting,
     summary: planActive ? "Seed er aktiv." : planWaiting ? "Betalingen er registrert. Raisium bekrefter den." : null,
-    missing: planActive || planWaiting ? [] : [planSelected ? "Betal planen" : "Velg plan og betal"],
-    cta: planSelected || planWaiting
-      ? { label: planWaiting ? "Se status" : "Betal planen", url: "startup-payment.html" }
-      : { label: "Velg plan", url: "emisjon.html" }
+    missing: planActive || planWaiting ? [] : ["Betal planen"],
+    cta: { label: planWaiting ? "Se status" : "Betal planen", url: "startup-payment.html" }
   };
 
   const boardSigned = docs.board?.status === "LOCKED";
