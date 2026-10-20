@@ -1,14 +1,41 @@
 import "../config/env.js";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import mysql from "mysql2/promise";
-import { assertConfirmedTarget } from "../utils/dbSafety.js";
+import { assertConfirmedTarget, describeDatabaseTarget } from "../utils/dbSafety.js";
 
-// Deletes every non-admin user and everything they own. Refuses to start until
-// the operator has named the exact database it is about to empty.
-try {
-  assertConfirmedTarget("cleanNonAdminLaunchData");
-} catch (error) {
-  console.error(error.message);
-  process.exit(1);
+/*
+  Empties the database for a clean start. Keeps the admin accounts and the
+  discount codes; every other row in every table is deleted.
+
+  Without flags it only reports what it would delete. Deleting needs both
+  --confirm=<DB_NAME>@<DB_HOST> and --yes, and writes a JSON backup of every
+  table to ~/Developer/novara-backups first.
+
+  backend/.env.local wins over backend/.env, so to reach the database in .env
+  run it as:  node --env-file=.env scripts/cleanNonAdminLaunchData.js
+
+  Rows are removed with DELETE, not TRUNCATE, so AUTO_INCREMENT keeps counting:
+  Stripe idempotency keys are built from row ids, and an id reused within 24
+  hours would hand back an earlier, already paid Checkout session.
+*/
+
+const KEEP_TABLES = new Set(["startup_discount_codes"]);
+// Reference data, never user data.
+const KEEP_PATTERN = /migration|setting|config/i;
+
+const argv = process.argv;
+const execute = argv.includes("--yes");
+const target = describeDatabaseTarget();
+
+if (execute) {
+  try {
+    assertConfirmedTarget("cleanNonAdminLaunchData");
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
 }
 
 const pool = mysql.createPool({
@@ -20,190 +47,97 @@ const pool = mysql.createPool({
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false
 });
 
+function planFor(table) {
+  if (table === "users") return "behold admin, slett resten";
+  if (KEEP_TABLES.has(table) || KEEP_PATTERN.test(table)) return "beholdes";
+  return "tømmes";
+}
+
+async function tableCounts(conn) {
+  const [tables] = await conn.query(
+    `SELECT TABLE_NAME AS name FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+     ORDER BY TABLE_NAME`
+  );
+  const counts = [];
+  for (const { name } of tables) {
+    const [[{ n }]] = await conn.query(`SELECT COUNT(*) AS n FROM \`${name}\``);
+    counts.push({ name, rows: Number(n) });
+  }
+  return counts;
+}
+
+async function writeBackup(conn, tables) {
+  const dir = path.join(os.homedir(), "Developer", "novara-backups");
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const file = path.join(dir, `${process.env.DB_NAME || "db"}-${stamp}.json`);
+  const backup = { target, created_at: new Date().toISOString(), tables: {} };
+  for (const { name } of tables) {
+    const [rows] = await conn.query(`SELECT * FROM \`${name}\``);
+    backup.tables[name] = rows;
+  }
+  // Uploaded files live in BLOB columns; keep them as base64.
+  fs.writeFileSync(file, JSON.stringify(backup, (key, value) =>
+    value && value.type === "Buffer" && Array.isArray(value.data)
+      ? { base64: Buffer.from(value.data).toString("base64") }
+      : value
+  ));
+  return file;
+}
+
 async function main() {
   const conn = await pool.getConnection();
-
   try {
-    await conn.beginTransaction();
+    const before = await tableCounts(conn);
+    const [[{ admins }]] = await conn.query("SELECT COUNT(*) AS admins FROM users WHERE role = 'admin'");
 
-    const [nonAdminRows] = await conn.query(
-      "SELECT id FROM users WHERE role <> 'admin'"
-    );
-    const nonAdminIds = nonAdminRows
-      .map((row) => Number(row.id))
-      .filter(Boolean);
-
-    const [[beforeUsers]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM users WHERE role <> 'admin'"
-    );
-    const [[beforeStartups]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM startup_profiles"
-    );
-    const [[beforeRounds]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM emission_rounds"
-    );
-    const [[beforeCompanies]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM companies"
-    );
-
-    if (nonAdminIds.length) {
-      const placeholders = nonAdminIds.map(() => "?").join(", ");
-      const [roundRows] = await conn.query(
-        `SELECT id FROM emission_rounds WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      const roundIds = roundRows
-        .map((row) => Number(row.id))
-        .filter(Boolean);
-
-      await conn.query(
-        `DELETE FROM activity_log WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM notifications WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM investor_profiles WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM investor_interest WHERE investor_id IN (${placeholders}) OR startup_id IN (${placeholders})`,
-        [...nonAdminIds, ...nonAdminIds]
-      );
-      await conn.query(
-        `DELETE FROM slip_agreements WHERE investor_id IN (${placeholders}) OR startup_id IN (${placeholders})`,
-        [...nonAdminIds, ...nonAdminIds]
-      );
-      await conn.query(
-        `DELETE FROM document_signers WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE ds
-         FROM document_signers ds
-         INNER JOIN documents d ON d.id = ds.document_id
-         WHERE d.startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM startup_documents WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM startup_legal_data WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM capital_decisions WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM documents WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM conversion_events WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM startup_profiles WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        `DELETE FROM rc_rounds WHERE startup_id IN (${placeholders})`,
-        nonAdminIds
-      );
-
-      if (roundIds.length) {
-        const roundPlaceholders = roundIds.map(() => "?").join(", ");
-        await conn.query(
-          `DELETE FROM rc_invites WHERE round_id IN (${roundPlaceholders})`,
-          roundIds
-        );
-        await conn.query(
-          `DELETE FROM emission_invites WHERE emission_id IN (${roundPlaceholders})`,
-          roundIds
-        );
-        await conn.query(
-          `DELETE FROM emission_shareholders WHERE emission_id IN (${roundPlaceholders})`,
-          roundIds
-        );
-        await conn.query(
-          `DELETE FROM admin_issues WHERE emission_id IN (${roundPlaceholders})`,
-          roundIds
-        );
-      }
-
-      const [companyRows] = await conn.query(
-        `SELECT DISTINCT company_id FROM company_memberships WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-      const companyIds = companyRows
-        .map((row) => Number(row.company_id))
-        .filter(Boolean);
-
-      if (companyIds.length) {
-        const companyPlaceholders = companyIds.map(() => "?").join(", ");
-        await conn.query(
-          `DELETE FROM startup_discount_redemptions WHERE user_id IN (${placeholders}) OR company_id IN (${companyPlaceholders})`,
-          [...nonAdminIds, ...companyIds]
-        );
-        await conn.query(
-          `DELETE FROM startup_plan_subscriptions WHERE user_id IN (${placeholders}) OR company_id IN (${companyPlaceholders})`,
-          [...nonAdminIds, ...companyIds]
-        );
-      }
-
-      await conn.query(
-        `DELETE FROM company_memberships WHERE user_id IN (${placeholders})`,
-        nonAdminIds
-      );
-
-      await conn.query(
-        `DELETE FROM users WHERE id IN (${placeholders})`,
-        nonAdminIds
-      );
-      await conn.query(
-        "DELETE FROM companies WHERE id NOT IN (SELECT DISTINCT company_id FROM company_memberships)"
-      );
+    console.log(`Database: ${target}`);
+    console.log(`Admin-brukere som beholdes: ${admins}`);
+    for (const { name, rows } of before) {
+      if (rows) console.log(`  ${name.padEnd(40)} ${String(rows).padStart(7)}  ${planFor(name)}`);
     }
 
-    const [[afterUsers]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM users WHERE role <> 'admin'"
-    );
-    const [[afterStartups]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM startup_profiles"
-    );
-    const [[afterRounds]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM emission_rounds"
-    );
-    const [[afterCompanies]] = await conn.query(
-      "SELECT COUNT(*) AS count FROM companies"
-    );
-    const [admins] = await conn.query(
-      "SELECT email FROM users WHERE role = 'admin' ORDER BY id"
-    );
+    if (!Number(admins)) {
+      throw new Error("Fant ingen admin-bruker. Avbryter, så du ikke låser deg ute.");
+    }
 
+    if (!execute) {
+      console.log(`\nIngenting er slettet. For å slette, kjør på nytt med:\n  --confirm=${target} --yes`);
+      return;
+    }
+
+    const backupFile = await writeBackup(conn, before);
+    console.log(`\nSikkerhetskopi: ${backupFile}`);
+
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+    await conn.beginTransaction();
+    for (const { name } of before) {
+      const plan = planFor(name);
+      if (plan === "beholdes") continue;
+      if (name === "users") {
+        await conn.query("DELETE FROM users WHERE role <> 'admin'");
+      } else {
+        await conn.query(`DELETE FROM \`${name}\``);
+      }
+    }
+    // The redemptions are gone, so the codes can be used again.
+    const [redeemedColumn] = await conn.query("SHOW COLUMNS FROM startup_discount_codes LIKE 'times_redeemed'").catch(() => [[]]);
+    if (redeemedColumn.length) {
+      await conn.query("UPDATE startup_discount_codes SET times_redeemed = 0");
+    }
     await conn.commit();
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
 
-    console.log(
-      JSON.stringify(
-        {
-          deleted_non_admin_users: beforeUsers.count - afterUsers.count,
-          deleted_startups: beforeStartups.count - afterStartups.count,
-          deleted_rounds: beforeRounds.count - afterRounds.count,
-          deleted_companies: beforeCompanies.count - afterCompanies.count,
-          remaining_admins: admins.map((row) => row.email)
-        },
-        null,
-        2
-      )
-    );
+    const after = await tableCounts(conn);
+    const left = after.filter(({ rows }) => rows > 0).map(({ name, rows }) => `${name}=${rows}`);
+    const [remainingAdmins] = await conn.query("SELECT email FROM users WHERE role = 'admin' ORDER BY id");
+    console.log(`Ferdig. Rader igjen: ${left.join(", ") || "ingen"}`);
+    console.log(`Admin-brukere: ${remainingAdmins.map((row) => row.email).join(", ")}`);
   } catch (error) {
-    await conn.rollback();
-    console.error(error);
+    await conn.rollback().catch(() => {});
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1").catch(() => {});
+    console.error(error.message || error);
     process.exitCode = 1;
   } finally {
     conn.release();
