@@ -75,7 +75,10 @@ export const improveStartupPitchCopy = async (req, res) => {
         const useOfFunds = String(req.body?.use_of_funds || "").trim();
 
         if (!whatOffers && !useOfFunds) {
-            return res.json({ success: true, suggestion: null });
+            return res.json({ success: true, suggestion: null, reason: "empty" });
+        }
+        if (!process.env.OPENAI_API_KEY) {
+            return res.json({ success: true, suggestion: null, reason: "not_configured" });
         }
 
         const suggestion = await improveStartupPitchText({ whatOffers, useOfFunds });
@@ -83,7 +86,7 @@ export const improveStartupPitchCopy = async (req, res) => {
     } catch (error) {
         console.error("Improve pitch text error:", error);
         // AI-forslag er en tilleggsfunksjon — feil her skal aldri blokkere lagring.
-        res.json({ success: true, suggestion: null });
+        res.json({ success: true, suggestion: null, reason: "unavailable" });
     }
 };
 

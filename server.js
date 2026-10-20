@@ -344,7 +344,9 @@ app.get("/api/ready", async (req, res) => {
     res.status(200).json({
       ok: true,
       database: "reachable",
-      email: getEmailProviderConfig().configured ? "configured" : "missing"
+      email: getEmailProviderConfig().configured ? "configured" : "missing",
+      // Whether the AI text suggestions can run; never the key itself.
+      ai_text_suggestions: process.env.OPENAI_API_KEY ? "configured" : "missing"
     });
   } catch (error) {
     res.status(503).json({

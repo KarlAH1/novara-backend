@@ -9,7 +9,7 @@ import {
   shareBasisFromRegister
 } from "../utils/roundActivationReadiness.js";
 
-const REGISTER_BLOCKER = "Bekreft aksjekapital, antall aksjer og pålydende (hentet fra Foretaksregisteret) før runden kan åpnes.";
+const REGISTER_BLOCKER = "Bekreft aksjekapital, antall aksjer og pålydende.";
 
 // Just enough of a mysql2 connection for the readiness check: no articles
 // table, one verified member, and the given profile and confirmation.

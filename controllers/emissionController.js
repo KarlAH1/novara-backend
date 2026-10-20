@@ -1023,8 +1023,31 @@ export const confirmArticlesShareBasis = async (req, res) => {
         Math.abs(Number(par_value_per_share) - register.par_value_per_share) < 0.0001;
       if (!matches) {
         return res.status(400).json({
-          message: "Tallene stemmer ikke med det som er registrert i Foretaksregisteret, eller registeret kunne ikke nås. Prøv igjen, eller last opp vedtektene."
+          message: "Vi fikk ikke hentet tallene fra Foretaksregisteret akkurat nå. Prøv igjen om litt, eller last opp gjeldende vedtekter."
         });
+      }
+    }
+
+    /*
+      Choosing Foretaksregisteret's figures over uploaded articles that say
+      something else (or too little) means those articles are not the current
+      ones. They are set aside, not deleted: the file stays in the document
+      room, but it no longer feeds the share basis. Current articles are
+      uploaded before conversion, when they are amended.
+    */
+    let supersededArticlesId = null;
+    if (source === "brreg" && basis.articles_document_id) {
+      const articlesAgree =
+        Number(basis.share_count) === Number(share_count) &&
+        Math.abs(Number(basis.par_value) - Number(par_value_per_share)) < 0.0001 &&
+        Math.abs(Number(basis.share_capital_amount) - Number(share_capital_amount)) < 0.5;
+      if (!articlesAgree) {
+        await pool.query(
+          `UPDATE startup_documents SET document_type = 'superseded_articles_of_association'
+           WHERE id = ? AND startup_id = ?`,
+          [basis.articles_document_id, startupId]
+        );
+        supersededArticlesId = basis.articles_document_id;
       }
     }
 
@@ -1062,7 +1085,8 @@ export const confirmArticlesShareBasis = async (req, res) => {
         share_capital_amount: Number(share_capital_amount),
         share_count: Number(share_count),
         par_value_per_share: Number(par_value_per_share),
-        source, articles_document_id: basis.articles_document_id
+        source, articles_document_id: basis.articles_document_id,
+        superseded_articles_document_id: supersededArticlesId
       }
     });
 

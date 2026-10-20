@@ -267,7 +267,7 @@ export async function checkRoundActivationReadiness(connection, startupId, round
 
   if (awaitingRegisterConfirmation) {
     blockers.push(
-      "Bekreft aksjekapital, antall aksjer og pålydende (hentet fra Foretaksregisteret) før runden kan åpnes."
+      "Bekreft aksjekapital, antall aksjer og pålydende."
     );
   } else {
     if (!basis.articles_document_id && activeConfirmation?.source !== "brreg") {
