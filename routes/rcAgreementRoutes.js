@@ -211,6 +211,17 @@ const getRcAgreementViewState = (agreement = {}) => {
     };
   }
 
+  // The investor says the money is sent; only the company's confirmation is left.
+  if (investorSigned && agreement.investor_marked_paid_at) {
+    return {
+      flow_status: "Betalt / venter på bekreftelse",
+      flow_message: "Investoren har betalt. Avtalen blir aktiv når selskapet har bekreftet at pengene er mottatt.",
+      final_document_status: "Betalt, venter på bekreftelse",
+      is_downloadable: false,
+      payment_status: "Betalt, venter på bekreftelse fra selskapet"
+    };
+  }
+
   if (investorSigned) {
     return {
       flow_status: "Signert / venter på betaling",

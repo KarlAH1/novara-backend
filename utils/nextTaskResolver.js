@@ -74,7 +74,7 @@ async function getInvestorNextTasks(userId) {
     const { investorSignedAtSelect, paymentConfirmedAtSelect } = await getRcAgreementSignedAtSelects();
 
     const [agreements] = await pool.query(
-        `SELECT a.id, a.round_id, a.startup_id, a.status,
+        `SELECT a.id, a.round_id, a.startup_id, a.status, a.investor_marked_paid_at,
                 ${investorSignedAtSelect}, ${paymentConfirmedAtSelect},
                 pr.status AS par_value_status, pr.due_date AS par_value_due_date,
                 COALESCE(sp.company_name, startup.name) AS company_name
@@ -93,7 +93,8 @@ async function getInvestorNextTasks(userId) {
 
     for (const agreement of agreements) {
         const { paymentConfirmed, investorSigned } = resolveAgreementFlow(agreement);
-        if (investorSigned && !paymentConfirmed) {
+        // Marked as paid: the company confirms next, nothing left for the investor.
+        if (investorSigned && !paymentConfirmed && !agreement.investor_marked_paid_at) {
             addTask({
                 kind: "agreement_payment",
                 roundId: Number(agreement.round_id),
