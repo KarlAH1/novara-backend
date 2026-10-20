@@ -114,6 +114,9 @@ export const fetchBrregCompany = async (rawOrgnr) => {
       : null,
     capitalShareCount: Number.isFinite(Number(data.kapital?.antallAksjer))
       ? Number(data.kapital.antallAksjer)
+      : null,
+    capitalAmount: Number.isFinite(Number(data.kapital?.belop))
+      ? Number(data.kapital.belop)
       : null
   };
 

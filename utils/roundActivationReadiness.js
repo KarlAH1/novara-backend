@@ -24,6 +24,12 @@ import { columnExists, tableExists } from "./schemaCapabilities.js";
 // Product-level warning only. Not a legal threshold.
 export const PAR_AMOUNT_WARNING_RATIO = 0.10;
 
+// "4 761 kr": Norwegian grouping with a plain space, the same in every runtime.
+function formatNok(value) {
+  const rounded = Math.round(Number(value || 0));
+  return `${String(rounded).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} kr`;
+}
+
 function safeParseJson(value) {
   try {
     return JSON.parse(value || "{}");
@@ -120,6 +126,20 @@ export async function resolveShareBasis(connection, startupId) {
     share_basis_temporary: Boolean(Number(profile?.share_basis_temporary || 0)),
     issues
   };
+}
+
+/*
+  The share basis as registered in Foretaksregisteret. Every AS has it, so a
+  company can confirm its basis without first uploading its articles; the
+  articles are needed only later, when they are amended at conversion. Par value
+  is capital divided by shares, which holds for a single class at one par value.
+*/
+export function shareBasisFromRegister(company) {
+  const shareCapital = Number(company?.capitalAmount || 0);
+  const shareCount = Number(company?.capitalShareCount || 0);
+  if (!shareCapital || !shareCount) return null;
+  const parValue = Math.round((shareCapital / shareCount) * 10000) / 10000;
+  return { share_capital_amount: shareCapital, share_count: shareCount, par_value_per_share: parValue };
 }
 
 /*
@@ -226,23 +246,38 @@ export async function checkRoundActivationReadiness(connection, startupId, round
 
   const basis = await resolveShareBasis(connection, startupId);
   blockers.push(...basis.issues);
+  const activeConfirmation = await getActiveArticlesConfirmation(connection, startupId);
 
-  if (!basis.articles_document_id) {
-    blockers.push("Gjeldende vedtekter må lastes opp før runden kan åpnes.");
-  }
-  if (!basis.par_value) {
-    blockers.push("Pålydende per aksje mangler. Det hentes fra vedtektene eller registreres i profilen.");
-  }
-  if (!basis.share_count) {
-    blockers.push("Gjeldende antall aksjer mangler. Det hentes fra vedtektene eller registreres i profilen.");
-  }
-  if (!basis.share_capital_amount) {
-    blockers.push("Selskapets aksjekapital mangler og kan ikke utledes av antall aksjer og pålydende.");
-  }
-  if (basis.share_basis_temporary) {
+  /*
+    With neither articles nor a confirmation, the one thing to do is confirm the
+    figures from Foretaksregisteret, which settles the basis and the articles
+    together. Listing "upload the articles" and "par value missing" beside it
+    would send the company looking for a document it does not need.
+  */
+  const awaitingRegisterConfirmation = !basis.articles_document_id && !activeConfirmation;
+
+  if (awaitingRegisterConfirmation) {
     blockers.push(
-      "Aksjegrunnlaget er markert som foreløpig. Bekreft pålydende og antall aksjer mot gjeldende vedtekter før runden åpnes."
+      "Bekreft aksjekapital, antall aksjer og pålydende (hentet fra Foretaksregisteret) før runden kan åpnes."
     );
+  } else {
+    if (!basis.articles_document_id && activeConfirmation?.source !== "brreg") {
+      blockers.push("Gjeldende vedtekter må lastes opp før runden kan åpnes.");
+    }
+    if (!basis.par_value) {
+      blockers.push("Pålydende per aksje mangler. Det hentes fra vedtektene eller registreres i profilen.");
+    }
+    if (!basis.share_count) {
+      blockers.push("Gjeldende antall aksjer mangler. Det hentes fra vedtektene eller registreres i profilen.");
+    }
+    if (!basis.share_capital_amount) {
+      blockers.push("Selskapets aksjekapital mangler og kan ikke utledes av antall aksjer og pålydende.");
+    }
+    if (basis.share_basis_temporary) {
+      blockers.push(
+        "Aksjegrunnlaget er markert som foreløpig. Bekreft pålydende og antall aksjer mot gjeldende vedtekter før runden åpnes."
+      );
+    }
   }
 
   /*
@@ -252,11 +287,13 @@ export async function checkRoundActivationReadiness(connection, startupId, round
     confirm they match the current articles — and confirm the figures the system
     actually holds, not an earlier set that has since been edited.
   */
-  const confirmation = await getActiveArticlesConfirmation(connection, startupId);
+  const confirmation = activeConfirmation;
   if (!confirmation) {
-    blockers.push(
-      "Aksjekapital, antall aksjer og pålydende må bekreftes mot gjeldende vedtekter før runden kan åpnes."
-    );
+    if (!awaitingRegisterConfirmation) {
+      blockers.push(
+        "Aksjekapital, antall aksjer og pålydende må bekreftes mot gjeldende vedtekter før runden kan åpnes."
+      );
+    }
   } else if (!confirmationMatches(confirmation, {
     shareCapital: basis.share_capital_amount,
     shareCount: basis.share_count,
@@ -309,8 +346,9 @@ export async function checkRoundActivationReadiness(connection, startupId, round
       });
       if (preview?.warn) {
         warnings.push(
-          `Investorene må til sammen betale ca. ${preview.par_amount} NOK i aksjeinnskudd ved konvertering — ` +
-          `ca. ${(preview.par_amount_ratio * 100).toFixed(1)} % av investeringsbeløpet. Det kommer i tillegg til det de allerede har betalt.`
+          `Investorene må til sammen betale ca. ${formatNok(preview.par_amount)} i aksjeinnskudd ved konvertering — ` +
+          `ca. ${(preview.par_amount_ratio * 100).toFixed(1).replace(".", ",")} % av investeringsbeløpet. ` +
+          "Det kommer i tillegg til det de allerede har betalt. En høyere valuation cap gjør beløpet mindre."
         );
       }
     }

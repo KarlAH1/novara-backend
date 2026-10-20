@@ -11,8 +11,10 @@ import { sendTelegramAdminAlert } from "../utils/telegramNotifier.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 import {
   checkRoundActivationReadiness,
-  resolveShareBasis
+  resolveShareBasis,
+  shareBasisFromRegister
 } from "../utils/roundActivationReadiness.js";
+import { fetchBrregCompany } from "../utils/brreg.js";
 import {
   getActiveArticlesConfirmation,
   recordArticlesConfirmation
@@ -969,7 +971,17 @@ export const getArticlesShareBasis = async (req, res) => {
       parserVersion = parsed.parser_version || null;
     } catch { /* extraction metadata is optional */ }
 
+    // Foretaksregisteret's figures: prefilled when no articles are uploaded,
+    // and something to check the articles against when they are.
+    let register = null;
+    if (startupContext.company?.orgnr) {
+      try {
+        register = shareBasisFromRegister(await fetchBrregCompany(startupContext.company.orgnr));
+      } catch { /* Brønnøysund unreachable: the company can still type or upload */ }
+    }
+
     res.json({
+      register,
       share_capital_amount: basis.share_capital_amount,
       share_count: basis.share_count,
       par_value_per_share: basis.par_value,
@@ -997,13 +1009,31 @@ export const confirmArticlesShareBasis = async (req, res) => {
     const { share_capital_amount, share_count, par_value_per_share, source } = req.body || {};
 
     const basis = await resolveShareBasis(pool, startupId);
+
+    // "From the register" is only accepted for the register's own figures.
+    if (source === "brreg") {
+      let register = null;
+      try {
+        register = shareBasisFromRegister(await fetchBrregCompany(startupContext.company?.orgnr));
+      } catch { /* handled below */ }
+      const matches = register &&
+        Math.abs(Number(share_capital_amount) - register.share_capital_amount) < 0.5 &&
+        Number(share_count) === register.share_count &&
+        Math.abs(Number(par_value_per_share) - register.par_value_per_share) < 0.0001;
+      if (!matches) {
+        return res.status(400).json({
+          message: "Tallene stemmer ikke med det som er registrert i Foretaksregisteret, eller registeret kunne ikke nås. Prøv igjen, eller last opp vedtektene."
+        });
+      }
+    }
+
     const result = await recordArticlesConfirmation(pool, {
       startupId,
-      documentId: basis.articles_document_id,
+      documentId: source === "brreg" ? null : basis.articles_document_id,
       shareCapital: share_capital_amount,
       shareCount: share_count,
       parValue: par_value_per_share,
-      source: ["parser", "ai", "manual"].includes(source) ? source : "manual",
+      source: ["parser", "ai", "manual", "brreg"].includes(source) ? source : "manual",
       parserVersion: null,
       aiModel: null,
       aiExtractionVersion: null,

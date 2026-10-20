@@ -6,6 +6,7 @@ import { isStripeConfigured } from "./stripeClient.js";
 import { getPendingSignatures } from "./pendingSignatures.js";
 import { getLatestStartupRoundDraft } from "./roundDraft.js";
 import { getInvestorFlowProgressList } from "./investorFlowProgress.js";
+import { getStartupJourney } from "./startupJourney.js";
 
 // rc_agreements columns vary by migration state — mirrors the same
 // dynamic-select pattern used in the GET /:id route (rcAgreementRoutes.js).
@@ -208,114 +209,24 @@ async function getStartupPlanTask(userId) {
     };
 }
 
+// The startup's next task is the current step of its journey, so this card,
+// the profile and the automatic hand-over between pages always agree.
 async function getStartupNextTask(userId) {
-    const profile = await getCompanyStartupProfile(pool, userId);
-    const offeringMissing = !String(profile?.sector || "").trim();
-    const useOfFundsMissing = !String(profile?.pitch || "").trim();
-
-    if (!profile || offeringMissing || useOfFundsMissing) {
-        return {
-            title: "Fullfør profilen",
-            description: "Fyll ut hva selskapet tilbyr og hva pengene skal brukes til, så investorer kan se det.",
-            ctaLabel: "Gå til profilen",
-            ctaUrl: "profile.html"
-        };
-    }
-
-    const { startupUserId } = await resolveCompanyStartupOwner(pool, userId);
-
-    const planTask = await getStartupPlanTask(userId);
-    if (planTask) return planTask;
-
     const signatureTask = await getPendingSignatureTask(userId);
     if (signatureTask) return signatureTask;
 
-    const { investorSignedAtSelect, paymentConfirmedAtSelect } = await getRcAgreementSignedAtSelects();
+    const journey = await getStartupJourney(userId);
+    const current = journey.current;
+    if (!current?.cta) return null;
 
-    const [agreements] = await pool.query(
-        `SELECT a.id, a.status, ${investorSignedAtSelect}, ${paymentConfirmedAtSelect}
-         FROM rc_agreements a
-         JOIN emission_rounds e ON a.round_id = e.id
-         WHERE e.startup_id = ?
-         ORDER BY a.created_at DESC`,
-        [userId]
-    );
-
-    for (const agreement of agreements) {
-        const { paymentConfirmed, investorSigned } = resolveAgreementFlow(agreement);
-        if (investorSigned && !paymentConfirmed) {
-            return {
-                title: "Bekreft betaling mottatt",
-                description: "En investor har signert avtalen og skal ha betalt inn beløpet — bekreft når pengene er mottatt.",
-                ctaLabel: "Gå til avtalen",
-                ctaUrl: `rc-detail.html?agreement=${agreement.id}`
-            };
-        }
-    }
-
-    const roundDraft = await getLatestStartupRoundDraft(pool, startupUserId);
-    if (roundDraft) {
-        const stepNames = ["Vilkår", "Eiergrunnlag", "Bekreft"];
-        const step = Math.min(3, Math.max(1, Number(roundDraft.lastStep || 1)));
-        return {
-            kind: "resume_round_draft",
-            eyebrow: "Fortsett der du slapp",
-            title: "Gjør ferdig rundeoppsettet",
-            description: `Steg ${step} av 3 · ${stepNames[step - 1]}`,
-            ctaLabel: "Fortsett",
-            ctaUrl: `dashboard.html?emission=${roundDraft.roundId}&step=${step}`,
-            updatedAt: roundDraft.updatedAt
-        };
-    }
-
-    const [articlesRows] = await pool.query(
-        `SELECT id FROM startup_documents WHERE startup_id = ? AND document_type = 'current_articles_of_association' LIMIT 1`,
-        [startupUserId]
-    );
-
-    if (articlesRows.length === 0) {
-        return {
-            title: "Last opp vedtekter",
-            description: "Last opp gjeldende vedtekter, så de er klare til bruk i dokumentflyten og en eventuell konvertering.",
-            ctaLabel: "Gå til dokumenter",
-            ctaUrl: "document.html"
-        };
-    }
-
-    const [pitchDeckRows] = await pool.query(
-        `SELECT id FROM startup_documents WHERE startup_id = ? AND document_type = 'pitch_deck' LIMIT 1`,
-        [startupUserId]
-    );
-
-    if (pitchDeckRows.length === 0) {
-        return {
-            title: "Last opp pitch deck",
-            description: "Last opp en PDF med pitch deck, så investorer får mer kontekst.",
-            ctaLabel: "Gå til profilen",
-            ctaUrl: "profile.html"
-        };
-    }
-
-    if (isStripeConfigured()) {
-        const company = await getCompanyForUserWithConnection(pool, userId);
-        if (company?.company_id) {
-            const [companyRows] = await pool.query(
-                "SELECT stripe_charges_enabled FROM companies WHERE id = ? LIMIT 1",
-                [company.company_id]
-            );
-
-            if (!companyRows[0]?.stripe_charges_enabled) {
-                return {
-                    title: "Koble Stripe",
-                    description: "Koble til Stripe så investorer kan betale umiddelbart med kort eller Vipps, i stedet for bankoverføring.",
-                    ctaLabel: "Gå til profilen",
-                    ctaUrl: "profile.html"
-                };
-            }
-        }
-    }
-
-    return null;
+    return {
+        kind: "journey_step",
+        eyebrow: `Steg ${current.number} av ${journey.progress.total}`,
+        title: current.title,
+        description: current.missing?.length ? current.missing.join(" · ") : (current.waiting_text || current.summary || ""),
+        ctaLabel: current.cta.label,
+        ctaUrl: current.cta.url
+    };
 }
 
 export async function resolveNextTask(userId, role) {
