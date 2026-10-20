@@ -1,12 +1,13 @@
 import { sendEmail } from "./emailService.js";
 import { escapeHtml } from "./html.js";
 import { renderEmail } from "./emailLayout.js";
+import { publicAppUrl } from "./publicUrl.js";
 
 const formatNok = (value) =>
   `${Number(value || 0).toLocaleString("no-NO")} NOK`;
 
 const getFrontendBase = () =>
-  `${String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "")}`;
+  publicAppUrl();
 
 const sendSafe = async (payload) => {
   try {

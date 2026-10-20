@@ -8,6 +8,7 @@ import {
 } from "../utils/stripeConnect.js";
 import { createCheckoutSessionForAgreement, createCheckoutSessionForStartupPlan, createCheckoutSessionForParValue } from "../utils/stripePayments.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
+import { publicAppUrl } from "../utils/publicUrl.js";
 
 const router = express.Router();
 const checkoutLimiter = createRateLimiter({
@@ -18,7 +19,7 @@ const checkoutLimiter = createRateLimiter({
 });
 
 function getFrontendBase() {
-    return String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+    return publicAppUrl();
 }
 
 router.get("/connect/status", auth, requireRole(["startup"]), async (req, res) => {

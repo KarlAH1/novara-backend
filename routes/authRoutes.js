@@ -16,6 +16,7 @@ import {
 } from "../controllers/authController.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
 import { getPendingSignatures } from "../utils/pendingSignatures.js";
+import { publicAppUrl } from "../utils/publicUrl.js";
 
 const router = express.Router();
 const publicAuthLimiter = createRateLimiter({
@@ -167,7 +168,7 @@ router.get("/pending-signatures", authMiddleware, async (req, res) => {
     try {
         const { default: pool } = await import("../config/db.js");
         connection = await pool.getConnection();
-        const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+        const frontendBase = publicAppUrl();
 
         const pending = await getPendingSignatures(connection, req.user.id);
 

@@ -2,6 +2,7 @@ import { createExpiry, createRawToken, hashToken } from "./authSecurity.js";
 import { sendEmail } from "./emailService.js";
 import { escapeHtml } from "./html.js";
 import { renderEmail } from "./emailLayout.js";
+import { publicAppUrl } from "./publicUrl.js";
 
 export function isEmailVerificationRequired() {
   const explicit = String(process.env.AUTH_REQUIRE_EMAIL_VERIFICATION || "").trim().toLowerCase();
@@ -10,8 +11,7 @@ export function isEmailVerificationRequired() {
 }
 
 function getFrontendBase() {
-  const base = String(process.env.FRONTEND_URL || "").trim();
-  return base.endsWith("/") ? base.slice(0, -1) : base;
+  return publicAppUrl();
 }
 
 async function storeEmailVerificationToken(executor, userId) {

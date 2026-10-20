@@ -1,4 +1,5 @@
 import { escapeHtml } from "./html.js";
+import { publicAppUrl } from "./publicUrl.js";
 
 /*
   One look for every e-mail Raisium sends: a white card on a light grey page,
@@ -18,7 +19,7 @@ const ACCENTS = {
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 export function frontendBase() {
-  return String(process.env.FRONTEND_URL || "").split(",")[0].trim().replace(/\/+$/, "");
+  return publicAppUrl();
 }
 
 function boxHtml(box) {

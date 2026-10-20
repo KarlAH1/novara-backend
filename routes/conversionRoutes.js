@@ -42,12 +42,13 @@ import { tableExists, columnExists, getTableColumns } from "../utils/schemaCapab
 import { shareCountsForStoredOwners } from "../utils/shareholderAllocation.js";
 import { GF_SUBSCRIBER_ROLE } from "../utils/pendingSignatures.js";
 import { listForStartup, syncConfirmationRequestsLater } from "../utils/paymentConfirmations.js";
+import { publicAppUrl } from "../utils/publicUrl.js";
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const templatesDir = path.resolve(__dirname, "../templates");
-const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+const frontendBase = publicAppUrl();
 // Time from the GF meeting to the par payment deadline stated in its resolution.
 const PAR_PAYMENT_DAYS_AFTER_GF = 14;
 
@@ -945,7 +946,7 @@ export async function notifyGfSubscribers(connection, documentId) {
 }
 
 async function sendParValueNotices(connection, startupContext, conversion, requests) {
-  const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+  const frontendBase = publicAppUrl();
   const companyName = startupContext.company?.company_name || "selskapet";
   // The deadline is the one in the GF resolution. Only if that has already
   // passed is a fresh week given, so a notice is never overdue on arrival.

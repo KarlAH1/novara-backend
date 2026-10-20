@@ -7,6 +7,7 @@ import { escapeHtml } from "./html.js";
 import { AUDIT_EVENTS, recordAuditEvent } from "./auditLogger.js";
 import { enqueueCriticalAuditEvent } from "./auditOutbox.js";
 import { tableExists } from "./schemaCapabilities.js";
+import { publicAppUrl } from "./publicUrl.js";
 
 /*
   Confirmation that the money came in, by a revisor Raisium pays.
@@ -40,7 +41,7 @@ const CONFIRMER_SIGNER_ROLE = "Revisor";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const templatesDir = path.resolve(__dirname, "../templates");
-const frontendBase = () => String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+const frontendBase = () => publicAppUrl();
 
 export async function ensurePaymentConfirmationSchema() {
   const connection = await db.getConnection();

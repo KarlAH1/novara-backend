@@ -8,10 +8,11 @@ import { resolveCompanyStartupOwner } from "../utils/startupContext.js";
 import { sendDocumentSigningRequestEmail } from "../utils/notificationEmailFlow.js";
 import { getLegalResetCutoff } from "../utils/legalRoundReset.js";
 import { escapeHtml } from "../utils/html.js";
+import { publicAppUrl } from "../utils/publicUrl.js";
 
 const router = express.Router();
 const MAX_EMISSION_AMOUNT = 2147483647;
-const frontendBase = String(process.env.FRONTEND_URL || "").split(",")[0].replace(/\/+$/, "");
+const frontendBase = publicAppUrl();
 
 async function canRestartLegalFlow(startupId) {
   const legalResetCutoff = await getLegalResetCutoff(pool, startupId);
