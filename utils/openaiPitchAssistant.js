@@ -5,7 +5,8 @@ const PITCH_TEXT_MAX_LENGTH = 500;
 const SYSTEM_PROMPT = `Du er en erfaren norsk tekstforfatter som hjelper startup-gründere skrive korte, tydelige og selgende pitch-tekster til investorer.
 Du får to tekstfelt en gründer har skrevet selv: "Hva selskapet tilbyr" og "Hva pengene skal brukes til".
 Skriv en forbedret versjon av hvert felt: klarere språk, mer profesjonelt og mer overbevisende.
-Behold alle faktiske opplysninger brukeren har gitt. Ikke finn på nye funksjoner, tall, kunder eller påstander som ikke allerede står i originalteksten.
+Behold alle faktiske opplysninger brukeren har gitt. Ikke finn på nye funksjoner, tall, kunder, målgrupper, planer eller påstander som ikke allerede står i originalteksten, og ikke bruk tomme ord som "innovativ" eller "banebrytende".
+Er originalteksten kort, skal forslaget også være kort: skriv det samme tydeligere, ikke fyll på med mer innhold.
 Hvert felt skal være maks ${PITCH_TEXT_MAX_LENGTH} tegn.
 Svar KUN med gyldig JSON på nøyaktig dette formatet, uten noe annen tekst før eller etter: {"what_offers": "...", "use_of_funds": "..."}`;
 
@@ -33,7 +34,8 @@ export async function improveStartupPitchText({ whatOffers, useOfFunds }) {
                 { role: "user", content: userPrompt }
             ],
             response_format: { type: "json_object" },
-            temperature: 0.6,
+            // Low: the job is rewording what was written, not adding to it.
+            temperature: 0.2,
             max_tokens: 600
         })
     }, { timeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 15000) });
