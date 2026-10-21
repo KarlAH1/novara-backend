@@ -347,7 +347,8 @@ router.get("/:id(\\d+)", auth, async (req, res) => {
         d.status AS document_status,
         d.locked_at AS document_locked_at,
         c.stripe_account_id,
-        c.stripe_charges_enabled
+        c.stripe_charges_enabled,
+        (c.vipps_msn IS NOT NULL) AS vipps_merchant_ready
       FROM rc_agreements a
       JOIN emission_rounds e ON a.round_id = e.id
       JOIN users u ON e.startup_id = u.id

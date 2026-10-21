@@ -28,7 +28,28 @@ import {
   saveInvestorFlowProgress
 } from "../utils/investorFlowProgress.js";
 import { getReservedAmount } from "../utils/capacityReservation.js";
+import { fetchBrregCompany } from "../utils/brreg.js";
+
+// Public register facts for the invite page. Brønnøysund may be slow; the
+// page never waits long for it, and a late answer still fills the cache.
+const INVITE_FACTS_WAIT_MS = 1200;
+async function loadPublicCompanyFacts(orgnr) {
+  if (!orgnr) return null;
+  const lookup = fetchBrregCompany(orgnr).catch(() => null);
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), INVITE_FACTS_WAIT_MS));
+  const company = await Promise.race([lookup, timeout]);
+  if (!company) return null;
+  const foundedYear = Number(String(company.foundedDate || "").slice(0, 4)) || null;
+  return {
+    industry: company.industry || null,
+    municipality: company.municipality || null,
+    foundedYear,
+    employees: company.employees ?? null,
+    website: company.website || null
+  };
+}
 import {
+  derivePipelineStage,
   findAgreementForClaimedInvite,
   loadRoundPipeline,
   markInviteOpened,
@@ -222,8 +243,8 @@ router.post(
       const token = generateInviteToken();
 
       const [insertResult] = await connection.query(
-        "INSERT INTO rc_invites (round_id, token, invitee_name, invitee_relation) VALUES (?, ?, ?, ?)",
-        [roundId, token, invitee.name, invitee.relation]
+        "INSERT INTO rc_invites (round_id, token, invitee_name, invitee_relation, personal_note) VALUES (?, ?, ?, ?, ?)",
+        [roundId, token, invitee.name, invitee.relation, invitee.note]
       );
 
       // The invitee's name stays in rc_invites; the audit trail only needs to
@@ -334,10 +355,123 @@ router.post(
         })
       });
 
+      // Remembered so a later reminder can go the same way.
+      await pool.query("UPDATE rc_invites SET invitee_email = ? WHERE id = ?", [email, invite.id]);
+
       res.json({ message: `Invitasjonen er sendt til ${email}.` });
     } catch (err) {
       console.error("Send invite e-mail failed:", err);
       res.status(500).json({ error: "Vi fikk ikke sendt e-posten. Prøv igjen, eller del lenken på SMS i stedet." });
+    }
+  }
+);
+
+/* =====================================================
+   REMIND AN INVITEE (Startup Only)
+   The founder nudges one person who has stopped halfway. "share" only
+   records that a reminder went out (the founder sent it from their own
+   phone); "email" sends it from Raisium when the invite went that way.
+===================================================== */
+
+const REMINDER_COPY = {
+  invitert: { subject: "Har du rukket å se invitasjonen?", line: "Du har en personlig invitasjon til å investere som venter på deg." },
+  apnet: { subject: "Har du rukket å se invitasjonen?", line: "Du har sett invitasjonen. Det tar et par minutter å bli med, hvis du vil." },
+  registrert: { subject: "Du er nesten i mål", line: "Du har tilgang. Det som gjenstår er å velge beløp og signere." },
+  signering: { subject: "Avtalen venter på signaturen din", line: "Avtalen er klar. Det som gjenstår er å signere." },
+  betaling: { subject: "Bare betalingen gjenstår", line: "Avtalen er signert. Det som gjenstår er å betale til selskapets konto." }
+};
+
+const reminderLimiter = createRateLimiter({
+  keyPrefix: "invite-remind",
+  windowMs: 10 * 60 * 1000,
+  maxRequests: 40,
+  message: "Du har sendt mange påminnelser på kort tid. Vent litt og prøv igjen."
+});
+
+router.post(
+  "/remind/:inviteId",
+  auth,
+  requireRole(["startup"]),
+  reminderLimiter,
+  async (req, res) => {
+    try {
+      const inviteId = Number(req.params.inviteId);
+      const channel = req.body?.channel === "email" ? "email" : "share";
+      if (!Number.isInteger(inviteId) || inviteId <= 0) {
+        return res.status(400).json({ error: "Ugyldig invitasjon." });
+      }
+
+      const [[invite]] = await pool.query(
+        `SELECT i.id, i.token, i.round_id, i.invitee_name, i.invitee_email, i.first_opened_at,
+                i.claimed_by_user_id, i.last_reminded_at,
+                r.startup_id, r.open, COALESCE(c.company_name, sp.company_name) AS company_name,
+                owner.name AS founder_name
+         FROM rc_invites i
+         JOIN emission_rounds r ON r.id = i.round_id
+         JOIN users owner ON owner.id = r.startup_id
+         LEFT JOIN company_memberships cm ON cm.user_id = r.startup_id
+         LEFT JOIN companies c ON c.id = cm.company_id
+         LEFT JOIN startup_profiles sp ON sp.user_id = r.startup_id
+         WHERE i.id = ? LIMIT 1`,
+        [inviteId]
+      );
+      if (!invite) return res.status(404).json({ error: "Fant ikke invitasjonen." });
+      if (Number(invite.startup_id) !== Number(req.user.id)) {
+        return res.status(403).json({ error: "Denne invitasjonen hører til en annen runde." });
+      }
+
+      const agreement = await findAgreementForClaimedInvite(pool, invite);
+      const stage = derivePipelineStage({ ...invite, agreement_status: agreement?.status });
+      const copy = REMINDER_COPY[stage];
+      if (!copy) {
+        return res.status(400).json({ error: "Denne personen er ferdig, så det er ingenting å minne om." });
+      }
+
+      if (channel === "email") {
+        if (!invite.invitee_email) {
+          return res.status(400).json({ error: "Vi har ikke e-posten til denne personen. Del påminnelsen på SMS i stedet." });
+        }
+        const last = invite.last_reminded_at ? new Date(invite.last_reminded_at).getTime() : 0;
+        if (last && Date.now() - last < 24 * 60 * 60 * 1000) {
+          return res.status(429).json({ error: "Du har allerede minnet denne personen på det siste døgnet. Prøv igjen i morgen." });
+        }
+
+        const founder = String(invite.founder_name || "").trim() || "Gründeren";
+        const firstName = founder.split(/\s+/)[0];
+        const company = invite.company_name || "selskapet";
+        const link = stage === "betaling" && agreement?.id
+          ? `${frontendBase()}/rc-detail.html?agreement=${agreement.id}`
+          : `${frontendBase()}/invest.html?invite=${encodeURIComponent(invite.token)}`;
+        const personal = String(req.body?.message || "").trim().slice(0, 600);
+
+        await sendEmail({
+          to: invite.invitee_email,
+          subject: `${copy.subject} – ${company}`,
+          text: `${copy.line}${personal ? `\n\n«${personal}»\n– ${founder}` : ""}\n\nFortsett her:\n${link}`,
+          html: renderEmail({
+            heading: copy.subject,
+            introHtml: `${escapeHtml(copy.line)} Invitasjonen er fra <strong>${escapeHtml(founder)}</strong> i <strong>${escapeHtml(company)}</strong>.`,
+            box: personal ? { linesHtml: `«${escapeHtml(personal).replace(/\n/g, "<br>")}»<br>– ${escapeHtml(firstName)}` } : null,
+            button: { label: "Fortsett", url: link },
+            after: "Lenken er personlig. Del den ikke videre.",
+            preheader: copy.line,
+            accent: "investor"
+          })
+        });
+      }
+
+      await pool.query(
+        "UPDATE rc_invites SET last_reminded_at = NOW(), reminder_count = reminder_count + 1 WHERE id = ?",
+        [invite.id]
+      );
+
+      res.json({
+        message: channel === "email" ? "Påminnelsen er sendt." : "Påminnelsen er registrert.",
+        stage
+      });
+    } catch (err) {
+      console.error("Invite reminder failed:", err);
+      res.status(500).json({ error: "Vi fikk ikke sendt påminnelsen. Prøv igjen." });
     }
   }
 );
@@ -502,6 +636,10 @@ router.get("/validate/:token", async (req, res) => {
         r.conversion_years,
         r.open,
         COALESCE(c.company_name, sp.company_name, u.name) AS company_name,
+        c.orgnr AS company_orgnr,
+        u.name AS founder_name,
+        i.invitee_name,
+        i.personal_note,
         sp.sector AS what_offers,
         sp.pitch AS use_of_funds,
         sp.vision AS description,
@@ -555,6 +693,7 @@ router.get("/validate/:token", async (req, res) => {
       invite.round_id,
       viewingUser?.id
     );
+    const publicFacts = await loadPublicCompanyFacts(invite.company_orgnr);
 
     res.json({
       startup: {
@@ -564,6 +703,13 @@ router.get("/validate/:token", async (req, res) => {
         whatOffers: invite.what_offers || "",
         useOfFunds: invite.use_of_funds || "",
         description: invite.description || "",
+        founderName: invite.founder_name || "",
+        facts: publicFacts,
+        // For the greeting: the first name the founder wrote, and their note.
+        invitee: {
+          firstName: String(invite.invitee_name || "").trim().split(/\s+/)[0] || "",
+          note: invite.personal_note || ""
+        },
         pitchDeck: invite.pitch_deck_url
           ? {
               filename: invite.pitch_deck_filename || "Åpne PDF",

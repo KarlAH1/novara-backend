@@ -85,7 +85,7 @@ if (CHECKOUT_SESSION_MINUTES >= RESERVATION_TTL_MINUTES) {
     throw new Error("A Checkout session must expire before the capacity reservation it pays for.");
 }
 
-async function holdCapacityForCheckout(agreement) {
+export async function holdCapacityForCheckout(agreement) {
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();

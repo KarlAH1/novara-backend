@@ -34,6 +34,7 @@ export const PIPELINE_STAGES = [
 
 export const INVITEE_NAME_MIN_LENGTH = 2;
 export const INVITEE_NAME_MAX_LENGTH = 120;
+export const INVITE_NOTE_MAX_LENGTH = 400;
 
 async function tableExists(connection, tableName) {
   const [rows] = await connection.query(
@@ -61,7 +62,13 @@ export async function ensureInvitePipelineSchema() {
     const columns = [
       ["invitee_name", "ALTER TABLE rc_invites ADD COLUMN invitee_name VARCHAR(120) NULL"],
       ["invitee_relation", "ALTER TABLE rc_invites ADD COLUMN invitee_relation VARCHAR(32) NULL"],
-      ["first_opened_at", "ALTER TABLE rc_invites ADD COLUMN first_opened_at DATETIME NULL"]
+      ["first_opened_at", "ALTER TABLE rc_invites ADD COLUMN first_opened_at DATETIME NULL"],
+      // The founder's own words to this one person, shown on their invite page.
+      ["personal_note", "ALTER TABLE rc_invites ADD COLUMN personal_note TEXT NULL"],
+      // Known only when Raisium sent the invite; lets a reminder go the same way.
+      ["invitee_email", "ALTER TABLE rc_invites ADD COLUMN invitee_email VARCHAR(255) NULL"],
+      ["last_reminded_at", "ALTER TABLE rc_invites ADD COLUMN last_reminded_at DATETIME NULL"],
+      ["reminder_count", "ALTER TABLE rc_invites ADD COLUMN reminder_count INT NOT NULL DEFAULT 0"]
     ];
 
     for (const [column, sql] of columns) {
@@ -96,7 +103,12 @@ export function normalizeInviteeInput(body = {}) {
     ? rawRelation
     : DEFAULT_INVITEE_RELATION;
 
-  return { ok: true, name, relation };
+  const note = String(body.note ?? "").replace(/\r\n/g, "\n").trim();
+  if (note.length > INVITE_NOTE_MAX_LENGTH) {
+    return { ok: false, error: `Hilsenen kan være maks ${INVITE_NOTE_MAX_LENGTH} tegn.` };
+  }
+
+  return { ok: true, name, relation, note: note || null };
 }
 
 export function derivePipelineStage({ first_opened_at, claimed_by_user_id, agreement_status } = {}) {
@@ -154,6 +166,9 @@ export async function loadRoundPipeline(connection, roundId) {
       i.first_opened_at,
       i.claimed_by_user_id,
       i.claimed_at,
+      i.invitee_email,
+      i.last_reminded_at,
+      i.reminder_count,
       u.name AS investor_name,
       a.id AS agreement_id,
       a.status AS agreement_status,
@@ -188,6 +203,10 @@ export async function loadRoundPipeline(connection, roundId) {
       openedAt: row.first_opened_at,
       claimedAt: row.claimed_at,
       agreementId: row.agreement_id || null,
+      lastRemindedAt: row.last_reminded_at || null,
+      reminderCount: Number(row.reminder_count || 0),
+      // Only whether Raisium can send a reminder, not the address itself.
+      canEmailReminder: Boolean(row.invitee_email),
       investmentAmount: row.investment_amount == null ? null : Number(row.investment_amount),
       // Once someone has claimed the link it is theirs alone, so there is
       // nothing left for the startup to copy or send on.

@@ -31,6 +31,8 @@ import { handleCheckoutSessionCompleted, handleCheckoutSessionFailed, handlePlan
 import { handleConnectedAccountUpdated } from "./utils/stripeConnect.js";
 import { closePdfBrowser } from "./utils/pdfRenderer.js";
 import { ensurePerformanceIndexes } from "./utils/performanceIndexes.js";
+import { ensureStartupUpdateSchema } from "./utils/startupUpdates.js";
+import { ensureVippsSchema } from "./utils/vipps.js";
 
 /* =========================================
    ENVIRONMENT SAFETY CHECK
@@ -201,6 +203,8 @@ await ensurePaymentSchema();
 await ensureAuditOutboxSchema();
 await ensurePaymentConfirmationSchema();
 await ensurePerformanceIndexes();
+await ensureStartupUpdateSchema();
+await ensureVippsSchema();
 
 /*
   Finalises critical audit events that were enqueued transactionally with the
@@ -321,6 +325,10 @@ import documentRoutes from "./routes/documentRoutes.js";
 import documentSignerRoutes from "./routes/documentSignerRoutes.js";
 import boardRoutes from "./routes/boardRoutes.js";
 import enheterRoutes from "./routes/enheterRoutes.js";
+import shareRoutes from "./routes/shareRoutes.js";
+import updateRoutes from "./routes/updateRoutes.js";
+import vippsRoutes from "./routes/vippsRoutes.js";
+import { publicFeatureFlags } from "./utils/featureFlags.js";
 
 /* =========================================
    HEALTH CHECK
@@ -377,6 +385,14 @@ app.use("/api/gf", gfRoutes);
 app.use("/api/board", boardRoutes);
 app.use("/api/enheter", enheterRoutes);
 app.use("/api/confirmations", confirmationRoutes);
+app.use("/api/share", shareRoutes);
+app.use("/api/updates", updateRoutes);
+app.use("/api/vipps", vippsRoutes);
+// Which optional features are switched on, so pages show only working buttons.
+app.get("/api/features", (req, res) => {
+  res.set("Cache-Control", "public, max-age=60");
+  res.json(publicFeatureFlags());
+});
 
 /* =========================================
    FRONTEND HTML FALLBACKS

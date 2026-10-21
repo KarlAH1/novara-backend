@@ -117,7 +117,14 @@ export const fetchBrregCompany = async (rawOrgnr) => {
       : null,
     capitalAmount: Number.isFinite(Number(data.kapital?.belop))
       ? Number(data.kapital.belop)
-      : null
+      : null,
+    // Public facts shown to invitees next to the company's own description.
+    industry: data.naeringskode1?.beskrivelse || null,
+    foundedDate: data.stiftelsesdato || data.registreringsdatoEnhetsregisteret || null,
+    employees: data.harRegistrertAntallAnsatte && Number.isFinite(Number(data.antallAnsatte))
+      ? Number(data.antallAnsatte)
+      : null,
+    website: data.hjemmeside || null
   };
 
   setCachedValue("company", orgnr, company);

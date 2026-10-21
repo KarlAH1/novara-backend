@@ -28,7 +28,13 @@ test("each invite is for one named person", () => {
   assert.equal(normalizeInviteeInput({ inviteeName: "x".repeat(121) }).ok, false);
 
   const invitee = normalizeInviteeInput({ inviteeName: "  Kari   Nordmann ", relation: "venner_familie" });
-  assert.deepEqual(invitee, { ok: true, name: "Kari Nordmann", relation: "venner_familie" });
+  assert.deepEqual(invitee, { ok: true, name: "Kari Nordmann", relation: "venner_familie", note: null });
+});
+
+test("the founder's personal note is optional, trimmed and capped", () => {
+  assert.equal(normalizeInviteeInput({ inviteeName: "Kari", note: "  Hei Kari!\r\nBli med?  " }).note, "Hei Kari!\nBli med?");
+  assert.equal(normalizeInviteeInput({ inviteeName: "Kari", note: "   " }).note, null);
+  assert.equal(normalizeInviteeInput({ inviteeName: "Kari", note: "x".repeat(401) }).ok, false);
 });
 
 test("an unknown relation falls back to 'annet' instead of being stored as typed", () => {
@@ -61,7 +67,7 @@ test("the pipeline summary counts every stage, including empty ones", () => {
 test("invite creation requires a name and the pipeline is only for the round's own startup", () => {
   const inviteRoutes = read("backend/routes/rcInviteRoutes.js");
   assert.match(inviteRoutes, /normalizeInviteeInput\(req\.body \|\| \{\}\)/);
-  assert.match(inviteRoutes, /INSERT INTO rc_invites \(round_id, token, invitee_name, invitee_relation\)/);
+  assert.match(inviteRoutes, /INSERT INTO rc_invites \(round_id, token, invitee_name, invitee_relation, personal_note\)/);
   assert.match(inviteRoutes, /"\/pipeline\/:roundId",\s*auth,\s*requireRole\(\["startup"\]\)/);
   assert.match(inviteRoutes, /Number\(round\.startup_id\) !== Number\(req\.user\.id\)/);
 });

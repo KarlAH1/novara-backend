@@ -139,7 +139,7 @@ export async function getStartupJourney(userId) {
   };
 
   const aboutMissing = [];
-  if (!String(profile?.sector || "").trim()) aboutMissing.push("Hva selskapet tilbyr");
+  if (!String(profile?.sector || "").trim()) aboutMissing.push("Hva dere gjør");
   if (!String(profile?.pitch || "").trim()) aboutMissing.push("Hva pengene skal brukes til");
   step.about = {
     done: aboutMissing.length === 0,
