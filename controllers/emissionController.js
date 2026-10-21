@@ -360,8 +360,16 @@ export const getEmissionById = async (req, res) => {
         console.error("Emission availability sync error:", availabilityError);
       }
 
+      // When the round opened, for "Åpen i N dager" on the dashboard.
+      const [[opened]] = await pool.query(
+        `SELECT MIN(created_at) AS opened_at FROM rc_audit_events
+         WHERE round_id = ? AND event_type = ?`,
+        [emissionId, AUDIT_EVENTS.ROUND_ACTIVATED]
+      );
+
       res.json({
         ...(emissionWithAvailability || emission),
+        opened_at: opened?.opened_at || null,
         shareholders
         });
 
